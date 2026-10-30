@@ -35,11 +35,11 @@ If the picture looks wrong:
 - **Head tracking**: the head turns the picture, including tilt.
 - **Motion controller aiming**: the right controller aims; bullets, muzzle flash and the gun model
   follow it. Buttons and sticks are sent to the game as keyboard and mouse.
-- **Square window**: in windowed mode the game is kept square (default 1600Ã—1600), which gives
+- **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
   more view top to bottom and a sharper headset image. It may be bigger than the monitor.
 - **Floating screen** (theater) mode as an alternative to stereo.
-- **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100Â°): the campaign
-  renders a fixed 55Â° whatever the menu says, which in a headset looks like a square window. The
+- **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100°): the campaign
+  renders a fixed 55° whatever the menu says, which in a headset looks like a square window. The
   mod widens the render, cull and first-person views each frame, and rescales the gun and arms'
   projection where it is uploaded to the graphics card, so they keep their real size. The
   headset image is shown at the same angle, so the world stays life-size.
@@ -53,6 +53,12 @@ If the picture looks wrong:
   operation fails the mission).
 - **Bodies stay** (`[world] corpse_seconds`, 600 here; 0 = the game's own 15 s): raises how long
   dead soldiers lie before the game removes them (tested: none of 12 removed in 3 minutes).
+- **Magazine eject** (X, the campaign's M16-type rifle): a tap drops the magazine out of the gun; it
+  falls, tumbling, and vanishes at the floor. Its rounds go back to the spare ones and one stays
+  in the chamber. A second tap puts a new magazine in; holding X is the game's own reload. The gun
+  doesn't fire with the magazine out or one round left (run dry, the game would reload by
+  itself). With any other gun, a tap is the game's reload. The ammo is the count in the game's own
+  server, which decides firing.
 
 Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
@@ -102,15 +108,20 @@ runtime path, which a 32-bit game can't load.
 | Left stick / click | Move / sprint |
 | Right stick | Turn |
 | A / B | Jump / crouch |
-| X / Y | Reload / use |
+| X | Magazine: tap to eject / insert, hold to reload |
+| Y | Use |
 | Right grip | Grenade |
+
+On the Steam Frame, A, B, X and Y are all on the right controller; the mod uses SteamVR's own
+Frame controller profile (`XR_VALVE_frame_controller_interaction`). On Touch-style controllers X
+and Y are on the left.
 
 | Key | Action |
 |---|---|
 | F8 | Switch floating screen / stereo |
 | F9 | Recenter |
 | Delete | Wide field of view on / off (saved) |
-| Page Up / Page Down | With the wide view on: its angle, 5Â° a step. Otherwise: zoom of the headset image |
+| Page Up / Page Down | With the wide view on: its angle, 5° a step. Otherwise: zoom of the headset image |
 | F1 | Flip which way the gun model follows the hand |
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
@@ -122,6 +133,11 @@ runtime path, which a 32-bit game can't load.
 
 `build\hands.txt`: gloves palette numbers ("0-23" left hand, "24-54" right hand, or "all") and
 "shift x y z" in metres. On foot the bones' axes are x right, y up, z back towards you.
+
+`build\weapon.txt` (research on the rifle's three draws): "4 shift 0 -0.3 0" moves bones of the
+colour pass ("hide" instead of the shift hides them), "pass 1: 0" / "pass 2: 4-5" names the bones
+of its other draws (the magazine's rounds, the depth pass), "watch" logs which bones move, "dump"
+writes the gun's mesh to `build\gun_*.bin` once, "floor 0.05" sets where a dropped magazine stops.
 
 ### Depth 3D tuning: `build\depth3d.txt`
 
@@ -158,13 +174,18 @@ Finders and tests (needed once per setup; see the log for results):
 
 `tools/selfcheck.ps1` confirms from the log, after a launch, that the hooks, OpenXR session, wide
 view, god mode, bodies and the 3D's depth buffer all came up.
+`tools/weapontest.ps1` tries weapon.txt settings in turn and puts the game's own picture for each
+side by side (saved by the mod, so no screenshot shows an old frame).
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
-sent by virtual-key code alone) and takes screenshots while BF3 is in front; `tools/say.ps1`
+sent by virtual-key code alone; `-Action fire` holds the mouse button across frames, `f16` is
+the magazine button) and takes screenshots while BF3 is in front; `tools/say.ps1`
 reads test instructions aloud. Memory tools for campaign research, run with the 32-bit
 PowerShell: `peek.ps1`/`peekabs.ps1` (read), `poke.ps1`/`pokeabs.ps1` (write, refusing unless the
 expected value is there), `watch.ps1`/`watchabs.ps1`/`treewatch.ps1`/`treediff.ps1` (watch values
 change), `findref.ps1`/`findtext.ps1`/`findfloat.ps1` (search), `fields.ps1`/`owner.ps1` (read
-BF3's own type tables), `soldiers.ps1`/`corpses.ps1` (the server's soldiers and their bodies).
+BF3's own type tables), `soldiers.ps1`/`corpses.ps1` (the server's soldiers and their bodies),
+`findints.ps1`/`pokeint.ps1` (find and set whole numbers such as the ammo), `pathto.ps1` (pointer
+paths from an object to an address).
 
 `CAMERA_GUIDE.md` describes finding the camera by hand with Cheat Engine instead.
 
@@ -185,4 +206,6 @@ BF3's own type tables), `soldiers.ps1`/`corpses.ps1` (the server's soldiers and 
   and its depth in a pixel shader.
 - `src/god.cpp`: keeps the health of the server's and the client's copy of the player's soldier.
 - `src/bodies.cpp`: keeps dead soldiers' bodies longer.
+- `src/ammo.cpp`: reads and sets the server's ammo count for the magazine eject (`skin.cpp` draws
+  the magazine falling).
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.

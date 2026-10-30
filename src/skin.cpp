@@ -886,7 +886,10 @@ constexpr float kMagMin[3] = {-0.011f, -0.304f, 0.038f}, kMagMax[3] = {0.011f, -
 constexpr float kGravity = 9.81f;
 constexpr float kEjectSpeed = 0.8f;  // m/s out of the magazine well
 constexpr float kSpin = 4.0f;        // rad/s, end over end
-constexpr double kLieSeconds = 8.0;  // on the floor before it goes
+// On the floor before it goes. Lying there it followed the player around (tested 2026-10-30): the
+// body's space isn't anchored to the world the way UpdateDrop assumes. Until it is, it vanishes as
+// it lands.
+constexpr double kLieSeconds = 0.0;
 
 std::atomic<bool> g_magOut{false};       // hidden in the gun
 std::atomic<bool> g_dropShown{false};    // the dropped one is drawn
