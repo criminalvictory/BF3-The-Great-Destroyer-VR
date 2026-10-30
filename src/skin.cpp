@@ -110,6 +110,10 @@ std::mutex g_mutex;
 std::map<Signature, Seen> g_seen;
 std::map<Cell, UINT> g_cells;
 std::atomic<bool> g_lift{false};
+// Research hooks: bone searches in every upload, ring-buffer comparisons, draw counting for the
+// hunt. They ran on every graphics call and cost frame rate (the game went from about 87 to 45
+// fps while they grew), so they run only while research is on (Pause, or F15 / Insert research).
+std::atomic<bool> g_research{false};
 // Camera position and axes (right, up, true forward), written on the render thread.
 float g_camera[3] = {};
 float g_axes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -184,6 +188,76 @@ struct Upload {
 std::atomic<UINT> g_shifted{0}, g_noCopy{0}, g_noSlot{0}, g_notSkinned{0};
 
 thread_local Upload t_upload;
+
+// Bone selector, for working out which gloves bones belong to which hand: hands.txt next to the
+// DLL lists gloves palette numbers ("0-27, 40" or "all"); only those are shifted. Read by Probe.
+// Found with it (the user judging in the headset): bones 0-23 are the left hand, 24-54 the right;
+// each group lifts its hand whole, without stretching. Bone 23 alone moves nothing visible. The
+// second pass's black forearm lifts along with the right hand: its forearm hangs on hand bones.
+constexpr UINT kLeftHandBones[2] = {0, 23};
+constexpr UINT kRightHandBones[2] = {24, 54};
+std::mutex g_selMutex;
+bool g_selectAll = true;
+bool g_selected[64] = {};
+std::vector<float> g_selValues;  // the selected gloves bones' latest matrices, 12 floats each
+constexpr float kSameBone = 0.02f;
+
+bool MatchesSelected(const float* bone) {
+    for (size_t i = 0; i + 12 <= g_selValues.size(); i += 12) {
+        bool same = true;
+        for (int j = 0; j < 12 && same; ++j)
+            same = std::fabs(bone[j] - g_selValues[i + j]) < kSameBone;
+        if (same)
+            return true;
+    }
+    return false;
+}
+
+void ReadSelection() {
+    static FILETIME lastWrite{};
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadSelection), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"hands.txt");
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &info) ||
+        CompareFileTime(&info.ftLastWriteTime, &lastWrite) == 0)
+        return;
+    lastWrite = info.ftLastWriteTime;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f)
+        return;
+    char text[512] = {};
+    fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+
+    bool all = std::strstr(text, "all") != nullptr;
+    bool selected[64] = {};
+    for (const char* p = text; *p;) {
+        if (*p < '0' || *p > '9') {
+            ++p;
+            continue;
+        }
+        char* end = nullptr;
+        long a = std::strtol(p, &end, 10), b = a;
+        p = end;
+        if (*p == '-') {
+            b = std::strtol(p + 1, &end, 10);
+            p = end;
+        }
+        for (long k = a; k <= b && k < 64; ++k)
+            if (k >= 0)
+                selected[k] = true;
+    }
+    std::lock_guard lock(g_selMutex);
+    g_selectAll = all;
+    std::memcpy(g_selected, selected, sizeof(selected));
+    g_selValues.clear();
+    Log("Hands: selection now: %s", all ? "all bones" : text);
+}
 thread_local ID3D11Buffer* t_shiftBuffer = nullptr;  // this thread's stand-in for BF3's buffer
 thread_local UINT t_shiftSize = 0;
 
@@ -336,6 +410,84 @@ HRESULT Map(int which, ID3D11DeviceContext* ctx, ID3D11Resource* resource, UINT 
     return hr;
 }
 
+// ---- First-person FOV ----
+// With the render FOV widened (camera.cpp), the gun and arms were still drawn at the game's own
+// 55 degrees, shown life-size twice too big; writing the render object's first-person view
+// changed its matrices but not the gun. So the fix is made in what reaches the graphics card: in
+// every constant buffer upload, a matrix that projects with the game's own FOV is rescaled to the
+// wide one. Such a matrix (projection, or view times projection) has the x and y columns of its
+// rotation part scaled by 1/tan(FOV/2) and a unit w column; stored transposed, the same in rows.
+// Scaling those two columns (all four rows) by wide/game gives the wide projection exactly.
+std::atomic<float> g_gameScale{0.0f}, g_wideScale{0.0f};  // 1/tan(FOV/2); 0 = off
+// Matrices rescaled since the last log, by where they came from: a small buffer filled whole,
+// a ring buffer filled whole, or bytes appended to a ring buffer.
+enum UploadKind { kSmall, kRingWhole, kRingAppend, kUploadKinds };
+std::atomic<uint32_t> g_rescaled[kUploadKinds];
+
+bool Near(float a, float b) {
+    return std::fabs(a - b) < 0.002f * b;  // also rejects NaN
+}
+
+float Length3(float x, float y, float z) {
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+std::atomic<int64_t> g_rescaleTicks{0};  // time spent scanning, for the log
+// Uploads scanned and matched, by size in 256-byte steps (the last bucket: 16 KB and up).
+constexpr int kSizeBuckets = 65;
+std::atomic<uint32_t> g_scannedBySize[kSizeBuckets], g_matchedBySize[kSizeBuckets];
+
+int SizeBucket(UINT size) {
+    return std::min(static_cast<int>(size / 256), kSizeBuckets - 1);
+}
+// Scanning every upload cost about 2 ms a frame (85,000 uploads a second), most of them sizes that
+// never held a match (the 4 KB bone blocks, 1-1.5 KB blocks). So only sizes that have matched
+// are scanned, plus everything for one frame every two seconds, which finds new ones.
+std::atomic<bool> g_sizeMatched[kSizeBuckets];
+std::atomic<bool> g_scanAll{true};
+
+void RescaleProjections(uint8_t* data, UINT size, UploadKind kind) {
+    float game = g_gameScale.load(std::memory_order_relaxed), wide = g_wideScale.load(std::memory_order_relaxed);
+    if (!(game > 0.0f && wide > 0.0f) || Near(wide, game))
+        return;
+    int bucket = SizeBucket(size);
+    if (!g_sizeMatched[bucket].load(std::memory_order_relaxed) && !g_scanAll.load(std::memory_order_relaxed))
+        return;
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_scannedBySize[bucket].fetch_add(1, std::memory_order_relaxed);
+    float k = wide / game;
+    // Runs on every constant buffer upload, thousands a frame: squared lengths first, and only
+    // a near match pays for the rest.
+    float lo = game * game * 0.995f, hi = game * game * 1.005f;
+    auto f = reinterpret_cast<float*>(data);
+    UINT count = size / 4;
+    for (UINT i = 0; i + 16 <= count; i += 4) {  // a matrix starts at any 16-byte register
+        float* m = f + i;
+        float column = m[0] * m[0] + m[4] * m[4] + m[8] * m[8];
+        float row = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+        if (!(column > lo && column < hi) && !(row > lo && row < hi))
+            continue;
+        if (Near(Length3(m[0], m[4], m[8]), game) && Near(Length3(m[1], m[5], m[9]), game) &&
+            Near(Length3(m[3], m[7], m[11]), 1.0f)) {
+            for (int r = 0; r < 4; ++r)
+                m[4 * r] *= k, m[4 * r + 1] *= k;
+        } else if (Near(Length3(m[0], m[1], m[2]), game) && Near(Length3(m[4], m[5], m[6]), game) &&
+                   Near(Length3(m[12], m[13], m[14]), 1.0f)) {
+            for (int c = 0; c < 4; ++c)
+                m[c] *= k, m[4 + c] *= k;
+        } else {
+            continue;
+        }
+        g_rescaled[kind].fetch_add(1, std::memory_order_relaxed);
+        g_matchedBySize[bucket].fetch_add(1, std::memory_order_relaxed);
+        g_sizeMatched[bucket].store(true, std::memory_order_relaxed);
+        i += 12;  // past this matrix
+    }
+    QueryPerformanceCounter(&t1);
+    g_rescaleTicks.fetch_add(t1.QuadPart - t0.QuadPart, std::memory_order_relaxed);
+}
+
 // Ring buffers: big constant buffers BF3 appends to with WRITE_NO_OVERWRITE between DISCARDs.
 // Earlier parts may already be in use by the GPU, so only what was just written may be touched.
 // A shadow copy of each ring buffer shows which bytes changed since the last upload.
@@ -359,9 +511,12 @@ bool ChangedRange(const uint8_t* data, const std::vector<uint8_t>& shadow, UINT 
 
 void HandleUpload(const PendingMap& p) {
     auto data = static_cast<uint8_t*>(p.data);
+    bool research = g_research.load(std::memory_order_relaxed);
     if (p.size < kMinRingSize) {
         if (p.fresh) {
-            Inspect(data, p.size, true);
+            RescaleProjections(data, p.size, kSmall);
+            if (research)
+                Inspect(data, p.size, true);
             // Every upload the gloves' size, not only those whose bones all passed as matrices:
             // only a third did (scaled bones break the row).
             if (g_handShift.load(std::memory_order_relaxed) && p.size == kGloveUploadSize) {
@@ -374,19 +529,29 @@ void HandleUpload(const PendingMap& p) {
         }
         return;
     }
-    std::lock_guard lock(g_shadowMutex);
-    std::vector<uint8_t>& shadow = g_shadows[p.resource];
     if (p.resource == t_upload.resource)
         t_upload.resource = nullptr;
-    if (p.fresh || shadow.size() != p.size) {
+    // Finding what was appended to a ring buffer means comparing all of it with a shadow copy on
+    // every upload: only research needs that.
+    if (!research) {
         if (p.fresh)
+            RescaleProjections(data, p.size, kRingWhole);
+        return;
+    }
+    std::lock_guard lock(g_shadowMutex);
+    std::vector<uint8_t>& shadow = g_shadows[p.resource];
+    if (p.fresh || shadow.size() != p.size) {
+        if (p.fresh) {
+            RescaleProjections(data, p.size, kRingWhole);
             Inspect(data, p.size, true);
+        }
         shadow.assign(data, data + p.size);
         return;
     }
     UINT begin = 0, end = 0;
     if (!ChangedRange(data, shadow, p.size, begin, end))
         return;
+    RescaleProjections(data + begin, end - begin, kRingAppend);
     Inspect(data + begin, end - begin, false);
     std::memcpy(shadow.data() + begin, data + begin, end - begin);  // including any lift
 }
@@ -447,8 +612,22 @@ bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
     std::memcpy(m, u.bytes.data(), size);
     // The bones start at the front of the buffer. (They pass as matrices only some of the time,
     // scaled bones break the row, so the count comes from the hunt instead.)
-    for (UINT k = 0; k < bones && k * 12 + 12 <= size / 4; ++k)
-        m[k * 12 + 7] += kHandShift;  // vertical translation (y is up in character space)
+    // Only the selected bones (hands.txt). The gloves' palette is numbered as the selection is; the
+    // second pass has a palette of its own, so its bones are picked by matching the selected
+    // gloves bones' values (the same bone has the same matrix in both).
+    bool gloves = bones == kHandDraws[0].bones;
+    std::lock_guard lock(g_selMutex);
+    if (gloves)
+        g_selValues.clear();
+    for (UINT k = 0; k < bones && k * 12 + 12 <= size / 4; ++k) {
+        float* bone = m + k * 12;
+        bool selected = g_selectAll || (gloves ? k < 64 && g_selected[k] : MatchesSelected(bone));
+        if (!selected)
+            continue;
+        if (gloves && !g_selectAll)
+            g_selValues.insert(g_selValues.end(), bone, bone + 12);
+        bone[7] += kHandShift;  // vertical translation (y is up in character space)
+    }
     g_origUnmap[which](ctx, t_shiftBuffer, 0);
 
     ctx->VSSetConstantBuffers(slot, 1, &t_shiftBuffer);
@@ -460,6 +639,17 @@ bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
 }
 
 void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
+    if (!g_research.load(std::memory_order_relaxed)) {
+        // Only the hands' own draws matter: a couple of comparisons, no lock.
+        if (g_handShift.load(std::memory_order_relaxed)) {
+            DrawKey key{count, start, base};
+            for (const HandDraw& h : kHandDraws)
+                if (h.key == key && DrawShifted(which, ctx, count, start, base, h.bones))
+                    return;
+        }
+        g_origDrawIndexed[which](ctx, count, start, base);
+        return;
+    }
     bool skinned = t_drawsSinceBones < kSkinnedWithin;
     ++t_drawsSinceBones;
     if (skinned) {
@@ -572,6 +762,11 @@ bool InstallHooks(void* const (&map)[2], void* const (&unmap)[2], void* const (&
 }
 
 void HuntStart() {
+    // The hunt picks from the skinned draws counted while research is on.
+    if (!g_research.exchange(true)) {
+        Log("Draw hunt: research turned on to count skinned draws; press F15 again in a few seconds");
+        return;
+    }
     std::lock_guard lock(g_drawMutex);
     // Pressed during a hunt: stop it and show everything again, for a clean reference picture.
     if (g_hidden.load()) {
@@ -624,11 +819,37 @@ void HuntAnswer(bool vanished) {
 }
 
 void Probe() {
-    static ULONGLONG lastLog = 0;
+    static ULONGLONG lastLog = 0, lastRead = 0, lastFullScan = 0;
     ULONGLONG now = GetTickCount64();
+    if (now - lastRead >= 300) {
+        lastRead = now;
+        ReadSelection();
+    }
+    // Every upload size is scanned for one frame (this call to the next) every two seconds.
+    bool scanAll = now - lastFullScan >= 2000;
+    if (scanAll)
+        lastFullScan = now;
+    g_scanAll.store(scanAll, std::memory_order_relaxed);
     if (now - lastLog < 1000)
         return;
     lastLog = now;
+    if (g_wideScale.load() > 0.0f) {
+        LARGE_INTEGER frequency;
+        QueryPerformanceFrequency(&frequency);
+        Log("First-person FOV: matrices rescaled from the game's FOV in the last second: %u in small buffers, %u in "
+            "whole ring buffers, %u appended to ring buffers; scanning took %.1f ms",
+            g_rescaled[kSmall].exchange(0), g_rescaled[kRingWhole].exchange(0), g_rescaled[kRingAppend].exchange(0),
+            1000.0 * static_cast<double>(g_rescaleTicks.exchange(0)) / static_cast<double>(frequency.QuadPart));
+        char sizes[512] = {};
+        int used = 0;
+        for (int b = 0; b < kSizeBuckets && used < 480; ++b) {
+            uint32_t scanned = g_scannedBySize[b].exchange(0), matched = g_matchedBySize[b].exchange(0);
+            if (scanned >= 100 || matched)
+                used += snprintf(sizes + used, sizeof(sizes) - used, " %u-%uB: %u scanned %u matched;", b * 256,
+                                 b * 256 + 255, scanned, matched);
+        }
+        Log("First-person FOV: uploads by size:%s", sizes);
+    }
     if (g_handShift.load())
         Log("Hands: last second's gloves draws: %u shifted, %u without a fresh copy, %u with the buffer not bound, "
             "%u with no bone upload just before",
@@ -650,6 +871,12 @@ void Probe() {
         b.first[8], b.first[9], b.first[10], b.first[11]);
 }
 
+void SetProjectionFix(float gameFov, float wideFov) {
+    bool on = gameFov > 0.0f && wideFov > 0.0f;
+    g_gameScale = on ? 1.0f / std::tan(gameFov / 2) : 0.0f;
+    g_wideScale = on ? 1.0f / std::tan(wideFov / 2) : 0.0f;
+}
+
 void ToggleHandShift() {
     bool on = !g_handShift.load();
     g_handShift = on;
@@ -667,9 +894,17 @@ void SetCamera(const float* position, const float* right, const float* up, const
     }
 }
 
+void ToggleResearch() {
+    bool on = !g_research.load();
+    g_research = on;
+    Log("Skin: research hooks %s", on ? "on (bone searches, ring-buffer comparisons, draw counting)" : "off");
+}
+
 void ToggleLift() {
     bool lift = !g_lift.load();
     g_lift = lift;
+    if (lift)
+        g_research = true;  // the lift happens in the bone search
     {
         std::lock_guard lock(g_mutex);
         LogSeen();

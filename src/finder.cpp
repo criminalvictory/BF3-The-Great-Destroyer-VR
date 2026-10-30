@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <vector>
 
 #include "camera.h"
@@ -1410,18 +1411,59 @@ void HealthSecondStep() {
         Beep(1000, 80), Sleep(60);
 }
 
+// Several values follow the player's health: the game's own and copies made from it (the screen's,
+// for one). Keeping the first few kept only copies, an array 8 bytes apart, and the player still
+// died. Writing the game's own value shows which it is: the copies follow it within a moment,
+// while writing a copy changes nothing else. Sorts the candidates by how many followed.
+std::vector<uintptr_t> RankBySource(const std::vector<uintptr_t>& candidates) {
+    constexpr float kTest = 50.0f;
+    std::vector<std::pair<int, uintptr_t>> ranked;
+    for (uintptr_t address : candidates) {
+        float v = 0.0f;
+        if (!camera::SafeRead(address, &v, sizeof(v)) || v != kFullHealth || !SafeWriteFloat(address, kTest))
+            continue;
+        Sleep(400);
+        int followed = 0;
+        for (uintptr_t other : candidates) {
+            float w = 0.0f;
+            if (other != address && camera::SafeRead(other, &w, sizeof(w)) && std::fabs(w - kTest) < 1.0f)
+                ++followed;
+        }
+        Log("Health finder: writing %08X moved %d other copies", static_cast<unsigned>(address), followed);
+        ranked.push_back({followed, address});
+        // Back to full; the copies catch up from the game's own value.
+        for (uintptr_t other : candidates) {
+            float w = 0.0f;
+            if (camera::SafeRead(other, &w, sizeof(w)) && w > 0.0f && w < kFullHealth)
+                SafeWriteFloat(other, kFullHealth);
+        }
+        Sleep(300);
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<uintptr_t> out;
+    for (const auto& [followed, address] : ranked)
+        out.push_back(address);
+    return out;
+}
+
 void HealthThirdStep() {
     SkipOwnMemory();
     size_t kept = HealthFilter([](float v) { return v == kFullHealth; });
     Log("Health finder: %zu went 100 -> lower -> 100", kept);
-    std::vector<Candidate> found;
+    std::vector<uintptr_t> candidates;
     for (uintptr_t address : *g_healthCandidates) {
+        if (candidates.size() == 64)
+            break;
+        candidates.push_back(address);
+        Log("Health finder: health at %08X", static_cast<unsigned>(address));
+    }
+    std::vector<Candidate> found;
+    for (uintptr_t address : RankBySource(candidates)) {
         if (found.size() == config::kMaxCameras)
             break;
         Candidate c{};
         c.address = address;
         found.push_back(c);
-        Log("Health finder: health at %08X", static_cast<unsigned>(address));
     }
     delete g_healthCandidates;
     g_healthCandidates = nullptr;
@@ -1463,6 +1505,84 @@ void HealthThirdStep() {
     config::SetGod(god);
     Log("Health finder: saved %zu pointers; god mode on (End toggles it)", god.health.size());
     BeepSuccess();
+}
+
+// The three steps without anyone at the keys (F16): scans at full health, waits for the moment
+// several candidates drop below 100 together (the player was hit: their health and its copies),
+// keeps those, waits for them to refill, then finishes as the third step does.
+void RunHealthAuto() {
+    HealthFirstScan();
+    if (g_healthStep.load() != 1 || !g_healthCandidates)
+        return;
+    Block<uintptr_t>& c = *g_healthCandidates;
+    std::vector<uint8_t> wasFull(c.size, 1);
+    std::vector<uintptr_t> hit;
+    // A hit: values that just left 100 all for the same number (the player's health and its
+    // copies), still together and below 100 three seconds later: BF3 waits several seconds after
+    // a hit before health refills. Earlier tries took any values that dropped together (noise half
+    // a second after the scan) and then a group that went 100 -> 30 -> 100 within two seconds.
+    for (int poll = 0; poll < 1200 && hit.empty(); ++poll) {  // up to about 3 minutes
+        Sleep(150);
+        std::map<long, std::vector<uintptr_t>> byValue;
+        for (size_t i = 0; i < c.size; ++i) {
+            float v = 0.0f;
+            bool readable = camera::SafeRead(c.data[i], &v, sizeof(v));
+            if (wasFull[i] && readable && v >= 1.0f && v < kFullHealth - 0.5f)
+                byValue[std::lround(v * 100.0f)].push_back(c.data[i]);
+            wasFull[i] = readable && v == kFullHealth;
+        }
+        // The player's health had 15 copies in the first, manual run; counters and timers that
+        // pass 100 come in twos and threes.
+        for (const auto& [key, group] : byValue) {
+            if (group.size() < 4 || group.size() > 64)
+                continue;
+            auto stillTogether = [&group]() {
+                float first = -1.0f;
+                for (uintptr_t address : group) {
+                    float v = 0.0f;
+                    if (!camera::SafeRead(address, &v, sizeof(v)) || !(v > 0.0f && v < kFullHealth) ||
+                        (first >= 0.0f && std::fabs(v - first) > 0.01f))
+                        return false;
+                    first = v;
+                }
+                return true;
+            };
+            Sleep(1000);
+            bool together = stillTogether();
+            if (together) {
+                Sleep(2000);
+                together = stillTogether();
+            }
+            Log("Health finder (auto): %zu values dropped to %.2f; %s", group.size(), key / 100.0f,
+                together ? "still together and low three seconds later" : "noise");
+            if (together) {
+                hit = group;
+                break;
+            }
+        }
+    }
+    if (hit.empty()) {
+        Log("Health finder (auto): no hit seen; nothing changed");
+        g_healthStep = 0;
+        BeepFailure();
+        return;
+    }
+    Log("Health finder (auto): %zu values dropped together; waiting for them to refill", hit.size());
+    c.size = 0;
+    for (uintptr_t address : hit)
+        c.Push(address);
+    for (int poll = 0; poll < 600; ++poll) {  // up to about 90 seconds
+        Sleep(150);
+        size_t full = 0;
+        for (uintptr_t address : hit) {
+            float v = 0.0f;
+            full += camera::SafeRead(address, &v, sizeof(v)) && v == kFullHealth;
+        }
+        if (full * 2 > hit.size())
+            break;
+    }
+    g_healthStep = 2;
+    HealthThirdStep();
 }
 
 void RunHealthStep() {
@@ -1524,6 +1644,10 @@ void FovStep() {
 
 bool FovFinderActive() {
     return g_fovStep.load() != 0;
+}
+
+void HealthAuto() {
+    StartJob(RunHealthAuto);
 }
 
 void HealthStep() {

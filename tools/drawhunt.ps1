@@ -5,10 +5,16 @@
 #   -Action shot      : just take a screenshot
 #   -Action flip      : F1, gun follows hand on/off (off keeps the arms centred in view)
 #   -Action insert    : Insert, hand shift on/off
+#   -Action delete    : Delete, wider render FOV on/off; pageup / pagedown change it
 # Only sends input while BF3's window is in front.
+#   -Action click -X x -Y y : left click at a point of the game window (full-size pixels)
+#   -Action enter     : Enter
+# A minimized game window is restored first.
 param(
-    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert')] [string]$Action,
-    [string]$Name = 'hunt'
+    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'pause', 'scroll', 'end')] [string]$Action,
+    [string]$Name = 'hunt',
+    [int]$X = 0,
+    [int]$Y = 0
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -21,7 +27,18 @@ Add-Type -Namespace DrawHunt -Name U -MemberDefinition @'
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
 [DllImport("user32.dll")] public static extern bool GetClientRect(System.IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern bool PrintWindow(System.IntPtr h, System.IntPtr dc, uint f);
+[DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr h);
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int cmd);
+[DllImport("user32.dll")] public static extern bool ClientToScreen(System.IntPtr h, ref POINT p);
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
 public struct RECT { public int L, T, R, B; }
+public struct POINT { public int X, Y; }
+public static void Click() {
+    var i = new INPUT[2];
+    i[0].type = 0; i[0].mi.dwFlags = 0x0002;  // left down
+    i[1].type = 0; i[1].mi.dwFlags = 0x0004;  // left up
+    SendInput(2, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+}
 public static void Key(ushort vk, bool down) {
     var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = down ? 0u : 0x2u;
     SendInput(1, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
@@ -30,16 +47,29 @@ public static void Key(ushort vk, bool down) {
 
 $game = Get-Process bf3 -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $game) { Write-Host 'BF3 is not running.'; exit 1 }
+if ([DrawHunt.U]::IsIconic($game.MainWindowHandle)) {
+    [void][DrawHunt.U]::ShowWindow($game.MainWindowHandle, 9)  # SW_RESTORE
+    Start-Sleep -Milliseconds 800
+}
 [void](New-Object -ComObject WScript.Shell).AppActivate($game.Id)
 Start-Sleep -Milliseconds 300
 $procId = [uint32]0
 [void][DrawHunt.U]::GetWindowThreadProcessId([DrawHunt.U]::GetForegroundWindow(), [ref]$procId)
 if ($procId -ne $game.Id) { Write-Host 'BF3 is not the focused window: no input sent.'; exit 2 }
 
-$keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D }
+$keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; pause = 0x13; scroll = 0x91; end = 0x23 }
 if ($keys.ContainsKey($Action)) {
     [DrawHunt.U]::Key($keys[$Action], $true); Start-Sleep -Milliseconds 120; [DrawHunt.U]::Key($keys[$Action], $false)
     Start-Sleep -Milliseconds 1200
+}
+if ($Action -eq 'click') {
+    $pt = New-Object DrawHunt.U+POINT
+    $pt.X = $X; $pt.Y = $Y
+    [void][DrawHunt.U]::ClientToScreen($game.MainWindowHandle, [ref]$pt)
+    [void][DrawHunt.U]::SetCursorPos($pt.X, $pt.Y)
+    Start-Sleep -Milliseconds 150
+    [DrawHunt.U]::Click()
+    Start-Sleep -Milliseconds 1500
 }
 
 $hwnd = $game.MainWindowHandle

@@ -23,6 +23,7 @@
 
 namespace {
 
+constexpr float kPi = 3.14159265f;
 constexpr uintptr_t kWatchOffset = 0x34;  // translation.y
 constexpr int kSlots = 4;                 // x86 debug registers Dr0..Dr3
 constexpr int kMaxWriters = 8;
@@ -31,14 +32,69 @@ constexpr int kMaxWriters = 8;
 // view is turned; the others hold render cameras, which get the eye shift.
 constexpr int kWeaponSlot = kSlots - 1;
 
-// Transform start per debug register, 0 = unused. The exception handler reads these.
+// Slot 2 holds the cull camera (the copy BF3 decides what to draw from), or while hunting for
+// it, the candidate being tried. It gets the same head turn as the render cameras in slots 0-1.
+constexpr int kCullSlot = 2;
+
+// Transform start per debug register, 0 = unused, and where in its block the breakpoint sits
+// (relative to the transform). The exception handler reads these.
 std::atomic<uintptr_t> g_slots[kSlots];
+std::atomic<uintptr_t> g_slotOffsets[kSlots];
 std::atomic<float> g_eyeOffset{0.0f};
 std::atomic<uintptr_t> g_weaponAddress{0};
 std::atomic<bool> g_gunFlip{false};
 std::atomic<uint32_t> g_hits{0};
 std::atomic<uintptr_t> g_writers[kMaxWriters];
 int g_writersLogged = 0;
+
+// ---- Render FOV ----
+// BF3's render view (the object the render cameras live in: transform at +0x30, FOV in radians
+// at +0x78 and +0x7C, near and far at +0x80, aspect at +0x88, projection matrix at +0x2F0) is
+// rebuilt every frame. Its FOV comes from the game camera's view at bf3.exe+1F8B480 (same
+// layout), itself rewritten every frame: a write test found that changing bf3.exe+1F8B4F8 changes
+// the render view's FOV. The campaign renders 55 degrees whatever the menu says.
+constexpr uintptr_t kFovSource = 0x1F8B4F8;    // bf3.exe offset
+constexpr uintptr_t kFovFromTransform = 0x48;  // a view's FOV pair, relative to its transform
+constexpr uintptr_t kProjectionFromTransform = 0x2C0;
+std::atomic<float> g_renderFov{0.0f};          // radians, 0 = the game's own
+uintptr_t g_fovSource = 0;                     // absolute, set by StartWatch
+// A breakpoint on the source never fired (its writer may be a thread hidden from debug
+// registers), and the source code is wrapped on disk. The render and cull views, though, are
+// filled by one block copy each frame, transform first, FOV after. With the wider view on, their
+// breakpoints watch the near plane just past the FOV instead of the height, so they fire once
+// both are in place: the turn, eye shift and FOV are all written after the copy.
+constexpr uintptr_t kNearFromTransform = 0x50;
+std::atomic<uint32_t> g_slotHits[kSlots];
+// Main render camera writes since xr_runtime last asked: one per game frame, if every frame
+// shown is built exactly once between two Presents (which the alternate-eye scheme assumes).
+std::atomic<uint32_t> g_cameraBuilds{0};
+// The render cameras' object holds three such views: the main one (+0x0, its transform is render
+// camera 1 at +0x30), the cull view (+0x480) and the first-person view (+0x900), which draws the
+// gun and arms. Widening only the main view left the gun at 55 degrees: shown life-size, about
+// twice too big. Its FOV pair is written from every camera breakpoint, so whichever fires after
+// the game has filled that view in makes it stick. That changed the view's own matrices but not
+// the gun, which is drawn from a 55-degree projection made elsewhere; skin.cpp rescales that one
+// where it is uploaded to the graphics card.
+constexpr uintptr_t kMainTransform = 0x30;
+constexpr uintptr_t kFirstPersonView = 0x900;
+// The block holding a render view's transform, relative to the transform.
+constexpr uintptr_t kViewFromTransform = 0x30;
+
+// Where in a slot's block the breakpoint sits, relative to the transform.
+uintptr_t WatchOffset(int slot, bool fov) {
+    return fov && (slot == 0 || slot == kCullSlot) ? kNearFromTransform : kWatchOffset;
+}
+
+bool LooksLikeFov(float v) {
+    return v > 0.2f && v < 2.8f;  // radians; also rejects NaN
+}
+
+// A view's FOV pair, only where it looks like one.
+void WriteFov(uintptr_t address, float fov) {
+    auto f = reinterpret_cast<float*>(address);
+    if (LooksLikeFov(f[0]) && LooksLikeFov(f[1]))
+        f[0] = f[1] = fov;
+}
 
 // View turn for the handler: written into the inactive buffer, then published by flipping the index.
 struct ViewTurnState {
@@ -47,10 +103,6 @@ struct ViewTurnState {
 };
 ViewTurnState g_view[2] = {};
 std::atomic<int> g_viewIndex{0};
-
-// Slot 2 holds the cull camera (the copy BF3 decides what to draw from), or while hunting for
-// it, the candidate being tried. It gets the same head turn as the render cameras in slots 0-1.
-constexpr int kCullSlot = 2;
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -144,6 +196,19 @@ void QuatRotate(const float* q, const float* v, float* out) {
 void ViewTurnLocal(const float* m, const camera::ViewTurn& turn, float* local) {
     float pitch = std::asin(std::clamp(-m[9], -1.0f, 1.0f));  // true forward = -row2
     float yaw = turn.controllerYaw;
+    if (turn.haveLook) {
+        // The look yaw this camera was built from, by BF3's own formula (the angle finder found
+        // atan2(x, -z) of row 2), against the one written this frame: the difference is how far
+        // the hand has turned since, so the hand's turn in this camera needs no lag guess. A
+        // fixed frame lag (view_lag) was a frame too short or too long at a lower frame rate:
+        // the picture swayed against or with the hand.
+        float behind = std::atan2(m[8], -m[10]) - turn.lookYaw;
+        if (behind > kPi)
+            behind -= 2 * kPi;
+        if (behind < -kPi)
+            behind += 2 * kPi;
+        yaw = turn.currentYaw + turn.lookSign * behind;
+    }
     float qYaw[4] = {0.0f, std::sin(yaw / 2), 0.0f, std::cos(yaw / 2)};
     float qPitch[4] = {std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
     float aim[4];
@@ -192,7 +257,8 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
         if (!(c->Dr6 & (1u << i)))
             continue;
         uintptr_t watched = g_slots[i].load(std::memory_order_relaxed);
-        if (!watched || DebugRegister(c, i) != watched + kWatchOffset) {
+        uintptr_t watchOffset = g_slotOffsets[i].load(std::memory_order_relaxed);
+        if (!watched || DebugRegister(c, i) != watched + watchOffset) {
             // Left over from a camera address that is no longer current: disarm it in this thread.
             c->Dr7 &= ~EnableBits(i);
             continue;
@@ -203,11 +269,26 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
         RecordWriter(c->Eip);
 #endif
         g_hits.fetch_add(1, std::memory_order_relaxed);
+        g_slotHits[i].fetch_add(1, std::memory_order_relaxed);
         auto m = reinterpret_cast<float*>(watched);
         // Only touch memory that holds a camera right now: BF3 reuses these blocks for other
         // data, and shifting anything else corrupts it.
         if (!IsCamera(m))
             continue;
+        if (i == 0)
+            g_cameraBuilds.fetch_add(1, std::memory_order_relaxed);
+        // Wider FOV: the render view's and the cull view's own pair, once the copy has put the
+        // game's there (the breakpoint then sits past it, on the near plane), and the
+        // first-person view's.
+        if (float fov = g_renderFov.load(std::memory_order_relaxed); fov > 0.0f && i != kWeaponSlot) {
+            if (watchOffset == kNearFromTransform)
+                WriteFov(watched + kFovFromTransform, fov);
+            if (uintptr_t main = g_slots[0].load(std::memory_order_relaxed)) {
+                uintptr_t firstPerson = main - kMainTransform + kFirstPersonView + kViewFromTransform;
+                if (IsCamera(reinterpret_cast<const float*>(firstPerson)))
+                    WriteFov(firstPerson + kFovFromTransform, fov);
+            }
+        }
         const ViewTurnState& view = g_view[g_viewIndex.load(std::memory_order_acquire)];
         float local[4];
         if (view.active)
@@ -234,8 +315,8 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-// Data breakpoints after any write to the 4 bytes at each target (0 = slot unused).
-bool ArmThread(DWORD threadId, const uintptr_t (&targets)[kSlots]) {
+// Data breakpoints after any write to the 4 bytes at each target plus its offset (0 = slot unused).
+bool ArmThread(DWORD threadId, const uintptr_t (&targets)[kSlots], const uintptr_t (&offsets)[kSlots]) {
     HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, threadId);
     if (!thread)
         return false;
@@ -246,7 +327,7 @@ bool ArmThread(DWORD threadId, const uintptr_t (&targets)[kSlots]) {
         if (GetThreadContext(thread, &c)) {
             for (int i = 0; i < kSlots; ++i) {
                 c.Dr7 &= ~EnableBits(i);
-                SetDebugRegister(&c, i, targets[i] ? targets[i] + kWatchOffset : 0);
+                SetDebugRegister(&c, i, targets[i] ? targets[i] + offsets[i] : 0);
                 if (targets[i])  // L_i, RW_i = write, LEN_i = 4 bytes
                     c.Dr7 |= (static_cast<uintptr_t>(1) << (2 * i)) | (static_cast<uintptr_t>(1) << (16 + 4 * i)) |
                              (static_cast<uintptr_t>(3) << (18 + 4 * i));
@@ -304,12 +385,15 @@ void DesiredSlots(uintptr_t (&out)[kSlots]) {
 // re-armed straight away when it moves, and new threads are picked up twice a second.
 DWORD WINAPI WatchThread(LPVOID) {
     std::vector<DWORD> armed;
-    uintptr_t current[kSlots] = {};
+    uintptr_t current[kSlots] = {}, currentOffsets[kSlots] = {};
     int missing[kSlots] = {};
     for (int tick = 0;; ++tick) {
         Sleep(50);
-        uintptr_t desired[kSlots];
+        uintptr_t desired[kSlots], offsets[kSlots];
         DesiredSlots(desired);
+        bool fov = g_renderFov.load() > 0.0f;
+        for (int i = 0; i < kSlots; ++i)
+            offsets[i] = WatchOffset(i, fov);
         // A camera block often fails validation for a moment while BF3 rewrites it. Keep the
         // breakpoint on it for up to a second rather than re-arming every thread each flicker;
         // the handler checks the block again before every write anyway.
@@ -320,15 +404,21 @@ DWORD WINAPI WatchThread(LPVOID) {
                 desired[i] = current[i];
             }
         }
-        bool moved = !std::equal(std::begin(desired), std::end(desired), std::begin(current));
+        bool moved = !std::equal(std::begin(desired), std::end(desired), std::begin(current)) ||
+                     !std::equal(std::begin(offsets), std::end(offsets), std::begin(currentOffsets));
         if (moved) {
             armed.clear();
             std::copy(std::begin(desired), std::end(desired), std::begin(current));
-            for (int i = 0; i < kSlots; ++i)
+            std::copy(std::begin(offsets), std::end(offsets), std::begin(currentOffsets));
+            // Address first and offset second could briefly pair a new address with an old
+            // breakpoint; the handler then just disarms that thread until it is re-armed below.
+            for (int i = 0; i < kSlots; ++i) {
                 g_slots[i] = desired[i];
-            Log("Camera watch: watching %08X %08X %08X %08X", static_cast<unsigned>(desired[0]),
+                g_slotOffsets[i] = offsets[i];
+            }
+            Log("Camera watch: watching %08X %08X %08X %08X%s", static_cast<unsigned>(desired[0]),
                 static_cast<unsigned>(desired[1]), static_cast<unsigned>(desired[2]),
-                static_cast<unsigned>(desired[3]));
+                static_cast<unsigned>(desired[3]), fov ? " (render and cull views past their FOV)" : "");
         }
         if (!moved && tick % 10 != 0)
             continue;
@@ -342,7 +432,7 @@ DWORD WINAPI WatchThread(LPVOID) {
             if (entry.th32OwnerProcessID != process || entry.th32ThreadID == self ||
                 std::find(armed.begin(), armed.end(), entry.th32ThreadID) != armed.end())
                 continue;
-            if (ArmThread(entry.th32ThreadID, current))
+            if (ArmThread(entry.th32ThreadID, current, currentOffsets))
                 armed.push_back(entry.th32ThreadID);
         }
         CloseHandle(snap);
@@ -364,6 +454,28 @@ void LogWatch() {
             break;
         Log("Camera watch: written by the instruction before bf3.exe+%X", static_cast<unsigned>(ip - base));
     }
+
+    Log("Camera watch: per slot %u %u %u %u", g_slotHits[0].exchange(0), g_slotHits[1].exchange(0),
+        g_slotHits[2].exchange(0), g_slotHits[3].exchange(0));
+    // What the game actually renders with: the render view's FOV and the one its projection
+    // matrix was built from (scale = 1 / tan(FOV / 2)).
+    constexpr float kDeg = 57.29578f;
+    auto fromScale = [](float scale) { return scale > 0.0f ? 2.0f * std::atan(1.0f / scale) * kDeg : 0.0f; };
+    float source = 0.0f, view[2] = {}, cull[2] = {}, scale = 0.0f, firstPerson[2] = {}, firstScale = 0.0f;
+    camera::SafeRead(g_fovSource, &source, sizeof(source));
+    if (uintptr_t render = g_slots[0].load()) {
+        camera::SafeRead(render + kFovFromTransform, view, sizeof(view));
+        camera::SafeRead(render + kProjectionFromTransform, &scale, sizeof(scale));
+        uintptr_t fp = render - kMainTransform + kFirstPersonView + kViewFromTransform;
+        camera::SafeRead(fp + kFovFromTransform, firstPerson, sizeof(firstPerson));
+        camera::SafeRead(fp + kProjectionFromTransform, &firstScale, sizeof(firstScale));
+    }
+    if (uintptr_t cullView = g_slots[kCullSlot].load())
+        camera::SafeRead(cullView + kFovFromTransform, cull, sizeof(cull));
+    Log("FOV: source %.1f, render view %.1f (its projection %.1f), cull view %.1f, first person %.1f (its "
+        "projection %.1f); wanted %.1f degrees",
+        source * kDeg, view[0] * kDeg, fromScale(scale), cull[0] * kDeg, firstPerson[0] * kDeg, fromScale(firstScale),
+        g_renderFov.load() * kDeg);
 }
 
 }
@@ -418,6 +530,7 @@ void Probe() {
 }
 
 void StartWatch() {
+    g_fovSource = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kFovSource;
     AddVectoredExceptionHandler(1, OnException);
     if (HANDLE t = CreateThread(nullptr, 0, WatchThread, nullptr, 0, nullptr))
         CloseHandle(t);
@@ -437,6 +550,19 @@ void SetViewTurn(const ViewTurn* turn) {
 
 void SetGunFlip(bool flip) {
     g_gunFlip = flip;
+}
+
+void SetRenderFov(float radians) {
+    g_renderFov = radians;
+}
+
+uint32_t TakeCameraBuilds() {
+    return g_cameraBuilds.exchange(0);
+}
+
+float SourceFov() {
+    float fov = 0.0f;
+    return g_fovSource && SafeRead(g_fovSource, &fov, sizeof(fov)) && LooksLikeFov(fov) ? fov : 0.0f;
 }
 
 void SetTestCopies(const std::vector<uintptr_t>& copies) {

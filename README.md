@@ -16,6 +16,11 @@ account banned. This project contains only its own code; it ships no EA files.
 - **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
   more view top to bottom and a sharper headset image. It may be bigger than the monitor.
 - **Floating screen** (theater) mode as an alternative to stereo.
+- **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100°): the campaign
+  renders a fixed 55° whatever the menu says, which in a headset looks like a square window. The
+  mod widens the render, cull and first-person views each frame, and rescales the gun and arms'
+  projection where it is uploaded to the graphics card, so they keep their real size. The
+  headset image is shown at the same angle, so the world stays life-size.
 - **Moving the hands** (work in progress, toward free hands and a shoulder holster): the gloves can
   be drawn moved away from the gun (Insert lifts them 20 cm as a test), without touching what BF3
   uploads.
@@ -30,6 +35,11 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
   what the hand moves inside the game. A higher frame rate reduces it.
 - The crosshair stays in the centre of the view.
 - God mode doesn't hold yet: the health value the finder picked isn't the one that counts.
+- Turning the head can show a slight double image, more at the wide field of view (lower frame
+  rate). Not from the eye order (one camera per frame, measured) or the pose timing (pose lag made
+  no difference); Scroll Lock cycles a mono and a frozen test to narrow it down.
+- With the wide view, the sleeve near the shoulder can look stretched: that part of BF3's arm
+  model is normally off screen.
 - With the hands test on, a small dark patch can stay where the left glove was (likely lighting
   or shadow).
 
@@ -73,13 +83,19 @@ runtime path, which a 32-bit game can't load.
 |---|---|
 | F8 | Switch floating screen / stereo |
 | F9 | Recenter |
-| Page Up / Page Down | Zoom of the headset image (make things life-size) |
+| Delete | Wide field of view on / off (saved) |
+| Page Up / Page Down | With the wide view on: its angle, 5° a step. Otherwise: zoom of the headset image |
 | F1 | Flip which way the gun model follows the hand |
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
-| F11 | Delay the picture's hand correction by 0-2 frames (if the view shakes as the arm moves) |
-| Insert | Hands test: draw the gloves 20 cm higher / normally |
+| F11 | How many frames old the head pose each eye image is shown with (0-3, default 1) |
+| Insert | Hands test: draw the gloves 20 cm higher / normally (bones chosen in `build\hands.txt`) |
 | End | God mode on / off (saved; needs the health finder first) |
+| Scroll Lock | Doubling test: normal / mono (same picture to both eyes) / frozen |
+| Pause | Skinning research hooks on / off (off by default: they cost frame rate) |
+
+The hand's turn is now read from each camera the game builds, so the picture no longer sways as
+the arm moves at any frame rate (the old fixed frame lag is only a fallback).
 
 Finders and tests (needed once per setup; see the log for results):
 

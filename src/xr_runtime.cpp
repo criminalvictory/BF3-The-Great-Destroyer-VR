@@ -73,10 +73,14 @@ bool g_eyeValid[2] = {};
 ID3D11Texture2D* g_mirror = nullptr;
 bool g_mirrorValid = false;
 
-// The pose the game camera was set to for each eye's upcoming frame. Submitting the image with
-// the pose it was really rendered for lets the compositor correct for the frame of latency.
-XrPosef g_renderPose[2] = {};
-bool g_renderPoseValid[2] = {};
+// The eye poses located at each of the last few frames, the newest at g_poseNewest. The game draws
+// each frame with the head pose its camera was handed some frames earlier; submitting the image
+// with that pose lets the compositor correct for the latency. One frame was assumed; the picture
+// doubling on head turns, more so at a lower frame rate, suggests more ([stereo] pose_lag, F11).
+constexpr int kPoseHistory = 4;
+XrPosef g_poseHistory[kPoseHistory][2] = {};
+int g_poseNewest = 0;
+int g_posesKept = 0;
 
 bool g_aimingWithHand = false;
 
@@ -92,11 +96,15 @@ void LookAngles(const XrQuaternionf& q, float& yaw, float& pitch) {
 // Also restarts head tracking, so a mode switch or recenter doesn't jerk the view.
 void ResetEyes() {
     g_eyeValid[0] = g_eyeValid[1] = false;
-    g_renderPoseValid[0] = g_renderPoseValid[1] = false;
+    g_posesKept = 0;
     aim::Reset();
 }
 // F7: the game may render a frame later than we think, which swaps the eyes and turns depth inside out.
 bool g_swapEyes = false;
+// Scroll Lock cycles a test for the picture doubling on head turns: normal, mono (every frame to
+// both eyes, no alternating), frozen (nothing new shown).
+enum StereoTest { kTestNone, kTestMono, kTestFreeze, kStereoTests };
+int g_stereoTest = kTestNone;
 // The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
 // angles written a frame or two earlier, so the view turn uses the yaw from that many frames
 // back ([controllers] view_lag, F11 cycles it); a mismatch shakes the picture as the arm moves.
@@ -469,11 +477,13 @@ void PollHotkeys() {
         g_swapEyes = !g_swapEyes;
         Log("Eyes %s", g_swapEyes ? "swapped" : "normal");
     }
+    // F11: how many frames old the head pose each eye image is submitted with (0-3). The view
+    // turn no longer needs its own lag (camera.cpp reads it from each camera), so F11 moved here.
     if (KeyPressed(VK_F11)) {
         config::Settings& s = config::Mutable();
-        s.viewLag = (s.viewLag + 1) % kYawHistory;
-        config::SaveViewLag();
-        Log("View turn lag %d frame%s", s.viewLag, s.viewLag == 1 ? "" : "s");
+        s.poseLag = (s.poseLag + 1) % kPoseHistory;
+        config::SavePoseLag();
+        Log("Pose lag %d frame%s", s.poseLag, s.poseLag == 1 ? "" : "s");
     }
     // F6: hunt for the cull camera (after F10); F5: save the copy being tried.
     if (KeyPressed(VK_F6))
@@ -488,21 +498,40 @@ void PollHotkeys() {
         Log("Gun direction %s", config::Get().gunFlip ? "flipped" : "normal");
     }
     camera::SetGunFlip(config::Get().gunFlip);
-    // Page Up / Page Down: tune the FOV the eye images are shown with until the world looks
-    // life-size. Showing an image over a wider angle than BF3 drew it stretches it, so a smaller
-    // value = less zoomed. Saved to bf3vr.ini.
+    // Delete: make the game render a wider field of view, or its own again. Saved to bf3vr.ini.
+    if (KeyPressed(VK_DELETE)) {
+        config::Settings& s = config::Mutable();
+        s.renderFovDeg = s.renderFovDeg > 0.0f ? 0.0f : s.renderFovLastDeg;
+        config::SaveRenderFov();
+        Log("Render FOV %s", s.renderFovDeg > 0.0f ? "on" : "off (the game's own)");
+    }
+    // Page Up / Page Down: with the wider view on, change it (the headset image follows, so the
+    // world stays life-size). Otherwise tune the FOV the eye images are shown with until the
+    // world looks life-size: showing an image over a wider angle than BF3 drew it stretches it,
+    // so a smaller value = less zoomed. Saved to bf3vr.ini.
     bool moreZoom = KeyPressed(VK_PRIOR);
     bool lessZoom = KeyPressed(VK_NEXT);
     if (moreZoom || lessZoom) {
         config::Settings& s = config::Mutable();
         float step = lessZoom ? -5.0f : 5.0f;
-        s.gameVerticalFovDeg = std::clamp(s.gameVerticalFovDeg + step, 20.0f, 150.0f);
-        config::SaveFov();
-        Log("Display FOV %.0f deg", s.gameVerticalFovDeg);
+        if (s.renderFovDeg > 0.0f) {
+            s.renderFovDeg = s.renderFovLastDeg = std::clamp(s.renderFovDeg + step, 40.0f, 140.0f);
+            config::SaveRenderFov();
+            Log("Render FOV %.0f deg", s.renderFovDeg);
+        } else {
+            s.gameVerticalFovDeg = std::clamp(s.gameVerticalFovDeg + step, 20.0f, 150.0f);
+            config::SaveFov();
+            Log("Display FOV %.0f deg", s.gameVerticalFovDeg);
+        }
     }
+    float wideFov = config::Get().renderFovDeg * kPi / 180.0f;
+    camera::SetRenderFov(wideFov);
+    skin::SetProjectionFix(wideFov > 0.0f ? camera::SourceFov() : 0.0f, wideFov);
     // Home: health finder step (full health, after damage, after refill). End: god mode on/off.
     if (KeyPressed(VK_HOME))
         finder::HealthStep();
+    if (KeyPressed(VK_F16))
+        finder::HealthAuto();
     if (KeyPressed(VK_END))
         god::Toggle();
     // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.
@@ -519,6 +548,14 @@ void PollHotkeys() {
     // Insert: draw the gloves 20 cm higher, the first test of moving the hands.
     if (KeyPressed(VK_INSERT))
         skin::ToggleHandShift();
+    // Pause: the skinning research hooks on/off (off by default: they cost frame rate).
+    if (KeyPressed(VK_PAUSE))
+        skin::ToggleResearch();
+    if (KeyPressed(VK_SCROLL)) {
+        static const char* kNames[] = {"off", "mono (the same picture to both eyes)", "frozen"};
+        g_stereoTest = (g_stereoTest + 1) % kStereoTests;
+        Log("Doubling test: %s", kNames[g_stereoTest]);
+    }
     // The weapon camera sits at a fixed place in bf3.exe, unlike the render cameras, which move
     // in memory and can be stale for a moment.
     {
@@ -598,7 +635,8 @@ XrSwapchainSubImage FullImage(const Swapchain& sc) {
 // The game renders a symmetric frustum from its own FOV setting, not the headset's.
 // Telling the compositor exactly what was rendered lets it place the image correctly.
 XrFovf GameFov() {
-    float halfV = config::Get().gameVerticalFovDeg * 0.5f * kPi / 180.0f;
+    const config::Settings& s = config::Get();
+    float halfV = (s.renderFovDeg > 0.0f ? s.renderFovDeg : s.gameVerticalFovDeg) * 0.5f * kPi / 180.0f;
     float halfH = std::atan(std::tan(halfV) * g_scWidth / g_scHeight);
     return {-halfH, halfH, halfV, -halfV};
 }
@@ -626,6 +664,21 @@ void BuildTheater(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, Frame
     out.count = 1;
 }
 
+// The projection layer: each eye's latest image with the pose it was rendered for.
+void BuildProjection(FrameLayers& out) {
+    XrFovf fov = GameFov();
+    for (int i = 0; i < 2; ++i) {
+        out.views[i].pose = g_eyePose[i];
+        out.views[i].fov = fov;
+        out.views[i].subImage = FullImage(g_swapchains[i]);
+    }
+    out.projection.space = g_space;
+    out.projection.viewCount = 2;
+    out.projection.views = out.views;
+    out.list[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&out.projection);
+    out.count = 1;
+}
+
 void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime displayTime, FrameLayers& out) {
     XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
     locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -638,13 +691,47 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         !(viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
         return;
 
-    // This frame belongs to one eye; remember the pose it is being shown for.
-    int eye = g_nextEye;
-    if (!SubmitImage(back, desc, g_swapchains[eye]))
+    // Alternate eyes only work if the game builds exactly one camera between two Presents: with
+    // none, this frame was built for the eye before; with two, one frame was never shown. Count.
+    {
+        static uint32_t builds[4] = {};
+        static ULONGLONG lastLog = 0;
+        ++builds[std::min(camera::TakeCameraBuilds(), 3u)];
+        ULONGLONG now = GetTickCount64();
+        if (now - lastLog >= 1000) {
+            lastLog = now;
+            Log("Frames: camera builds between two Presents: none %u, one %u, two %u, more %u", builds[0], builds[1],
+                builds[2], builds[3]);
+            std::fill(std::begin(builds), std::end(builds), 0u);
+        }
+    }
+
+    // Doubling test (Scroll Lock): frozen, nothing new is shown, so turning the head shows
+    // whether the compositor holds a still picture steady; mono, every frame goes to both eyes
+    // from between them, so there is no alternating.
+    if (g_stereoTest == kTestFreeze) {
+        if (g_eyeValid[kLeftEye] && g_eyeValid[kRightEye])
+            BuildProjection(out);
         return;
-    g_eyePose[eye] = g_renderPoseValid[eye] ? g_renderPose[eye] : views[eye].pose;
-    g_eyeValid[eye] = true;
-    UpdateMirror(back, desc, eye);
+    }
+    // This frame belongs to one eye (in the mono test, both); remember the pose it is shown for.
+    int lag = config::Get().poseLag;
+    auto renderPose = [&](int e) {
+        if (lag > 0 && g_posesKept >= lag)
+            return g_poseHistory[(g_poseNewest - (lag - 1) + kPoseHistory) % kPoseHistory][e];
+        return views[e].pose;  // lag 0, or not enough frames yet
+    };
+    int eye = g_nextEye;
+    bool mono = g_stereoTest == kTestMono;
+    for (int e = 0; e < 2; ++e) {
+        if (e != eye && !mono)
+            continue;
+        if (!SubmitImage(back, desc, g_swapchains[e]))
+            return;
+        g_eyePose[e] = renderPose(e);
+        g_eyeValid[e] = true;
+    }
+    UpdateMirror(back, desc, mono ? kLeftEye : eye);
     g_nextEye = 1 - eye;
 
     // The game's next frame is for the other eye: turn its camera with the head and shift it
@@ -653,7 +740,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     const XrVector3f& b = views[kRightEye].pose.position;
     float ipd = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
     float side = (g_nextEye == kLeftEye ? -1.0f : 1.0f) * (g_swapEyes ? -1.0f : 1.0f);
-    camera::SetEyeOffset(0.5f * ipd * side);
+    camera::SetEyeOffset(mono ? 0.0f : 0.5f * ipd * side);
 
     // The look angles (what BF3 aims and fires along) follow the right controller when it's
     // tracked, otherwise the head. With the controller aiming, the render cameras are turned
@@ -690,32 +777,45 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
         if (useHand) {
             camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, g_yawHistory[lagged]};
+            turn.currentYaw = yaw;
+            turn.haveLook = aim::LookYaw(turn.lookYaw, turn.lookSign);
             camera::SetViewTurn(&turn);
         } else {
             camera::SetViewTurn(nullptr);
         }
     }
-    g_renderPose[g_nextEye] = views[g_nextEye].pose;
-    g_renderPoseValid[g_nextEye] = true;
+    g_poseNewest = (g_poseNewest + 1) % kPoseHistory;
+    g_poseHistory[g_poseNewest][kLeftEye] = views[kLeftEye].pose;
+    g_poseHistory[g_poseNewest][kRightEye] = views[kRightEye].pose;
+    g_posesKept = std::min(g_posesKept + 1, kPoseHistory);
 
     // Both eyes are needed for a projection layer; the very first frame shows nothing.
     if (!g_eyeValid[kLeftEye] || !g_eyeValid[kRightEye])
         return;
-
-    XrFovf fov = GameFov();
-    for (int i = 0; i < 2; ++i) {
-        out.views[i].pose = g_eyePose[i];
-        out.views[i].fov = fov;
-        out.views[i].subImage = FullImage(g_swapchains[i]);
-    }
-    out.projection.space = g_space;
-    out.projection.viewCount = 2;
-    out.projection.views = out.views;
-    out.list[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&out.projection);
-    out.count = 1;
+    BuildProjection(out);
 }
 
+// Where each frame's time goes, logged once a second: the graphics card sat at 37% while the game
+// ran at 55 fps, so the frame is waiting somewhere else.
+struct FrameTiming {
+    LARGE_INTEGER frequency{}, lastFrame{};
+    double frame = 0, wait = 0, build = 0, end = 0;
+    int frames = 0;
+    ULONGLONG lastLog = 0;
+    double Ms(const LARGE_INTEGER& a, const LARGE_INTEGER& b) const {
+        return 1000.0 * static_cast<double>(b.QuadPart - a.QuadPart) / static_cast<double>(frequency.QuadPart);
+    }
+} g_timing;
+
 void RenderFrame(IDXGISwapChain* swap) {
+    LARGE_INTEGER t0, t1, t2, t3;
+    if (!g_timing.frequency.QuadPart)
+        QueryPerformanceFrequency(&g_timing.frequency);
+    QueryPerformanceCounter(&t0);
+    if (g_timing.lastFrame.QuadPart)
+        g_timing.frame += g_timing.Ms(g_timing.lastFrame, t0);
+    g_timing.lastFrame = t0;
+
     ID3D11Texture2D* back = nullptr;
     if (FAILED(swap->GetBuffer(0, IID_PPV_ARGS(&back))))
         return;
@@ -737,6 +837,7 @@ void RenderFrame(IDXGISwapChain* swap) {
         back->Release();
         return;
     }
+    QueryPerformanceCounter(&t1);
 
     if (g_recenterPending)
         Recenter(frame.predictedDisplayTime);
@@ -750,6 +851,7 @@ void RenderFrame(IDXGISwapChain* swap) {
             BuildTheater(back, desc, layers);
     }
 
+    QueryPerformanceCounter(&t2);
     XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
     endInfo.displayTime = frame.predictedDisplayTime;
     endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -758,6 +860,20 @@ void RenderFrame(IDXGISwapChain* swap) {
     Check(xrEndFrame(g_session, &endInfo), "xrEndFrame");
 
     back->Release();
+    QueryPerformanceCounter(&t3);
+    g_timing.wait += g_timing.Ms(t0, t1);
+    g_timing.build += g_timing.Ms(t1, t2);
+    g_timing.end += g_timing.Ms(t2, t3);
+    ++g_timing.frames;
+    ULONGLONG now = GetTickCount64();
+    if (now - g_timing.lastLog >= 1000 && g_timing.frames) {
+        double n = g_timing.frames;
+        Log("Frame timing (ms per frame): whole frame %.1f, of it waiting for the headset %.1f, our copy %.1f, "
+            "handing over %.1f; %d frames",
+            g_timing.frame / n, g_timing.wait / n, g_timing.build / n, g_timing.end / n, g_timing.frames);
+        g_timing = FrameTiming{g_timing.frequency, g_timing.lastFrame};
+        g_timing.lastLog = now;
+    }
 }
 
 }

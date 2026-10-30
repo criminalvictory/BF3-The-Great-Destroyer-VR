@@ -38,7 +38,14 @@ void SetEyeOffset(float metres);
 // cameras so the picture shows where the head looks instead. Both in the recentered OpenXR space.
 struct ViewTurn {
     float head[4];        // head orientation quaternion x, y, z, w
-    float controllerYaw;  // radians, turning left positive
+    float controllerYaw;  // radians, turning left positive; view_lag frames old (the fallback)
+    // Without lag guessing: the controller yaw and BF3's look yaw written this frame, and which
+    // way the look yaw moves for a controller turn left. Each camera then reads the look yaw it
+    // was built from out of its own matrix, so the hand's turn it includes is known exactly.
+    bool haveLook;
+    float currentYaw;
+    float lookYaw;
+    float lookSign;
 };
 // nullptr = off (render cameras keep the game's own direction).
 void SetViewTurn(const ViewTurn* turn);
@@ -47,6 +54,16 @@ void SetViewTurn(const ViewTurn* turn);
 // from) is turned the opposite way so the gun stays with the hand. If the gun swings away from
 // the hand instead, the direction is the other way round: flip = true.
 void SetGunFlip(bool flip);
+
+// The field of view to make the game render with, in radians (0 = the game's own). Written into
+// the render and cull views and their source each time a camera breakpoint fires.
+void SetRenderFov(float radians);
+
+// The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
+float SourceFov();
+
+// How many times the game built its main render camera since the last call.
+uint32_t TakeCameraBuilds();
 // Cull hunt: BF3 keeps dozens of identical camera copies, and decides what to draw from one that
 // isn't turned with the head, so scenery goes missing when the hand aims away. The finder (F10)
 // hands over every copy it saw; F6 then turns them with the head one at a time, a few seconds

@@ -11,6 +11,10 @@ void Update(float headYaw, float headPitch);
 // Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.
 void Reset();
 
+// The player's look yaw as BF3 stores it (radians, atan2(x, -z) of the camera's backwards row),
+// and which way it moves for a controller turn to the left (+1 or -1). False if unreadable.
+bool LookYaw(float& radians, float& sign);
+
 // Logs about once a second where the yaw/pitch pointers lead and how many head moves were written.
 void Probe();
 

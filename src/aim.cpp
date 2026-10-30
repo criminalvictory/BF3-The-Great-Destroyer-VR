@@ -93,6 +93,18 @@ void Reset() {
     g_havePrevious = false;
 }
 
+bool LookYaw(float& radians, float& sign) {
+    config::Aim a = config::GetAim();
+    uintptr_t address = 0;
+    float value = 0.0f;
+    if (!a.yaw.base || !camera::Resolve(a.yaw, address) || !camera::SafeRead(address, &value, sizeof(value)) ||
+        !std::isfinite(value))
+        return false;
+    radians = a.yawDegrees ? value / kRadToDeg : value;
+    sign = a.invertYaw ? -1.0f : 1.0f;
+    return true;
+}
+
 void Probe() {
     static ULONGLONG lastLog = 0;
     ULONGLONG now = GetTickCount64();

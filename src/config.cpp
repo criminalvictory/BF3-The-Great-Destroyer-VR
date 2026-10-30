@@ -38,6 +38,10 @@ const char kDefaultIni[] =
     "[stereo]\n"
     "; Must match the FOV slider in BF3's video options.\n"
     "game_vertical_fov=55\n"
+    "; Field of view the mod makes the game render with, in degrees (0 = the game's own).\n"
+    "; Delete turns it on and off in game, Page Up / Page Down change it.\n"
+    "render_fov=0\n"
+    "render_fov_last=90\n"
     "; 1 = the desktop window shows only the left eye instead of flickering between both.\n"
     "mirror_one_eye=1\n"
     "\n"
@@ -183,6 +187,8 @@ void Load(HMODULE self) {
     s.screenDistance = ReadFloat(L"theater", L"screen_distance", s.screenDistance);
     s.screenWidth = ReadFloat(L"theater", L"screen_width", s.screenWidth);
     s.gameVerticalFovDeg = ReadFloat(L"stereo", L"game_vertical_fov", s.gameVerticalFovDeg);
+    s.renderFovDeg = ReadFloat(L"stereo", L"render_fov", s.renderFovDeg);
+    s.renderFovLastDeg = ReadFloat(L"stereo", L"render_fov_last", s.renderFovLastDeg);
     s.headTracking = ReadBool(L"head", L"tracking", true);
     s.mirrorOneEye = ReadBool(L"stereo", L"mirror_one_eye", true);
     s.controllerAim = ReadBool(L"controllers", L"aim", true);
@@ -190,6 +196,7 @@ void Load(HMODULE self) {
     s.gunFlip = ReadBool(L"controllers", L"gun_flip", false);
     s.maxAimOffsetDeg = ReadFloat(L"controllers", L"max_aim_offset", s.maxAimOffsetDeg);
     s.viewLag = std::clamp(static_cast<int>(ReadFloat(L"controllers", L"view_lag", 0.0f)), 0, 2);
+    s.poseLag = std::clamp(static_cast<int>(ReadFloat(L"stereo", L"pose_lag", 1.0f)), 0, 3);
     s.windowSize = static_cast<int>(ReadFloat(L"window", L"size", static_cast<float>(s.windowSize)));
 
     std::vector<CameraPointer> cameras;
@@ -257,6 +264,14 @@ void SaveFov() {
     wchar_t value[32];
     swprintf_s(value, L"%.0f", g_settings.gameVerticalFovDeg);
     WriteString(L"stereo", L"game_vertical_fov", value);
+}
+
+void SaveRenderFov() {
+    wchar_t value[32];
+    swprintf_s(value, L"%.0f", g_settings.renderFovDeg);
+    WriteString(L"stereo", L"render_fov", value);
+    swprintf_s(value, L"%.0f", g_settings.renderFovLastDeg);
+    WriteString(L"stereo", L"render_fov_last", value);
 }
 
 std::vector<CameraPointer> GetCameras() {
@@ -356,6 +371,10 @@ void SetFov(const Fov& fov) {
         swprintf_s(buf, L"%d", set ? fov.targets[n].encoding : 0);
         WriteString(L"fov", KeyName(L"encoding", n).c_str(), set ? buf : L"");
     }
+}
+
+void SavePoseLag() {
+    WriteString(L"stereo", L"pose_lag", std::to_wstring(g_settings.poseLag));
 }
 
 void SaveViewLag() {
