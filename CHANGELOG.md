@@ -4,6 +4,28 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-30, later: free hands (stage: pre-alpha, experimental)
+
+2 commits since the last upload. First of the milestones that make it feel like VR.
+
+### New
+- **Free hands** (Insert on/off, on by default): the gun is drawn in your right hand, pointing
+  where the controller points and held where the game's own hand holds it, scope and stock
+  included; the left glove follows the left controller, open when empty, closing as you squeeze
+  the left grip; arms, sleeves and body are folded away. On the Steam Frame the left View button
+  lines the glove up with your hand. Steady while walking and strafing (tested in the headset).
+- `tools\videoframes.ps1`: frames from a screen recording, without ffmpeg.
+
+### Fixed
+- After the opening ride the mod could lose the game's camera: the game then drew its own 55°
+  and the headset stretched it over 100° (zoomed, blurry, big gun and arms). The camera now stays
+  found, and if it is ever lost the headset shows the angle the game really drew.
+- A dropped magazine no longer follows you along the floor (it vanishes as it lands).
+
+### Known issues
+- Free hands know only the campaign's M16-type rifle; bullets leave from where the game holds
+  its gun, not the drawn muzzle; no two-handed aiming yet.
+
 ## 2026-10-30: v0.1.0-pre-alpha (stage: pre-alpha, experimental)
 
 First upload marked with a stage. 14 commits since the last upload.
