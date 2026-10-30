@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <mutex>
@@ -53,6 +54,9 @@ const char kDefaultIni[] =
     "; How far (degrees) the aim may stray from where you look. BF3 only draws what's in front\n"
     "; of its aim, so a bigger value means more missing scenery at the edges of your view.\n"
     "max_aim_offset=30\n"
+    "; Frames (0-2) the head's view turn lags the hand, to stop the picture shaking while the arm\n"
+    "; moves. F11 cycles it in game.\n"
+    "view_lag=0\n"
     "\n"
     "[aim]\n"
     "; The player's look angles, found by the look-angle finder (F3). Same pointer format as [camera].\n"
@@ -179,6 +183,7 @@ void Load(HMODULE self) {
     s.turnSpeed = ReadFloat(L"controllers", L"turn_speed", s.turnSpeed);
     s.gunFlip = ReadBool(L"controllers", L"gun_flip", false);
     s.maxAimOffsetDeg = ReadFloat(L"controllers", L"max_aim_offset", s.maxAimOffsetDeg);
+    s.viewLag = std::clamp(static_cast<int>(ReadFloat(L"controllers", L"view_lag", 0.0f)), 0, 2);
     s.windowSize = static_cast<int>(ReadFloat(L"window", L"size", static_cast<float>(s.windowSize)));
 
     std::vector<CameraPointer> cameras;
@@ -316,6 +321,10 @@ void SetFov(const Fov& fov) {
         swprintf_s(buf, L"%d", set ? fov.targets[n].encoding : 0);
         WriteString(L"fov", KeyName(L"encoding", n).c_str(), set ? buf : L"");
     }
+}
+
+void SaveViewLag() {
+    WriteString(L"controllers", L"view_lag", std::to_wstring(g_settings.viewLag));
 }
 
 void SaveGunFlip() {

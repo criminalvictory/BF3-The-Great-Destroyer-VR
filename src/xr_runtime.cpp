@@ -95,9 +95,12 @@ void ResetEyes() {
 }
 // F7: the game may render a frame later than we think, which swaps the eyes and turns depth inside out.
 bool g_swapEyes = false;
-// F11 (theater mode): a large fixed camera shift, to check on the flat screen that shifting works.
-bool g_shiftTest = false;
-constexpr float kShiftTestMetres = 1.0f;
+// The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
+// angles written a frame or two earlier, so the view turn uses the yaw from that many frames
+// back ([controllers] view_lag, F11 cycles it); a mismatch shakes the picture as the arm moves.
+constexpr int kYawHistory = 3;
+float g_yawHistory[kYawHistory] = {};
+int g_yawHistoryNext = 0;
 
 bool Check(XrResult result, const char* what) {
     if (XR_SUCCEEDED(result))
@@ -465,8 +468,10 @@ void PollHotkeys() {
         Log("Eyes %s", g_swapEyes ? "swapped" : "normal");
     }
     if (KeyPressed(VK_F11)) {
-        g_shiftTest = !g_shiftTest;
-        Log("Camera shift test %s", g_shiftTest ? "on (1 m right)" : "off");
+        config::Settings& s = config::Mutable();
+        s.viewLag = (s.viewLag + 1) % kYawHistory;
+        config::SaveViewLag();
+        Log("View turn lag %d frame%s", s.viewLag, s.viewLag == 1 ? "" : "s");
     }
     // F6: hunt for the cull camera (after F10); F5: save the copy being tried.
     if (KeyPressed(VK_F6))
@@ -505,7 +510,7 @@ void PollHotkeys() {
         aim::FlipPitch();
     // Stereo mode sets the offset and view turn per frame; in theater it's the shift test or nothing.
     if (config::Get().mode == config::Mode::Theater) {
-        camera::SetEyeOffset(g_shiftTest ? kShiftTestMetres : 0.0f);
+        camera::SetEyeOffset(0.0f);
         camera::SetViewTurn(nullptr);
     }
 }
@@ -654,8 +659,11 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             pitch = headPitch + std::clamp(pitch - headPitch, -limit, limit);
         }
         aim::Update(yaw, pitch);
+        g_yawHistory[g_yawHistoryNext] = yaw;
+        int lagged = (g_yawHistoryNext - config::Get().viewLag + kYawHistory) % kYawHistory;
+        g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
         if (useHand) {
-            camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, yaw};
+            camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, g_yawHistory[lagged]};
             camera::SetViewTurn(&turn);
         } else {
             camera::SetViewTurn(nullptr);

@@ -37,6 +37,8 @@ struct Settings {
     // How far the controller's aim may stray from where the head looks, in degrees. BF3 only
     // draws what's in front of its aim, so further means more missing scenery.
     float maxAimOffsetDeg = 30.0f;
+    // Frames by which the view turn lags the hand, to match when BF3 builds its camera (F11).
+    int viewLag = 0;
 
     // Windowed mode: keep BF3's window this many pixels square (0 = leave it alone).
     int windowSize = 1600;
@@ -84,6 +86,8 @@ Settings& Mutable();
 void SaveFov();
 // Writes the current gunFlip to bf3vr.ini (F1 in game).
 void SaveGunFlip();
+// Writes the current viewLag to bf3vr.ini (F11 in game).
+void SaveViewLag();
 
 // Up to four camera pointers: BF3 keeps several copies of the view (renderer, weapon, ...) and
 // the eye shift goes to all of them. The first is the one the camera probe logs.

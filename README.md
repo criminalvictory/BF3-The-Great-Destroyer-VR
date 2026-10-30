@@ -21,10 +21,14 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
 ## Known issues
 
-- Scenery can disappear at the edges when the controller aims far away from where you look:
-  BF3 only draws what's in front of its aim. `max_aim_offset` limits this; a cull-camera hunt
-  (F6) is in progress to fix it properly.
+- The gun moves in small steps while the arm swings. Each eye only sees every second frame
+  (about 43 updates a second per eye at 85-90 fps), and SteamVR can smooth head motion but not
+  what the hand moves inside the game. A higher frame rate reduces it.
 - The crosshair stays in the centre of the view.
+
+Scenery no longer disappears when the controller aims away from where you look: the camera BF3
+decides what to draw from is found once with the cull hunt (F10, then F6/F5) and turned with the
+head like the render cameras.
 
 ## Building
 
@@ -66,16 +70,16 @@ runtime path, which a 32-bit game can't load.
 | F1 | Flip which way the gun model follows the hand |
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
+| F11 | Delay the picture's hand correction by 0-2 frames (if the view shakes as the arm moves) |
 
 Finders and tests (needed once per setup; see the log for results):
 
 | Key | Action |
 |---|---|
 | F10 | Camera finder (look around, turn and walk after the beeps) |
-| F6 / F5 | Hunt for the cull camera / save the one being tried |
+| F6 / F5 | Cull hunt: with the arm held out so scenery is missing, tries one camera copy every 3 s / F5 saves the one that brings it back |
 | F3 | Look-angle finder |
-| F11 | Shift test: moves the camera 1 m sideways |
-| Home / End | FOV finder (slider 90 → 60 → 90) / step the FOV override |
+| Home / End | FOV finder (slider 90 → 60 → 90) / step the FOV override (experimental, off by default: only found menu copies so far) |
 
 `CAMERA_GUIDE.md` describes finding the camera by hand with Cheat Engine instead.
 
