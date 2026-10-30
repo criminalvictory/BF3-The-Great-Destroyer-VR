@@ -142,6 +142,7 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
   (at the chest), not at the drawn gun.
 - A dark layer shows around the arms, glove and gun, plainest against bright light (being looked
   into: one pass of the arms placed for the wrong eye is the suspect).
+- The ACOG's reticle and lens tint sometimes vanish from the scope and float in the distance.
 - The charging handle has no sound of its own yet (the M16's reloads never use it); letting it
   go plays the bolt going home.
 

@@ -4,6 +4,50 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-30, night: smooth turning and reloading by hand (stage: pre-alpha, experimental)
+
+4 commits since the last upload. Turning is smooth, the rifle is reloaded by hand with the game's
+own sounds, and the left glove keeps the user's line-up. Tested in the headset by the user
+(turning: "super smooth"; the reloads, the cover and walking: "it seems okay").
+
+### New
+- **Reloading by hand** (the rifle): run dry, the bolt locks back and the gun won't fire. With a
+  full magazine in, slap the bolt release on the left of the receiver (the flat-screen game's empty
+  reload), or put the left hand on the charging handle, hold the left trigger, pull back and let
+  go: the handle slides back with the hand and springs home. The ejection port's cover swings open
+  on its hinge when the bolt moves. With free hands the left trigger works the handle instead of
+  aiming down sights (the scope is looked through by holding the gun up to the eye).
+- **The game's own reload sounds**: the magazine coming out, going in, and the bolt going home,
+  recorded from the game's empty reload and played at the gun when the hands do the same. They
+  follow bf3.exe's volume in Windows like the game. They aren't in the repository (they're the
+  game's): `capture.exe` records them; the README says how.
+- **The left glove's line-up** made on the test setup is built in, so a new install starts with
+  the glove where the hand is.
+- Tools: `sampler.exe` (where the game's threads spend their time, from outside), `capture.exe`
+  (records what the PC plays, finds and cuts clips, lists app volumes), `playtest.exe` (plays a
+  reload sound as the mod does), `anglescan.exe` (finds the look angles and pointer paths from
+  outside the game).
+
+### Fixed
+- **Smooth turning**: every frame BF3 asked Windows for memory statistics, which took 11 ms with
+  hundreds of processes running and dropped the game below the headset's 72 fps. The mod answers
+  from a copy refreshed once a second: a steady 72 fps. The right stick's turn now goes into the
+  look angle the mod writes each frame instead of the mouse, so each frame turns the same amount.
+- **Walking backwards**: at a new checkpoint the pointer to the player's look angles led to other
+  memory (the game's facing stopped following the head, so forward could walk backwards, and the
+  mod wrote over a pointer there). The mod now finds the angles from the player's soldier at every
+  life or checkpoint, writes only to an object of their type, and of those only to the one that
+  keeps a small nudge.
+
+### Known issues
+- The ejection port's cover is slow between shots.
+- The ACOG's reticle and lens tint sometimes vanish from the scope and float in the distance.
+- A dark layer shows around the arms, glove and gun against bright light.
+- The muzzle flash, its smoke and the casings come from where the game holds its own gun (the
+  chest), not the drawn gun.
+- The charging handle has no sound of its own (the M16's reloads never use it).
+- The HUD is drawn once across both eyes (the minimap in the left eye, the ammo count in the right).
+
 ## 2026-10-30, evening: per-eye rendering and a real left hand (stage: pre-alpha, experimental)
 
 2 commits since the last upload. The 3D is now made by the game itself, and the left glove has
