@@ -53,6 +53,8 @@ add_library(bf3vr SHARED
     src/handpose.cpp
     src/views.cpp
     src/perfinfo.cpp
+    src/effects.cpp
+    src/reload.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler)

@@ -10,11 +10,13 @@
 #   -Action click -X x -Y y : left click at a point of the game window (full-size pixels)
 #   -Action enter     : Enter
 #   -Action f17       : F17, 3 s of turning as the right stick does (the turn's evenness is logged)
+#   -Action f18       : F18, a 6 s census of every draw (fire after the first 2 s; the log lists what came with it)
+#   -Action f19       : F19, for 10 s every draw placed at the game's own gun is logged (fire, with weapon.txt "watch")
 #   -Action fire -Seconds s : hold the left mouse button (fire) for s seconds
 #   -Action hold -Vk k -Seconds s : hold a game key (by scan code) for s seconds
 # A minimized game window is restored first.
 param(
-    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'f17', 'pause', 'scroll', 'end', 'hold', 'fire')] [string]$Action,
+    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'f17', 'f18', 'f19', 'pause', 'scroll', 'end', 'hold', 'fire')] [string]$Action,
     [string]$Name = 'hunt',
     [int]$X = 0,
     [int]$Y = 0,
@@ -75,7 +77,7 @@ $procId = [uint32]0
 [void][DrawHunt.U]::GetWindowThreadProcessId([DrawHunt.U]::GetForegroundWindow(), [ref]$procId)
 if ($procId -ne $game.Id) { Write-Host 'BF3 is not the focused window: no input sent.'; exit 2 }
 
-$keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; f17 = 0x80; pause = 0x13; scroll = 0x91; end = 0x23 }
+$keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; f17 = 0x80; f18 = 0x81; f19 = 0x82; pause = 0x13; scroll = 0x91; end = 0x23 }
 if ($keys.ContainsKey($Action)) {
     [DrawHunt.U]::Key($keys[$Action], $true); Start-Sleep -Milliseconds 120; [DrawHunt.U]::Key($keys[$Action], $false)
     Start-Sleep -Milliseconds 1200

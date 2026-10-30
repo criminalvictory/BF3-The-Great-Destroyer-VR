@@ -9,6 +9,7 @@
 #include "camera.h"
 #include "god.h"
 #include "log.h"
+#include "reload.h"
 #include "skin.h"
 
 namespace {
@@ -79,6 +80,7 @@ void Update() {
         g_soldier = soldier;
         g_fullest.clear();
         skin::InsertMagazine();
+        reload::ReleaseBolt();
     }
     uintptr_t firing = Firing();
     int loaded = 0, spare = 0;
@@ -117,6 +119,17 @@ void Insert() {
 
 int MagazineSize() {
     return Capacity();
+}
+
+void Refill() {
+    uintptr_t firing = Firing();
+    int loaded = 0, spare = 0;
+    if (!firing || !Read(firing, loaded, spare)) {
+        Log("Ammo: the gun's rounds weren't found; no refill");
+        return;
+    }
+    WriteInt(firing + kSpare, 300);
+    Log("Ammo: spare rounds %d -> 300 (weapon.txt \"refill\")", spare);
 }
 
 }

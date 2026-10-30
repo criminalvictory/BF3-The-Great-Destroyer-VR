@@ -49,6 +49,7 @@
 #include <cmath>
 #include <map>
 #include <cstring>
+#include <functional>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -57,7 +58,11 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ammo.h"
+#include "camera.h"
+#include "effects.h"
 #include "log.h"
+#include "reload.h"
 #include "views.h"
 
 namespace {
@@ -229,6 +234,8 @@ bool PlayersOwn(const std::vector<uint8_t>& bones) {
 // gun's sway moves every bone alike; a reload moves the magazine some 20 cm, in every pass, which
 // shows its bone in each palette.
 std::atomic<bool> g_weaponWatch{false};
+std::atomic<bool> g_weaponTesting{false};  // weapon.txt "wcam": logs what follows the moved camera
+std::atomic<int> g_wiggleBone{-1};  // weapon.txt "wiggle N": that gun bone slides to and fro (DrawGun)
 constexpr UINT kReceiverBone = 1;
 struct WatchPass {
     UINT draws = 0;
@@ -302,6 +309,10 @@ std::atomic<uint32_t> g_frameSerial{0};  // frames shown so far (skin::Update)
 uint32_t g_armsFrame = 0, g_armsUploads = 0, g_armsUploadsBefore = 0;  // under g_fpMutex
 ViewByBuffer g_viewByBuffer[8];
 int g_viewByBufferNext = 0;
+// The constant buffers the first-person view-projection in the world went into (effects.cpp's
+// census tells draws by them).
+ID3D11Resource* g_worldViewBuffers[4] = {};
+int g_worldViewNext = 0;
 thread_local ID3D11Resource* t_uploadResource = nullptr;  // the upload being looked at
 std::atomic<uint32_t> g_viewBound{0}, g_viewLatest{0}, g_viewDiffered{0};
 // weapon.txt "trace": the next 120 gun colour draws, each with the eye the hands were placed from
@@ -323,13 +334,28 @@ std::atomic<uint32_t> g_viewUploads{0};  // first-person view-projections upload
 float g_fpOrigin[3] = {};
 bool g_haveFpOrigin = false;
 
+// weapon.txt "dumpview": the next 352-byte upload with the first-person view in it is logged
+// whole, to find the rest of what BF3 keeps per view there (the main view-projection).
+std::atomic<bool> g_dumpView{false};
+
 void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
     bool arms = size == 352 && offset == 176, world = size == 80 && offset == 0;
     if (!arms && !world)
         return;
+    if (arms && g_dumpView.exchange(false)) {
+        const float* base = m - offset / 4;
+        for (UINT r = 0; r < size / 16; ++r)
+            Log("View dump: +%3u: %12.5f %12.5f %12.5f %12.5f", r * 16, base[r * 4], base[r * 4 + 1], base[r * 4 + 2],
+                base[r * 4 + 3]);
+    }
     std::lock_guard lock(g_fpMutex);
     std::memcpy(arms ? g_fpArms : g_fpWorld, m, sizeof(g_fpArms));
     (arms ? g_fpArmsTime : g_fpWorldTime) = GetTickCount64();
+    if (ID3D11Resource* buffer = t_uploadResource; world && buffer &&
+        std::find(std::begin(g_worldViewBuffers), std::end(g_worldViewBuffers), buffer) == std::end(g_worldViewBuffers)) {
+        g_worldViewBuffers[g_worldViewNext] = buffer;
+        g_worldViewNext = (g_worldViewNext + 1) % 4;
+    }
     float eyeArms[3];
     if (!SolveEye(g_fpArms, eyeArms))
         return;
@@ -427,6 +453,7 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
     for (ID3D11Buffer* b : bound)
         if (b)
             b->Release();
+    Compose(v, t.gunPose, t.gunPoseTrue);
     // Per-eye views: this draw's view is one eye's, half the eye distance from the middle of the
     // head the targets are measured from; that's taken off along the view's right. (Its viewport
     // can't tell: BF3 draws both views with one the width of the whole picture.)
@@ -486,10 +513,20 @@ MeshDump* g_dump = nullptr;  // taken on a draw thread, written out by the next 
 
 // A copy of this thread's latest bone upload, kept only while hand shift is on and only for
 // blocks the size of the gloves'.
+// Small fresh uploads on this thread so far: tells whether an upload came before or after a draw.
+thread_local uint32_t t_uploadSerial = 0;
+// The latest per-view constants (352 bytes: view, projection, view-projection at +176, eye at
+// +320), as they went to the graphics card: what the draws that follow are drawn with.
+struct ViewConstants {
+    ID3D11Resource* resource = nullptr;
+    uint8_t bytes[352];
+};
+thread_local ViewConstants t_viewConstants;
 struct Upload {
     ID3D11Resource* resource = nullptr;
     std::vector<uint8_t> bytes;
     BoneInfo bones;
+    uint32_t serial = 0;  // t_uploadSerial when it was made
 };
 // Gloves draws since the last log: shifted, or drawn normally because there was no fresh copy of
 // their bones, or because BF3's buffer wasn't bound to the vertex shader.
@@ -601,14 +638,90 @@ void ReadWeaponSelection() {
     //   "pass 2: 41"         bones of kWeaponPasses[2] (its own palette) to treat alike
     //   "watch"              log which bones move, per pass;  "dump"  write the gun's mesh once
     //   "floor 0.05"         the ground's height in the body's space, for the dropped magazine
-    float shift[3] = {}, floor = 0.0f;
-    bool hide = false, watch = false, dump = false, any = false;
+    //   "wcam 0.3 0 0"       the weapon camera moved along its right, up and back (camera.cpp)
+    //   "hidefx 36 234"      draws with those index counts hidden (effects.cpp), to tell which
+    //                        are the muzzle flash and the casings
+    //   "movefx 36"          draws with those index counts drawn at the gun in the hand (effects.cpp)
+    //   "dumpfx 234"         the next three draws with that index count log their block
+    //   "hideps 1B77A09C"    draws with that pixel shader hidden (as the census logs it this run)
+    //   "wiggle 3"           that bone of the gun slides 2 cm to and fro along the barrel
+    //   "flashmats 2"        which view constants moved draws change (effects.cpp)
+    //   "flashlift 1"        what's moved with the gun lifted this far too (to see it plainly)
+    //   "refill"             300 spare rounds for the gun in hand
+    //   "dumpview"           log BF3's per-view constants once
+    float shift[3] = {}, floor = 0.0f, wcam[3] = {};
+    bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
+    UINT hideFx[4] = {};
+    UINT moveFx[4] = {};
+    uintptr_t hidePs[4] = {};
+    int wiggle = -1;
+    int flashMats = 2 | 4;
+    float flashLift = 0.0f;
+    int hidePsCount = 0;
+    int moveCount = 0;
+    int hideCount = 0;
     DrawKey dumpKey = kWeapon;
     PassSelection selected[kWeaponPassCount] = {};
     for (char* line = text; line && *line;) {
         char* next = std::strchr(line, '\n');
         if (next)
             *next++ = 0;
+        if (const char* w = std::strstr(line, "wcam")) {
+            wcamSet = sscanf_s(w + 4, "%f %f %f", &wcam[0], &wcam[1], &wcam[2]) == 3;
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "refill")) {
+            ammo::Refill();
+            line = next;
+            continue;
+        }
+        if (const char* fl = std::strstr(line, "flashlift")) {
+            sscanf_s(fl + 9, "%f", &flashLift);
+            line = next;
+            continue;
+        }
+        if (const char* fm = std::strstr(line, "flashmats")) {
+            sscanf_s(fm + 9, "%d", &flashMats);
+            line = next;
+            continue;
+        }
+        if (const char* wg = std::strstr(line, "wiggle")) {
+            if (sscanf_s(wg + 6, "%d", &wiggle) != 1)
+                wiggle = -1;
+            line = next;
+            continue;
+        }
+        if (const char* hp = std::strstr(line, "hideps")) {
+            unsigned int p[4] = {};
+            hidePsCount = sscanf_s(hp + 6, "%x %x %x %x", &p[0], &p[1], &p[2], &p[3]);
+            for (int k = 0; k < 4; ++k)
+                hidePs[k] = p[k];
+            line = next;
+            continue;
+        }
+        if (const char* df = std::strstr(line, "dumpfx")) {
+            UINT count = 0;
+            if (sscanf_s(df + 6, "%u", &count) == 1)
+                effects::DumpNext(count);
+            line = next;
+            continue;
+        }
+        if (const char* mv = std::strstr(line, "movefx")) {
+            moveCount = sscanf_s(mv + 6, "%u %u %u %u", &moveFx[0], &moveFx[1], &moveFx[2], &moveFx[3]);
+            line = next;
+            continue;
+        }
+        if (const char* h = std::strstr(line, "hidefx")) {
+            hideCount = sscanf_s(h + 6, "%u %u %u %u", &hideFx[0], &hideFx[1], &hideFx[2], &hideFx[3]);
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "dumpview")) {
+            g_dumpView = true;
+            line = next;
+            continue;
+        }
         if (const char* f = std::strstr(line, "floor")) {
             sscanf_s(f + 5, "%f", &floor);
             line = next;
@@ -677,6 +790,15 @@ void ReadWeaponSelection() {
     if (floor != g_floor.load())
         Log("Weapon: the floor for a dropped magazine is at %.2f m", floor);
     g_floor = floor;
+    camera::SetWeaponTest(wcamSet ? wcam : nullptr);
+    g_weaponTesting = wcamSet;
+    effects::SetHidden(hideFx, std::max(hideCount, 0));
+    effects::SetMoved(moveFx, std::max(moveCount, 0));
+    effects::SetHiddenShaders(hidePs, std::max(hidePsCount, 0));
+    effects::SetMoveMatrices(flashMats);
+    effects::SetLift(flashLift);
+    if (g_wiggleBone.exchange(wiggle) != wiggle)
+        Log("Weapon: %s", wiggle >= 0 ? "a bone slides to and fro (wiggle)" : "no bone wiggles");
     Log("Weapon: bones %s (in %d passes), %s; watch %s%s", any ? "chosen" : "none",
         static_cast<int>(std::count_if(std::begin(selected), std::end(selected),
                                        [](const PassSelection& s) { return s.any; })),
@@ -947,11 +1069,16 @@ void HandleUpload(const PendingMap& p) {
     bool research = g_research.load(std::memory_order_relaxed);
     if (p.size < kMinRingSize) {
         if (p.fresh) {
+            ++t_uploadSerial;
             if (g_weaponWatch.load(std::memory_order_relaxed))
                 NoteRecentUpload(p.resource, data, p.size);  // before the rescale changes it
             t_uploadResource = p.resource;
             RescaleProjections(data, p.size, kSmall);
             t_uploadResource = nullptr;
+            if (p.size == sizeof(t_viewConstants.bytes)) {
+                t_viewConstants.resource = p.resource;
+                std::memcpy(t_viewConstants.bytes, data, p.size);
+            }
             if (research)
                 Inspect(data, p.size, true);
             // Every upload the gloves' size, not only those whose bones all passed as matrices:
@@ -965,6 +1092,7 @@ void HandleUpload(const PendingMap& p) {
                              g_dumpWanted.load(std::memory_order_relaxed) ||
                              g_handsActive.load(std::memory_order_relaxed);
                 t_upload.resource = p.resource;
+                t_upload.serial = t_uploadSerial;
                 t_upload.bytes.assign(data, data + (whole ? p.size : kGunPrefix));
                 t_upload.bones = t_drawsSinceBones == 0 ? t_bones : BoneInfo{};
             } else if (p.resource == t_upload.resource) {
@@ -1253,6 +1381,11 @@ skin::HandTargets g_hands;
 // that don't have that bone.
 float g_gunDelta[12] = {};
 bool g_haveGunDelta = false;
+// The same move to where the gun really is (no per-eye shift), for what the world pass draws at
+// the game's own gun: the muzzle flash (effects.cpp). In the arms' space.
+float g_gunDeltaTrue[12] = {};
+bool g_haveGunDeltaTrue = false;
+ULONGLONG g_gunDeltaTrueTime = 0;  // when it was last worked out: stale once the gun isn't moved
 constexpr float kEyeHeight = 1.6f;  // a dropped magazine's floor this far below the eye (standing)
 // Bones placed from a bone of another draw (the gun's body): their offset from it, learned as
 // they're drawn. A move worked out in that other draw and reused here was a frame off whenever the
@@ -1504,8 +1637,39 @@ bool DrawGun(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT ba
             if (pass != 1 && Invert(bones + 2 * 12, inverse)) {
                 Compose(t.gunPose, inverse, g_gunDelta);
                 g_haveGunDelta = true;
+                Compose(t.gunPoseTrue, inverse, g_gunDeltaTrue);
+                g_haveGunDeltaTrue = true;
+                g_gunDeltaTrueTime = GetTickCount64();
                 for (int k = 0; k < 6; ++k)
                     MoveBy(g_gunDelta, bones + k * 12);
+                // The moving parts (the user saw them, 2026-10-30): the part in the ejection port
+                // (bone 3, the bolt) kicks back 2 cm with each shot and returns, stays back while
+                // the bolt is locked, and rides back with the charging handle (bone 0), which the
+                // left hand pulls (reload.cpp).
+                {
+                    const float* body = bones + 2 * 12;
+                    const float z[3] = {body[2], body[6], body[10]};  // the barrel's way (forward)
+                    const float length = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+                    const ULONGLONG since = effects::MsSinceShot();
+                    const float kick = since >= 60 ? 0.0f : since < 15 ? since / 15.0f : 1.0f - (since - 15) / 45.0f;
+                    const float back[2] = {reload::HandleBack(), std::max(reload::BoltOffset(), 0.02f * kick)};
+                    const int parts[2] = {0, 3};
+                    for (int i = 0; i < 2 && length > 0.0f; ++i) {
+                        const float s = -back[i] / length;
+                        float* b = bones + parts[i] * 12;
+                        b[3] += z[0] * s, b[7] += z[1] * s, b[11] += z[2] * s;
+                    }
+                }
+                // weapon.txt "wiggle N": bone N slides 2 cm back and forth along the barrel, to tell
+                // which part of the gun it is.
+                if (const int w = g_wiggleBone.load(std::memory_order_relaxed); w >= 0 && w < 6 && w != 2) {
+                    const float* body = bones + 2 * 12;
+                    float z[3] = {body[2], body[6], body[10]};  // the barrel's way, in the arms' space
+                    const float length = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+                    const float s = length > 0.0f ? 0.02f * std::sin(6.2831853f * static_cast<float>(Seconds())) / length : 0.0f;
+                    float* b = bones + w * 12;
+                    b[3] += z[0] * s, b[7] += z[1] * s, b[11] += z[2] * s;
+                }
                 moved = true;
                 if (pass == 0 && g_tracing.load(std::memory_order_relaxed)) {
                     TraceRow r{Seconds(), GetCurrentThreadId(), {}, {g_gunBodyOrig[3], g_gunBodyOrig[7], g_gunBodyOrig[11]},
@@ -1665,6 +1829,7 @@ constexpr DrawKey kScope{9273, 12, 0};
 struct RecentUpload {
     ID3D11Resource* resource = nullptr;
     UINT size = 0;
+    uint32_t serial = 0;  // t_uploadSerial when it was made
     uint8_t bytes[4096];
 };
 thread_local RecentUpload t_recent[8];
@@ -1674,6 +1839,7 @@ void NoteRecentUpload(ID3D11Resource* resource, const uint8_t* data, UINT size) 
     RecentUpload& r = t_recent[t_recentNext];
     t_recentNext = (t_recentNext + 1) % 8;
     r.resource = resource;
+    r.serial = t_uploadSerial;
     r.size = std::min(size, static_cast<UINT>(sizeof(r.bytes)));
     std::memcpy(r.bytes, data, r.size);
 }
@@ -1778,6 +1944,16 @@ void CaptureMesh(ID3D11DeviceContext* ctx, const DrawKey& key) {
 }
 
 void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
+    switch (effects::NoteDrawIndexed(ctx, count, start, base)) {
+    case effects::kHide:
+        return;  // weapon.txt "hidefx" / "hideps"
+    case effects::kMove:  // the muzzle flash's mesh, moved with the gun
+        if (effects::DrawWithGun(which, ctx, [&] { g_origDrawIndexed[which](ctx, count, start, base); }))
+            return;
+        break;
+    default:
+        break;
+    }
     if (!g_research.load(std::memory_order_relaxed)) {
         // Only the hands' and the gun's own draws matter: a couple of comparisons, no lock.
         if (g_handShift.load(std::memory_order_relaxed)) {
@@ -2227,6 +2403,29 @@ void Probe() {
     if (g_weaponShift.load())
         Log("Weapon: last second's gun draws: %u shifted, %u left alone (another soldier's)",
             g_weaponShifted.exchange(0), g_weaponFar.exchange(0));
+    // The weapon camera test: where the camera is (as moved), where the game's own gun body was
+    // drawn and the first-person eye, both in the world (the arms' space plus its origin).
+    if (g_weaponTesting.load()) {
+        float cam[3], gun[3] = {}, eye[3] = {};
+        {
+            std::lock_guard lock(g_mutex);
+            std::memcpy(cam, g_camera, sizeof(cam));
+        }
+        {
+            std::lock_guard lock(g_handsMutex);
+            if (g_haveGunBodyOrig)
+                gun[0] = g_gunBodyOrig[3], gun[1] = g_gunBodyOrig[7], gun[2] = g_gunBodyOrig[11];
+        }
+        {
+            std::lock_guard lock(g_fpMutex);
+            eye[0] = g_viewToArms[3], eye[1] = g_viewToArms[7], eye[2] = g_viewToArms[11];
+            for (int i = 0; i < 3; ++i)
+                gun[i] += g_fpOrigin[i], eye[i] += g_fpOrigin[i];
+        }
+        Log("Weapon test: camera at (%.3f %.3f %.3f), the game's gun body at (%.3f %.3f %.3f), the first-person "
+            "eye at (%.3f %.3f %.3f)",
+            cam[0], cam[1], cam[2], gun[0], gun[1], gun[2], eye[0], eye[1], eye[2]);
+    }
     if (g_weaponWatch.load())
         LogWatch();
     WriteDump();
@@ -2308,6 +2507,129 @@ void Update() {
 
 bool Watching() {
     return g_weaponWatch.load();
+}
+
+const uint8_t* RecentUploadOf(ID3D11Resource* resource, UINT& size, uint32_t& serial) {
+    for (int k = 1; k <= 8; ++k) {  // newest first
+        const RecentUpload& r = t_recent[(t_recentNext - k + 8) % 8];
+        if (resource && r.resource == resource && r.size) {
+            size = r.size;
+            serial = r.serial;
+            return r.bytes;
+        }
+    }
+    return nullptr;
+}
+
+const uint8_t* LatestBlockOf(ID3D11Resource* resource, UINT& size, uint32_t& serial) {
+    if (!resource || t_upload.resource != resource || t_upload.bytes.empty())
+        return nullptr;
+    size = static_cast<UINT>(t_upload.bytes.size());
+    serial = t_upload.serial;
+    return t_upload.bytes.data();
+}
+
+uint32_t UploadSerial() {
+    return t_uploadSerial;
+}
+
+bool GameGunPlaces(float (&world)[3], float (&arms)[3]) {
+    std::lock_guard lock(g_handsMutex);
+    if (!g_haveGunBodyOrig)
+        return false;
+    std::lock_guard fp(g_fpMutex);
+    for (int i = 0; i < 3; ++i) {
+        arms[i] = g_gunBodyOrig[i * 4 + 3];
+        world[i] = arms[i] + g_fpOrigin[i];
+    }
+    return true;
+}
+
+bool GunDeltaWorld(float (&out)[16]) {
+    std::lock_guard lock(g_handsMutex);
+    if (!g_haveGunDeltaTrue || GetTickCount64() - g_gunDeltaTrueTime > 100)
+        return false;
+    std::lock_guard fp(g_fpMutex);
+    const float* d = g_gunDeltaTrue;
+    const float* o = g_fpOrigin;
+    // The arms' space is the world less its origin: the same turn, the translation moved with it.
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c)
+            out[r * 4 + c] = d[r * 4 + c];
+        out[r * 4 + 3] = d[r * 4 + 3] + o[r] - (d[r * 4] * o[0] + d[r * 4 + 1] * o[1] + d[r * 4 + 2] * o[2]);
+    }
+    out[12] = out[13] = out[14] = 0.0f;
+    out[15] = 1.0f;
+    return true;
+}
+
+const uint8_t* LatestViewConstants(ID3D11Resource*& resource) {
+    if (!t_viewConstants.resource)
+        return nullptr;
+    resource = t_viewConstants.resource;
+    return t_viewConstants.bytes;
+}
+
+bool DrawWithCopy(int which, ID3D11DeviceContext* ctx, ID3D11Resource* original, const uint8_t* bytes, UINT size,
+                  const std::function<void()>& draw) {
+    thread_local std::pair<UINT, ID3D11Buffer*> t_own[4] = {};
+    const int slot = BoundSlot(ctx, original);
+    if (slot < 0)
+        return false;
+    ID3D11Buffer* own = nullptr;
+    for (auto& [s, b] : t_own)
+        if (b && s == size)
+            own = b;
+    for (auto& [s, b] : t_own) {
+        if (own || b)
+            continue;
+        ID3D11Device* device = nullptr;
+        ctx->GetDevice(&device);
+        D3D11_BUFFER_DESC desc{size, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+        if (SUCCEEDED(device->CreateBuffer(&desc, nullptr, &b)))
+            s = size, own = b;
+        device->Release();
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    // BF3's own Map/Unmap, not the hooked ones: this upload isn't one to inspect.
+    if (!own || FAILED(g_origMap[which](ctx, own, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return false;
+    std::memcpy(mapped.pData, bytes, size);
+    g_origUnmap[which](ctx, own, 0);
+    ctx->VSSetConstantBuffers(slot, 1, &own);
+    draw();
+    auto buffer = static_cast<ID3D11Buffer*>(original);
+    ctx->VSSetConstantBuffers(slot, 1, &buffer);
+    return true;
+}
+
+bool LatestBlock(ID3D11Resource*& resource, std::vector<uint8_t>& bytes) {
+    if (!t_upload.resource)
+        return false;
+    resource = t_upload.resource;
+    bytes = t_upload.bytes;
+    return true;
+}
+
+bool GameGunBody(float (&out)[12]) {
+    std::lock_guard lock(g_handsMutex);
+    if (!g_haveGunBodyOrig)
+        return false;
+    std::memcpy(out, g_gunBodyOrig, sizeof(out));
+    std::lock_guard fp(g_fpMutex);
+    out[3] += g_fpOrigin[0], out[7] += g_fpOrigin[1], out[11] += g_fpOrigin[2];
+    return true;
+}
+
+int ViewBufferKind(ID3D11Resource* buffer) {
+    std::lock_guard lock(g_fpMutex);
+    for (const ViewByBuffer& v : g_viewByBuffer)
+        if (buffer && v.buffer == buffer)
+            return 1;
+    return buffer && std::find(std::begin(g_worldViewBuffers), std::end(g_worldViewBuffers), buffer) !=
+                         std::end(g_worldViewBuffers)
+               ? 2
+               : 0;
 }
 
 bool FirstPersonViews(float (&arms)[16], float (&world)[16]) {

@@ -1,6 +1,13 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <vector>
+
 #include "handpose.h"
+
+struct ID3D11Resource;
+struct ID3D11DeviceContext;
 
 namespace skin {
 
@@ -59,6 +66,36 @@ bool Watching();
 // rescale): in the space the arms and gun are drawn in, and in the world. Both carry the eye's
 // position and the view's axes; their difference is where that space sits in the world.
 bool FirstPersonViews(float (&arms)[16], float (&world)[16]);
+// Whether a constant buffer is one those view-projections went into: 1 in the arms' space, 2 in
+// the world, 0 neither.
+int ViewBufferKind(ID3D11Resource* buffer);
+
+// This thread's latest 4096-byte upload (BF3's per-draw block: bones, or instances' placements)
+// and its buffer; whole only while something needs it (weapon.txt "watch", free hands).
+bool LatestBlock(ID3D11Resource*& resource, std::vector<uint8_t>& bytes);
+// This thread's latest small upload into that buffer, if it's among the last eight (weapon.txt
+// "watch" keeps them), and the latest 4096-byte block if it went into that buffer: valid until this
+// thread's next upload. serial: UploadSerial() when it was made.
+const uint8_t* RecentUploadOf(ID3D11Resource* resource, unsigned int& size, uint32_t& serial);
+const uint8_t* LatestBlockOf(ID3D11Resource* resource, unsigned int& size, uint32_t& serial);
+// Small fresh uploads made on this thread so far: data a draw uses is the draw's own only if it
+// was uploaded after the draw before it.
+uint32_t UploadSerial();
+// Where the game's own gun body was last drawn, in the world and in the arms' space.
+bool GameGunPlaces(float (&world)[3], float (&arms)[3]);
+// The gun's move from where the game holds it to the right hand, to where the gun really is (no
+// per-eye shift), in the world: a 4x4 (rows; column vectors). False while the gun isn't moved.
+bool GunDeltaWorld(float (&out)[16]);
+// This thread's latest per-view constants (352 bytes: the view-projection at +176) as they went to
+// the graphics card, and their buffer.
+const uint8_t* LatestViewConstants(ID3D11Resource*& resource);
+// Draws (draw) with bytes bound in place of the constant buffer original, in the vertex shader
+// slot it's in, then puts BF3's back. which: the immediate (0) or deferred (1) context's functions.
+bool DrawWithCopy(int which, ID3D11DeviceContext* ctx, ID3D11Resource* original, const uint8_t* bytes,
+                  unsigned int size, const std::function<void()>& draw);
+// The game's own gun body as last drawn (bone 2 of its passes), in the world: rows rotation |
+// translation.
+bool GameGunBody(float (&out)[12]);
 
 // Free hands (hands.cpp): where to draw the gun and the left hand. Matrices are three rows,
 // rotation | translation, from the gun's model space / the gloves' bind space into the view's
@@ -68,6 +105,9 @@ bool FirstPersonViews(float (&arms)[16], float (&world)[16]);
 struct HandTargets {
     bool gun = false, left = false;  // which of these is tracked
     float gunPose[12] = {};
+    // Set as the targets go into the arms' space for a draw: the gun where it really is (from the
+    // middle of the head; gunPose then carries the shift that fakes each eye's view of it).
+    float gunPoseTrue[12] = {};
     float leftPose[12] = {};
     float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point
     // Each of the left glove's bones bent as its fingers are held, in the gloves' bind space

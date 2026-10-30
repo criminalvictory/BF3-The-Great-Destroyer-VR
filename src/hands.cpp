@@ -22,6 +22,7 @@
 #include "handpose.h"
 #include "input.h"
 #include "log.h"
+#include "reload.h"
 #include "skin.h"
 
 namespace {
@@ -326,6 +327,8 @@ void Update(const XrPosef& head) {
                 noGun, noLeft);
         frames = noGun = noLeft = 0;
     }
+    // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's space.
+    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? t.leftWrist : nullptr, input::LeftSqueeze());
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }
 

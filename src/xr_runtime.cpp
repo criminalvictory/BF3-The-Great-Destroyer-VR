@@ -29,6 +29,7 @@
 #include "camera.h"
 #include "config.h"
 #include "depth3d.h"
+#include "effects.h"
 #include "finder.h"
 #include "fov.h"
 #include "bodies.h"
@@ -599,6 +600,13 @@ void PollHotkeys() {
     // F17 (tools/drawhunt.ps1): 3 s of turning as the stick does, to measure how even it is.
     if (KeyPressed(VK_F17))
         input::StartTurnTest();
+    // F18 (tools/drawhunt.ps1): a census of every draw, to find the gun's effects (fire after 2 s).
+    if (KeyPressed(VK_F18))
+        effects::StartCensus();
+    // F19: every draw with something placed at the game's own gun, logged once by its kind.
+    if (KeyPressed(VK_F19))
+        effects::StartFlashProbe();
+    effects::Update();
     // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.
     if (KeyPressed(VK_F15))
         skin::HuntStart();

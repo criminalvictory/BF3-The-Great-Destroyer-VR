@@ -20,4 +20,7 @@ void Update();
 // That size: 1 for a gun loaded a round at a time (the SMAW, the grenade launcher).
 int MagazineSize();
 
+// Testing (weapon.txt "refill"): the gun in hand gets 300 spare rounds. Render thread.
+void Refill();
+
 }

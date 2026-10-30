@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "depth3d.h"
+#include "effects.h"
 #include "log.h"
 #include "perfinfo.h"
 #include "skin.h"
@@ -57,8 +58,13 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, 
 
 // ID3D11DeviceContext vtable slots.
 constexpr int kDrawIndexedSlot = 12;
+constexpr int kDrawSlot = 13;
 constexpr int kMapSlot = 14;
 constexpr int kUnmapSlot = 15;
+constexpr int kDrawIndexedInstancedSlot = 20;
+constexpr int kDrawInstancedSlot = 21;
+constexpr int kDrawIndexedInstancedIndirectSlot = 39;
+constexpr int kDrawInstancedIndirectSlot = 40;
 constexpr int kClearDepthStencilViewSlot = 53;
 
 // Functions of the immediate context and of deferred contexts (which BF3 records draws on from
@@ -68,7 +74,16 @@ struct ContextFunctions {
     void* unmap[2];
     void* drawIndexed[2];
     void* clearDepth[2];
+    effects::DrawFunctions draws;
 };
+
+void TakeDraws(void** table, int which, effects::DrawFunctions& d) {
+    d.draw[which] = table[kDrawSlot];
+    d.drawInstanced[which] = table[kDrawInstancedSlot];
+    d.drawIndexedInstanced[which] = table[kDrawIndexedInstancedSlot];
+    d.drawIndexedIndirect[which] = table[kDrawIndexedInstancedIndirectSlot];
+    d.drawIndirect[which] = table[kDrawInstancedIndirectSlot];
+}
 
 // Swap chain and device context methods are shared by every object of their kind from
 // d3d11.dll and dxgi.dll, so a throwaway device on a hidden window is enough to find them.
@@ -105,6 +120,8 @@ bool FindSwapChainVtable(void**& vtable, ContextFunctions& contexts) {
         contexts.unmap[0] = contexts.unmap[1] = immediate[kUnmapSlot];
         contexts.drawIndexed[0] = contexts.drawIndexed[1] = immediate[kDrawIndexedSlot];
         contexts.clearDepth[0] = contexts.clearDepth[1] = immediate[kClearDepthStencilViewSlot];
+        TakeDraws(immediate, 0, contexts.draws);
+        TakeDraws(immediate, 1, contexts.draws);
         ID3D11DeviceContext* deferred = nullptr;
         if (SUCCEEDED(device->CreateDeferredContext(0, &deferred))) {
             void** table = *reinterpret_cast<void***>(deferred);
@@ -112,6 +129,7 @@ bool FindSwapChainVtable(void**& vtable, ContextFunctions& contexts) {
             contexts.unmap[1] = table[kUnmapSlot];
             contexts.drawIndexed[1] = table[kDrawIndexedSlot];
             contexts.clearDepth[1] = table[kClearDepthStencilViewSlot];
+            TakeDraws(table, 1, contexts.draws);
             deferred->Release();
         }
         swap->Release();
@@ -152,6 +170,8 @@ bool Install() {
     bool depthHooked = depth3d::InstallHooks(contexts.clearDepth);
     // The game's memory statistics, from a copy (perfinfo.cpp).
     bool statsHooked = perfinfo::Install();
+    // The other draw calls, for the gun's effects (effects.cpp). Not fatal if it fails.
+    effects::InstallHooks(contexts.draws);
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         Log("MH_EnableHook failed");
         return false;

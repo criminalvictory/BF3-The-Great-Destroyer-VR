@@ -55,6 +55,10 @@ void SetViewTurn(const ViewTurn* turn);
 // the hand instead, the direction is the other way round: flip = true.
 void SetGunFlip(bool flip);
 
+// Research (weapon.txt "wcam x y z"): the weapon camera moved by offset along its own right, up and
+// back axes (metres) each time the game writes it, watched in every mode; nullptr = off.
+void SetWeaponTest(const float* offset);
+
 // The field of view to make the game render with, in radians (0 = the game's own). Written into
 // the render and cull views and their source each time a camera breakpoint fires.
 void SetRenderFov(float radians);

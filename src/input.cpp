@@ -16,6 +16,7 @@
 #include "ammo.h"
 #include "config.h"
 #include "log.h"
+#include "reload.h"
 #include "skin.h"
 
 namespace {
@@ -370,7 +371,7 @@ void ReleaseAll() {
 bool FireBlocked() {
     if (!skin::RifleInHand())
         return false;
-    if (skin::MagazineOut())
+    if (skin::MagazineOut() || reload::BoltBack())  // the bolt locked back: charge it first
         return true;
     int loaded = 0, spare = 0;
     return ammo::MagazineSize() >= 5 && ammo::Get(loaded, spare) && loaded <= 1;
@@ -558,6 +559,7 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         g_xHeld = true;
         PressR(true);            // until X is let go
         skin::InsertMagazine();  // the game's reload puts one in
+        reload::ReleaseBolt();   // and chambers a round
     }
     if (!x && g_xDown) {
         if (g_xHeld)

@@ -43,6 +43,10 @@ std::atomic<float> g_eyeOffset{0.0f};
 std::atomic<bool> g_viewsMode{false};  // views.cpp makes the render and cull cameras itself
 std::atomic<uintptr_t> g_weaponAddress{0};
 std::atomic<bool> g_gunFlip{false};
+// weapon.txt "wcam x y z" (SetWeaponTest): the camera the gun is placed from moved along its own
+// axes, to see what follows it: the gun, its muzzle flash, the casings, the eye.
+std::atomic<bool> g_weaponTest{false};
+std::atomic<float> g_weaponTestOffset[3];
 std::atomic<uint32_t> g_hits{0};
 std::atomic<uintptr_t> g_writers[kMaxWriters];
 int g_writersLogged = 0;
@@ -244,6 +248,11 @@ void TurnLocal(float* m, const float* local) {
     }
 }
 
+// The handler wrote a watched float itself (a camera's translation y, where the breakpoint sits):
+// the breakpoint fires again inside it. Writing it unguarded recursed until the stack overflowed
+// (the weapon camera test, 2026-10-30), so that write is let through.
+thread_local bool t_inHandler = false;
+
 // Runs on the game thread that just wrote a camera. Must stay tiny: no locks, no logging.
 LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
@@ -251,6 +260,11 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     CONTEXT* c = info->ContextRecord;
     if (!(c->Dr6 & 0xF))
         return EXCEPTION_CONTINUE_SEARCH;
+    if (t_inHandler) {
+        c->Dr6 = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    t_inHandler = true;
 
     float offset = g_eyeOffset.load(std::memory_order_relaxed);
     for (int i = 0; i < kSlots; ++i) {
@@ -304,6 +318,13 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
                     local[0] = -local[0], local[1] = -local[1], local[2] = -local[2];
                 TurnLocal(m, local);
             }
+            if (g_weaponTest.load(std::memory_order_relaxed)) {
+                const float o[3] = {g_weaponTestOffset[0].load(std::memory_order_relaxed),
+                                    g_weaponTestOffset[1].load(std::memory_order_relaxed),
+                                    g_weaponTestOffset[2].load(std::memory_order_relaxed)};
+                for (int k = 0; k < 3; ++k)
+                    m[12 + k] += m[k] * o[0] + m[4 + k] * o[1] + m[8 + k] * o[2];
+            }
             continue;  // the weapon camera never gets the eye shift
         }
         if (view.active)
@@ -313,6 +334,7 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
             m[14] += m[2] * offset;
         }
     }
+    t_inHandler = false;
     c->Dr6 = 0;
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -355,7 +377,7 @@ bool LooksValid(uintptr_t address) {
 // the weapon camera while the view is turned.
 void DesiredSlots(uintptr_t (&out)[kSlots]) {
     std::fill(std::begin(out), std::end(out), 0);
-    bool weapon = g_view[g_viewIndex.load()].active;
+    bool weapon = g_view[g_viewIndex.load()].active || g_weaponTest.load();
 
     uintptr_t cull = 0;
     int hunt = g_huntIndex.load();
@@ -570,6 +592,15 @@ void SetViewTurn(const ViewTurn* turn) {
     if (turn)
         g_view[next].turn = *turn;
     g_viewIndex.store(next, std::memory_order_release);
+}
+
+void SetWeaponTest(const float* offset) {
+    if (offset)
+        for (int k = 0; k < 3; ++k)
+            g_weaponTestOffset[k] = offset[k];
+    if (g_weaponTest.exchange(offset != nullptr) != (offset != nullptr) || offset)
+        Log("Camera: the weapon camera test is %s (%.2f %.2f %.2f along its right, up and back)",
+            offset ? "on" : "off", offset ? offset[0] : 0.0f, offset ? offset[1] : 0.0f, offset ? offset[2] : 0.0f);
 }
 
 void SetGunFlip(bool flip) {
