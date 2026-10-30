@@ -51,6 +51,10 @@ struct Settings {
 
     // Windowed mode: keep BF3's window this many pixels square (0 = leave it alone).
     int windowSize = 1600;
+
+    // Campaign: seconds a dead soldier's body stays before the game removes it (0 = the game's own,
+    // 15 s for most soldiers).
+    float corpseSeconds = 0.0f;
 };
 
 // Cheat Engine style pointer chain: address = bf3.exe + base, then for each offset:

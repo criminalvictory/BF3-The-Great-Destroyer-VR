@@ -86,9 +86,13 @@ const char kDefaultIni[] =
     "size=1600\n"
     "\n"
     "[god]\n"
-    "; Campaign only. Keeps the player's health topped up (found with Home x3; End toggles).\n"
+    "; Campaign only. Keeps the player's health and maximum health at value; End toggles.\n"
     "enabled=1\n"
-    "value=100\n"
+    "value=100000\n"
+    "\n"
+    "[world]\n"
+    "; Campaign: seconds a dead soldier's body stays (0 = the game's own, 15 for most soldiers).\n"
+    "corpse_seconds=0\n"
     "\n"
     "[fov]\n"
     "; BF3's FOV setting, found by the FOV finder (Home in game), so it can go past the menu's 90.\n"
@@ -197,6 +201,7 @@ void Load(HMODULE self) {
     s.maxAimOffsetDeg = ReadFloat(L"controllers", L"max_aim_offset", s.maxAimOffsetDeg);
     s.viewLag = std::clamp(static_cast<int>(ReadFloat(L"controllers", L"view_lag", 0.0f)), 0, 2);
     s.poseLag = std::clamp(static_cast<int>(ReadFloat(L"stereo", L"pose_lag", 1.0f)), 0, 3);
+    s.corpseSeconds = std::max(ReadFloat(L"world", L"corpse_seconds", 0.0f), 0.0f);
     s.windowSize = static_cast<int>(ReadFloat(L"window", L"size", static_cast<float>(s.windowSize)));
 
     std::vector<CameraPointer> cameras;

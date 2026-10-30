@@ -679,6 +679,10 @@ int MirrorEye() {
     return g_showRight.load() ? 1 : 0;
 }
 
+float Strength() {
+    return g_strength.load();
+}
+
 void SetPictureSize(UINT width, UINT height) {
     g_width = width;
     g_height = height;
@@ -727,7 +731,8 @@ bool Render(ID3D11Device* device, ID3D11Texture2D* back, DXGI_FORMAT targetForma
                 ok = false;
                 break;
             }
-            const float share = e == 0 ? 1.0f + g_bias.load() : 1.0f - g_bias.load();
+            const float bias = model.bias >= -1.0f && model.bias <= 1.0f ? model.bias : g_bias.load();
+            const float share = e == 0 ? 1.0f + bias : 1.0f - bias;
             Params p{eye.shift * share * g_strength.load(), model.nearPlane, model.depthScale, g_minDistance.load(),
                      static_cast<float>(depthDesc.Width), static_cast<float>(depthDesc.Height),
                      g_debugView.load(), g_fillMode.load(), g_gunScale.load(), g_gunBelow.load(),

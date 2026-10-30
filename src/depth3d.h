@@ -30,7 +30,13 @@ struct DepthModel {
     float nearPlane = 0.06f;
     float depthScale = 1.00001f;
     float minDistance = 0.25f;  // nearer than this counts as this (the gun's own depth range)
+    // How the shift is shared between the eyes, overriding depth3d.txt's "bias" when in -1..1:
+    // -1 the left eye gets the picture as it is and the right eye twice its shift, 1 the reverse.
+    float bias = 2.0f;
 };
+
+// depth3d.txt's "strength": the share of the real eye distance the 3D uses.
+float Strength();
 
 // Draws both eyes from the back buffer and the depth buffer found this frame. False if no depth
 // buffer has been found yet or a resource can't be made; then nothing was drawn.

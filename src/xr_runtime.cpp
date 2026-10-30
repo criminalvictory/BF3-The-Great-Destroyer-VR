@@ -27,6 +27,7 @@
 #include "depth3d.h"
 #include "finder.h"
 #include "fov.h"
+#include "bodies.h"
 #include "god.h"
 #include "input.h"
 #include "log.h"
@@ -108,8 +109,10 @@ bool g_swapEyes = false;
 // every frame, depth3d.cpp); alternate eyes (each game frame for one eye: the picture doubled on
 // head turns, more so at lower frame rates); mono (every frame to both eyes, flat: no doubling,
 // which showed the alternating caused it); frozen (nothing new shown: the compositor held the
-// picture still like a wall, so it handles each eye's pose).
-enum StereoTest { kTestDepth, kTestNone, kTestMono, kTestFreeze, kStereoTests };
+// picture still like a wall, so it handles each eye's pose); hybrid (each frame is rendered from
+// one eye, alternately, and goes to that eye as it is; the other eye is made from it and its
+// depth, so both eyes get every frame and only one of them has filled gaps at a time).
+enum StereoTest { kTestDepth, kTestHybrid, kTestNone, kTestMono, kTestFreeze, kStereoTests };
 int g_stereoTest = kTestDepth;
 // The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
 // angles written a frame or two earlier, so the view turn uses the yaw from that many frames
@@ -565,8 +568,9 @@ void PollHotkeys() {
     if (KeyPressed(VK_PAUSE))
         skin::ToggleResearch();
     if (KeyPressed(VK_SCROLL)) {
-        static const char* kNames[] = {"depth 3D (both eyes from each frame and its depth)", "alternate eyes",
-                                       "mono (the same picture to both eyes)", "frozen"};
+        static const char* kNames[] = {"depth 3D (both eyes from each frame and its depth)",
+                                       "hybrid (each frame from one eye, the other eye from its depth)",
+                                       "alternate eyes", "mono (the same picture to both eyes)", "frozen"};
         g_stereoTest = (g_stereoTest + 1) % kStereoTests;
         Log("Stereo: %s", kNames[g_stereoTest]);
     }
@@ -643,7 +647,8 @@ XrFovf GameFov();
 
 // Depth 3D: both eyes from this frame's picture and BF3's depth (depth3d.cpp). Until a depth
 // buffer has been found, the picture goes to both eyes as it is (flat).
-bool SubmitDepth3D(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, float ipd) {
+// bias: as depth3d::DepthModel's (outside -1..1, depth3d.txt decides).
+bool SubmitDepth3D(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, float ipd, float bias = 2.0f) {
     uint32_t index[2] = {};
     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
@@ -669,6 +674,7 @@ bool SubmitDepth3D(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, floa
                                 {g_swapchains[kRightEye].images[index[kRightEye]].texture, -shift}};
         depth3d::DepthModel model;
         camera::ProjectionDepth(model.nearPlane, model.depthScale);
+        model.bias = bias;
         ID3D11DeviceContext* context = nullptr;
         g_device->GetImmediateContext(&context);
         if (depth3d::Render(g_device, back, g_scFormat, eyes, model)) {
@@ -849,8 +855,11 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     int eye = g_nextEye;
     bool mono = g_stereoTest == kTestMono;
     bool fromDepth = g_stereoTest == kTestDepth;
-    if (fromDepth) {
-        if (!SubmitDepth3D(back, desc, ipd))
+    bool hybrid = g_stereoTest == kTestHybrid;
+    if (fromDepth || hybrid) {
+        // Hybrid: this frame was rendered from `eye`, which gets it unchanged; the other eye is a
+        // full eye distance away.
+        if (!SubmitDepth3D(back, desc, ipd, hybrid ? (eye == kLeftEye ? -1.0f : 1.0f) : 2.0f))
             return;
         for (int e = 0; e < 2; ++e) {
             g_eyePose[e] = renderPose(e);
@@ -870,9 +879,11 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     g_nextEye = 1 - eye;
 
     // Alternating: the game's next frame is for the other eye, so its camera is shifted half the
-    // eye distance that way. Mono and depth 3D render from between the eyes.
+    // eye distance that way. Mono and depth 3D render from between the eyes. Hybrid moves the
+    // camera by the share of the eye distance depth 3D uses, so the made eye and the rendered
+    // one stay that far apart whichever is rendered.
     float side = (g_nextEye == kLeftEye ? -1.0f : 1.0f) * (g_swapEyes ? -1.0f : 1.0f);
-    camera::SetEyeOffset(mono || fromDepth ? 0.0f : 0.5f * ipd * side);
+    camera::SetEyeOffset(mono || fromDepth ? 0.0f : 0.5f * ipd * side * (hybrid ? depth3d::Strength() : 1.0f));
 
     // The look angles (what BF3 aims and fires along) follow the right controller when it's
     // tracked, otherwise the head. With the controller aiming, the render cameras are turned
@@ -1021,6 +1032,7 @@ void OnPresent(IDXGISwapChain* swap) {
     window::Maintain();
     fov::Apply();
     god::Apply();
+    bodies::Apply();
     skin::Probe();
     camera::Probe();
     aim::Probe();

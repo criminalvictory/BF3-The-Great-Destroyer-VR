@@ -2,7 +2,8 @@
 # dword -Back bytes before it: when objects hold a pointer at a known offset, that is their type.
 # Read-only. Run with the 32-bit PowerShell.
 #   tools\findref.ps1 -Value 2A0B1C40 -Back 0x14
-param([Parameter(Mandatory)] [string]$Value, [int]$Back = 0x14, [int]$Max = 200)
+#   -All also searches read-only memory (bf3.exe's constant data, such as its type tables).
+param([Parameter(Mandatory)] [string]$Value, [int]$Back = 0x14, [int]$Max = 200, [switch]$All)
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -14,6 +15,7 @@ public static class FindRef {
     [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
     [DllImport("kernel32.dll")] static extern bool ReadProcessMemory(IntPtr p, IntPtr a, byte[] b, int n, out int r);
     static IntPtr Ptr(long a) { return new IntPtr(unchecked((int)(uint)a)); }
+    public static bool All = false;
     public static List<long> Find(IntPtr h, uint value) {
         var hits = new List<long>();
         long a = 0x10000; MBI m; byte[] buf = new byte[1 << 20];
@@ -21,7 +23,8 @@ public static class FindRef {
             long start = (long)(uint)m.Base.ToInt32(), size = (long)(uint)m.Size.ToInt32();
             if (size <= 0) break;
             bool writable = (m.Protect & 0x04) != 0 || (m.Protect & 0x40) != 0;
-            if (m.State == 0x1000 && writable && (m.Protect & 0x100) == 0) {
+            bool readable = (m.Protect & 0xEE) != 0;
+            if (m.State == 0x1000 && (All ? readable : writable) && (m.Protect & 0x100) == 0) {
                 for (long off = 0; off < size; off += buf.Length) {
                     int n = (int)Math.Min(buf.Length, size - off), r;
                     if (!ReadProcessMemory(h, Ptr(start + off), buf, n, out r)) continue;
@@ -39,6 +42,7 @@ public static class FindRef {
 $game = Get-Process bf3 -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $game) { Write-Host 'BF3 is not running.'; exit 1 }
 $h = [FindRef]::OpenProcess(0x0410, $false, $game.Id)
+[FindRef]::All = [bool]$All
 $hits = [FindRef]::Find($h, [Convert]::ToUInt32($Value, 16))
 $shown = 0
 foreach ($a in $hits) {
