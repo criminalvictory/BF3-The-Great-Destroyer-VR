@@ -550,11 +550,7 @@ void PollHotkeys() {
     float wideFov = config::Get().renderFovDeg * kPi / 180.0f;
     camera::SetRenderFov(wideFov);
     skin::SetProjectionFix(wideFov > 0.0f ? camera::SourceFov() : 0.0f, wideFov);
-    // Home: health finder step (full health, after damage, after refill). End: god mode on/off.
-    if (KeyPressed(VK_HOME))
-        finder::HealthStep();
-    if (KeyPressed(VK_F16))
-        finder::HealthAuto();
+    // End: god mode on/off.
     if (KeyPressed(VK_END))
         god::Toggle();
     // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.

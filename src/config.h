@@ -96,9 +96,8 @@ struct Fov {
     float value = 110.0f;
 };
 
-// God mode (campaign only). health: extra pointers from the old health finder (Home x3, F16).
+// God mode (campaign only): god.cpp finds the player's health itself.
 struct God {
-    std::vector<CameraPointer> health;
     bool enabled = true;
     float value = 100000.0f;  // what health and maximum health are kept at
 };

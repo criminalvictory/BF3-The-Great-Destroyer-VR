@@ -244,11 +244,6 @@ void Load(HMODULE self) {
     God god;
     god.enabled = ReadBool(L"god", L"enabled", true);
     god.value = ReadFloat(L"god", L"value", god.value);
-    for (size_t n = 0; n < kMaxCameras; ++n) {
-        CameraPointer health = ReadPointer(L"god", KeyName(L"base", n), KeyName(L"offsets", n));
-        if (health.base)
-            god.health.push_back(health);
-    }
 
     {
         std::lock_guard lock(g_pointerMutex);
@@ -345,9 +340,6 @@ void SetGod(const God& god) {
     wchar_t buf[32];
     swprintf_s(buf, L"%.0f", god.value);
     WriteString(L"god", L"value", buf);
-    for (size_t n = 0; n < kMaxCameras; ++n)
-        WritePointer(L"god", KeyName(L"base", n), KeyName(L"offsets", n),
-                     n < god.health.size() ? god.health[n] : CameraPointer{});
 }
 
 CameraPointer GetCull() {

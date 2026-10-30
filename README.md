@@ -6,6 +6,23 @@ It injects into the running game and turns it into stereo 3D with head tracking 
 **Campaign only.** Never use it on online servers: injecting into the game there can get your
 account banned. This project contains only its own code; it ships no EA files.
 
+## Quick start
+
+1. Start SteamVR and put the headset on its stand (or on).
+2. Run `build\injector.exe` and leave it open. It waits for the game.
+3. In Battlelog, press **PLAY CAMPAIGN**, then **Resume campaign** in the game's menu.
+4. Put the headset on and press **F8** for 3D. **F9** recenters the view.
+5. In VR: aim and fire with the right controller, move with the left stick, turn with the right
+   stick. God mode is on (End turns it off).
+
+If the picture looks wrong:
+
+- **Scroll Lock** cycles how the 3D is made: depth 3D (normal), hybrid, alternate eyes, mono,
+  frozen. If one looks better to you, that's useful to know.
+- **Delete** turns the wide view off and on; **Page Up / Page Down** make it wider or narrower.
+- The settings files are in the `build` folder: `bf3vr.ini` (general), `depth3d.txt` (the 3D
+  tuning, changes apply at once).
+
 ## What works
 
 - **Stereo 3D from depth** (the default): every game frame becomes both eyes. Each pixel is shifted
@@ -137,9 +154,10 @@ Finders and tests (needed once per setup; see the log for results):
 | F6 / F5 | Cull hunt: with the arm held out so scenery is missing, tries one camera copy every 3 s / F5 saves the one that brings it back |
 | F3 | Look-angle finder |
 | F12 | Gameplay skeleton finder (research: it turned out not to drive the drawn arms) |
-| Home / F16 | Old health finders (superseded by the server-side god mode) |
 | F15, F13 / F14 | Draw hunt, driven by `tools/drawhunt.ps1` (keys no keyboard has): hides half the skinned draws at a time until the one asked about is found |
 
+`tools/selfcheck.ps1` confirms from the log, after a launch, that the hooks, OpenXR session, wide
+view, god mode, bodies and the 3D's depth buffer all came up.
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
 sent by virtual-key code alone) and takes screenshots while BF3 is in front; `tools/say.ps1`
 reads test instructions aloud. Memory tools for campaign research, run with the 32-bit
