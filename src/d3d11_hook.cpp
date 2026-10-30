@@ -5,6 +5,7 @@
 #include <dxgi.h>
 #include <MinHook.h>
 
+#include "depth3d.h"
 #include "log.h"
 #include "skin.h"
 #include "xr_runtime.h"
@@ -23,7 +24,24 @@ ResizeBuffersFn g_origResizeBuffers = nullptr;
 
 HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval, UINT flags) {
     vr::OnPresent(swap);
-    return g_origPresent(swap, syncInterval, flags);
+    // How long the game's own Present takes once ours is done: handing frames to the headset
+    // seemed to stall the game (about 18 ms a frame against 8 ms without), so time where.
+    static LARGE_INTEGER frequency{};
+    static double total = 0.0;
+    static int calls = 0;
+    if (!frequency.QuadPart)
+        QueryPerformanceFrequency(&frequency);
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    HRESULT hr = g_origPresent(swap, syncInterval, flags);
+    QueryPerformanceCounter(&t1);
+    total += 1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(frequency.QuadPart);
+    if (++calls == 60) {
+        Log("Game's own Present: %.2f ms a frame (sync interval %u)", total / calls, syncInterval);
+        total = 0.0;
+        calls = 0;
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, UINT width, UINT height,
@@ -36,6 +54,7 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, 
 constexpr int kDrawIndexedSlot = 12;
 constexpr int kMapSlot = 14;
 constexpr int kUnmapSlot = 15;
+constexpr int kClearDepthStencilViewSlot = 53;
 
 // Functions of the immediate context and of deferred contexts (which BF3 records draws on from
 // several threads); they may be different functions.
@@ -43,6 +62,7 @@ struct ContextFunctions {
     void* map[2];
     void* unmap[2];
     void* drawIndexed[2];
+    void* clearDepth[2];
 };
 
 // Swap chain and device context methods are shared by every object of their kind from
@@ -79,12 +99,14 @@ bool FindSwapChainVtable(void**& vtable, ContextFunctions& contexts) {
         contexts.map[0] = contexts.map[1] = immediate[kMapSlot];
         contexts.unmap[0] = contexts.unmap[1] = immediate[kUnmapSlot];
         contexts.drawIndexed[0] = contexts.drawIndexed[1] = immediate[kDrawIndexedSlot];
+        contexts.clearDepth[0] = contexts.clearDepth[1] = immediate[kClearDepthStencilViewSlot];
         ID3D11DeviceContext* deferred = nullptr;
         if (SUCCEEDED(device->CreateDeferredContext(0, &deferred))) {
             void** table = *reinterpret_cast<void***>(deferred);
             contexts.map[1] = table[kMapSlot];
             contexts.unmap[1] = table[kUnmapSlot];
             contexts.drawIndexed[1] = table[kDrawIndexedSlot];
+            contexts.clearDepth[1] = table[kClearDepthStencilViewSlot];
             deferred->Release();
         }
         swap->Release();
@@ -121,11 +143,14 @@ bool Install() {
     }
     // Constant buffer uploads, for the skinning research (skin.cpp). Not fatal if it fails.
     bool skinHooked = skin::InstallHooks(contexts.map, contexts.unmap, contexts.drawIndexed);
+    // Depth clears, to find the depth buffer for depth-based 3D (depth3d.cpp).
+    bool depthHooked = depth3d::InstallHooks(contexts.clearDepth);
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         Log("MH_EnableHook failed");
         return false;
     }
-    Log("Present/ResizeBuffers hooked%s", skinHooked ? ", Map/Unmap/DrawIndexed hooked" : "");
+    Log("Present/ResizeBuffers hooked%s%s", skinHooked ? ", Map/Unmap/DrawIndexed hooked" : "",
+        depthHooked ? ", ClearDepthStencilView hooked" : "");
     return true;
 }
 

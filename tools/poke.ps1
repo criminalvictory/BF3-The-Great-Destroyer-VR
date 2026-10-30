@@ -8,7 +8,10 @@ param(
     [Parameter(Mandatory)] [string]$Offset,
     [Parameter(Mandatory)] [float]$Value,
     [string]$Watch = '',
-    [double]$Hold = 0
+    [double]$Hold = 0,
+    # Refuse to write unless the target holds this now (NaN = don't check). A chain one step short
+    # once landed on a pointer, and writing a float there crashed the game.
+    [float]$Expect = [float]::NaN
 )
 
 Add-Type -Namespace Poke -Name M -MemberDefinition @'
@@ -46,6 +49,10 @@ function Report([string]$when) {
 }
 
 Report 'before'
+if (-not [float]::IsNaN($Expect) -and (Read-Float $target) -ne $Expect) {
+    Write-Host ('refused: the target holds {0}, not {1}' -f (Read-Float $target), $Expect)
+    exit 2
+}
 $bytes = [BitConverter]::GetBytes($Value)
 $n = 0
 $until = (Get-Date).AddSeconds($Hold)

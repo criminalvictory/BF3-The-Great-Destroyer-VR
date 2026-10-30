@@ -560,6 +560,20 @@ uint32_t TakeCameraBuilds() {
     return g_cameraBuilds.exchange(0);
 }
 
+bool ProjectionDepth(float& nearPlane, float& depthScale) {
+    // Seen in game: rows (s 0 0 0) (0 s 0 0) (0 0 -1.00001 -1) (0 0 -0.06 0): depth = 1.00001 - 0.06/distance.
+    uintptr_t render = g_slots[0].load();
+    float m[16];
+    if (!render || !SafeRead(render + kProjectionFromTransform, m, sizeof(m)))
+        return false;
+    float scale = -m[10], n = -m[14];
+    if (!(scale > 0.9f && scale < 1.1f && n > 0.001f && n < 1.0f))
+        return false;
+    nearPlane = n;
+    depthScale = scale;
+    return true;
+}
+
 float SourceFov() {
     float fov = 0.0f;
     return g_fovSource && SafeRead(g_fovSource, &fov, sizeof(fov)) && LooksLikeFov(fov) ? fov : 0.0f;

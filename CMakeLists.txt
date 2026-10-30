@@ -45,10 +45,11 @@ add_library(bf3vr SHARED
     src/fov.cpp
     src/window.cpp
     src/skin.cpp
+    src/depth3d.cpp
     src/god.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi)
+target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler)
 
 # Diagnostic: OpenXR instance creation outside the game.
 add_executable(xrtest tools/xrtest.cpp)

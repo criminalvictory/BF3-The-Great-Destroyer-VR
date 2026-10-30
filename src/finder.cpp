@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "god.h"
 #include "config.h"
 #include "fov.h"
 #include "log.h"
@@ -1526,7 +1527,7 @@ void RunHealthAuto() {
     auto refillsGradually = [](const std::vector<uintptr_t>& group) {
         float last = -1.0f;
         int steps = 0;
-        for (int poll = 0; poll < 600; ++poll) {  // up to about 90 seconds
+        for (int poll = 0; poll < 170; ++poll) {  // up to about 25 seconds: health is back within seconds
             Sleep(150);
             size_t full = 0;
             float first = -1.0f;
@@ -1556,6 +1557,18 @@ void RunHealthAuto() {
                 byValue[std::lround(v * 100.0f)].push_back(c.data[i]);
             wasFull[i] = readable && v == kFullHealth;
         }
+        // Every value that just left 100 for a fraction, with where it is: what the player's
+        // health really does on a hit (grouping by equal value caught nothing before a death).
+        static int logged = 0;
+        for (const auto& [key, group] : byValue) {
+            if (key % 100 == 0 || logged >= 300)
+                continue;
+            ++logged;
+            Log("Health finder (watch): %zu left 100 for %.2f: %08X %08X %08X %08X", group.size(), key / 100.0f,
+                static_cast<unsigned>(group[0]), static_cast<unsigned>(group.size() > 1 ? group[1] : 0),
+                static_cast<unsigned>(group.size() > 2 ? group[2] : 0),
+                static_cast<unsigned>(group.size() > 3 ? group[3] : 0));
+        }
         // The player's health had 15 copies in the first, manual run; counters and timers that
         // pass 100 come in twos and threes.
         for (const auto& [key, group] : byValue) {
@@ -1582,25 +1595,49 @@ void RunHealthAuto() {
                 together ? "still together and low three seconds later" : "noise");
             if (!together)
                 continue;
+            // Every candidate showing that value now, not only those caught dropping in the same
+            // moment: the game's own health may have dropped a moment before its copies.
+            float shown = -1.0f;
+            camera::SafeRead(group[0], &shown, sizeof(shown));
+            std::vector<uintptr_t> all;
+            for (size_t i = 0; i < c.size && all.size() < 256; ++i) {
+                float v = 0.0f;
+                if (camera::SafeRead(c.data[i], &v, sizeof(v)) && std::fabs(v - shown) < 0.01f)
+                    all.push_back(c.data[i]);
+            }
             if (refillsGradually(group)) {
-                Log("Health finder (auto): they refilled gradually, like health");
-                hit = group;
-                break;
+                // Of those, the ones back at full with them: a value that only happened to show the
+                // same number at that moment won't have followed.
+                for (uintptr_t address : all) {
+                    float v = 0.0f;
+                    if (camera::SafeRead(address, &v, sizeof(v)) && v == kFullHealth)
+                        hit.push_back(address);
+                }
+                Log("Health finder (auto): they refilled gradually, like health; %zu values showed %.2f, %zu are "
+                    "back at full with them", all.size(), shown, hit.size());
+                if (hit.size() >= 2)
+                    break;
+                hit.clear();
             }
             Log("Health finder (auto): they jumped straight back (or never refilled): not health");
         }
     }
+    delete g_healthCandidates;
+    g_healthCandidates = nullptr;
+    g_healthStep = 0;
     if (hit.empty()) {
         Log("Health finder (auto): no hit seen; nothing changed");
-        g_healthStep = 0;
         BeepFailure();
         return;
     }
-    c.size = 0;
-    for (uintptr_t address : hit)
-        c.Push(address);
-    g_healthStep = 2;
-    HealthThirdStep();
+    // Pinned by address for this session. Saved pointer chains to it broke (the game reuses that
+    // memory), so the old ones are dropped rather than written through.
+    config::God god = config::GetGod();
+    god.health.clear();
+    god.enabled = true;
+    config::SetGod(god);
+    god::SetSessionHealth(hit);
+    BeepSuccess();
 }
 
 void RunHealthStep() {

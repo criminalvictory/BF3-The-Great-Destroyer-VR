@@ -11,10 +11,12 @@
 #   -Action enter     : Enter
 # A minimized game window is restored first.
 param(
-    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'pause', 'scroll', 'end')] [string]$Action,
+    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'pause', 'scroll', 'end', 'hold')] [string]$Action,
     [string]$Name = 'hunt',
     [int]$X = 0,
-    [int]$Y = 0
+    [int]$Y = 0,
+    [int]$Vk = 0x57,          # -Action hold: the key (default W, walk forward)
+    [double]$Seconds = 5
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -61,6 +63,9 @@ $keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 
 if ($keys.ContainsKey($Action)) {
     [DrawHunt.U]::Key($keys[$Action], $true); Start-Sleep -Milliseconds 120; [DrawHunt.U]::Key($keys[$Action], $false)
     Start-Sleep -Milliseconds 1200
+}
+if ($Action -eq 'hold') {
+    [DrawHunt.U]::Key([uint16]$Vk, $true); Start-Sleep -Milliseconds ([int]($Seconds * 1000)); [DrawHunt.U]::Key([uint16]$Vk, $false)
 }
 if ($Action -eq 'click') {
     $pt = New-Object DrawHunt.U+POINT

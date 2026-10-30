@@ -64,6 +64,10 @@ float SourceFov();
 
 // How many times the game built its main render camera since the last call.
 uint32_t TakeCameraBuilds();
+
+// From the render view's projection matrix: depth = depthScale - nearPlane / distance (so
+// distance = nearPlane / (depthScale - depth)). False, leaving them as they are, if unreadable.
+bool ProjectionDepth(float& nearPlane, float& depthScale);
 // Cull hunt: BF3 keeps dozens of identical camera copies, and decides what to draw from one that
 // isn't turned with the head, so scenery goes missing when the hand aims away. The finder (F10)
 // hands over every copy it saw; F6 then turns them with the head one at a time, a few seconds

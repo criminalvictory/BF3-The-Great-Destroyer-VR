@@ -24,6 +24,7 @@
 #include "aim.h"
 #include "camera.h"
 #include "config.h"
+#include "depth3d.h"
 #include "finder.h"
 #include "fov.h"
 #include "god.h"
@@ -72,6 +73,8 @@ bool g_eyeValid[2] = {};
 // right-eye frame, once the right eye has gone to the headset.
 ID3D11Texture2D* g_mirror = nullptr;
 bool g_mirrorValid = false;
+// Depth-3D eyes made while the headset is idle, for the desktop (PreviewDepth3D).
+ID3D11Texture2D* g_previewEyes[2] = {};
 
 // The eye poses located at each of the last few frames, the newest at g_poseNewest. The game draws
 // each frame with the head pose its camera was handed some frames earlier; submitting the image
@@ -101,10 +104,13 @@ void ResetEyes() {
 }
 // F7: the game may render a frame later than we think, which swaps the eyes and turns depth inside out.
 bool g_swapEyes = false;
-// Scroll Lock cycles a test for the picture doubling on head turns: normal, mono (every frame to
-// both eyes, no alternating), frozen (nothing new shown).
-enum StereoTest { kTestNone, kTestMono, kTestFreeze, kStereoTests };
-int g_stereoTest = kTestNone;
+// How the two eyes are made (Scroll Lock cycles): from each frame's picture and depth (both eyes
+// every frame, depth3d.cpp); alternate eyes (each game frame for one eye: the picture doubled on
+// head turns, more so at lower frame rates); mono (every frame to both eyes, flat: no doubling,
+// which showed the alternating caused it); frozen (nothing new shown: the compositor held the
+// picture still like a wall, so it handles each eye's pose).
+enum StereoTest { kTestDepth, kTestNone, kTestMono, kTestFreeze, kStereoTests };
+int g_stereoTest = kTestDepth;
 // The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
 // angles written a frame or two earlier, so the view turn uses the yaw from that many frames
 // back ([controllers] view_lag, F11 cycles it); a mismatch shakes the picture as the arm moves.
@@ -347,11 +353,17 @@ void DestroySwapchains() {
     }
     g_scWidth = g_scHeight = 0;
     g_scSourceFormat = DXGI_FORMAT_UNKNOWN;
+    depth3d::Reset();
     ResetEyes();
     if (g_mirror)
         g_mirror->Release();
     g_mirror = nullptr;
     g_mirrorValid = false;
+    for (ID3D11Texture2D*& eye : g_previewEyes) {
+        if (eye)
+            eye->Release();
+        eye = nullptr;
+    }
 }
 
 void UpdateMirror(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, int eye) {
@@ -414,6 +426,7 @@ bool CreateSwapchains(const D3D11_TEXTURE2D_DESC& back) {
     g_scWidth = back.Width;
     g_scHeight = back.Height;
     g_scSourceFormat = back.Format;
+    depth3d::SetPictureSize(back.Width, back.Height);
     Log("Swapchains %ux%u format %d (back buffer format %d, %u samples)", back.Width, back.Height, g_scFormat,
         back.Format, back.SampleDesc.Count);
     return true;
@@ -552,9 +565,10 @@ void PollHotkeys() {
     if (KeyPressed(VK_PAUSE))
         skin::ToggleResearch();
     if (KeyPressed(VK_SCROLL)) {
-        static const char* kNames[] = {"off", "mono (the same picture to both eyes)", "frozen"};
+        static const char* kNames[] = {"depth 3D (both eyes from each frame and its depth)", "alternate eyes",
+                                       "mono (the same picture to both eyes)", "frozen"};
         g_stereoTest = (g_stereoTest + 1) % kStereoTests;
-        Log("Doubling test: %s", kNames[g_stereoTest]);
+        Log("Stereo: %s", kNames[g_stereoTest]);
     }
     // The weapon camera sits at a fixed place in bf3.exe, unlike the render cameras, which move
     // in memory and can be stale for a moment.
@@ -623,6 +637,90 @@ bool SubmitImage(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, Swapch
     context->Release();
 
     return Check(xrReleaseSwapchainImage(sc.handle, &release), "xrReleaseSwapchainImage");
+}
+
+XrFovf GameFov();
+
+// Depth 3D: both eyes from this frame's picture and BF3's depth (depth3d.cpp). Until a depth
+// buffer has been found, the picture goes to both eyes as it is (flat).
+bool SubmitDepth3D(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, float ipd) {
+    uint32_t index[2] = {};
+    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    int acquired = 0;
+    for (; acquired < 2; ++acquired) {
+        Swapchain& sc = g_swapchains[acquired];
+        if (!Check(xrAcquireSwapchainImage(sc.handle, &acquire, &index[acquired]), "xrAcquireSwapchainImage"))
+            break;
+        if (!Check(xrWaitSwapchainImage(sc.handle, &wait), "xrWaitSwapchainImage")) {
+            xrReleaseSwapchainImage(sc.handle, &release);
+            break;
+        }
+    }
+    bool ok = acquired == 2;
+    if (ok) {
+        // A point at distance d moves sideways by (eye offset) * scale / d in clip space, half
+        // that in picture widths; the left eye sees it moved right. scale = 1 / tan(half width).
+        float scale = 1.0f / std::tan(GameFov().angleRight);
+        float shift = 0.25f * ipd * scale * (g_swapEyes ? -1.0f : 1.0f);
+        depth3d::Eye eyes[2] = {{g_swapchains[kLeftEye].images[index[kLeftEye]].texture, shift},
+                                {g_swapchains[kRightEye].images[index[kRightEye]].texture, -shift}};
+        depth3d::DepthModel model;
+        camera::ProjectionDepth(model.nearPlane, model.depthScale);
+        ID3D11DeviceContext* context = nullptr;
+        g_device->GetImmediateContext(&context);
+        if (depth3d::Render(g_device, back, g_scFormat, eyes, model)) {
+            // The desktop window shows the left eye as the headset gets it.
+            if (config::Get().mirrorOneEye && desc.SampleDesc.Count == 1)
+                context->CopyResource(back, eyes[depth3d::MirrorEye()].target);
+        } else {
+            for (const depth3d::Eye& e : eyes) {
+                if (desc.SampleDesc.Count > 1)
+                    context->ResolveSubresource(e.target, 0, back, 0, g_scFormat);
+                else
+                    context->CopyResource(e.target, back);
+            }
+        }
+        context->Release();
+    }
+    for (int e = 0; e < acquired; ++e)
+        Check(xrReleaseSwapchainImage(g_swapchains[e].handle, &release), "xrReleaseSwapchainImage");
+    return ok;
+}
+
+// With the headset idle SteamVR asks for no frames, so nothing is drawn for it. The depth-3D eyes
+// are then still made, into textures of our own (g_previewEyes), and one is shown on the desktop:
+// the 3D can be checked by screenshot with nobody wearing the headset.
+void PreviewDepth3D(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc) {
+    if (desc.SampleDesc.Count > 1)
+        return;
+    for (ID3D11Texture2D*& eye : g_previewEyes) {
+        if (eye)
+            continue;
+        D3D11_TEXTURE2D_DESC td = desc;
+        td.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        td.MiscFlags = 0;
+        td.CPUAccessFlags = 0;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM || FAILED(g_device->CreateTexture2D(&td, nullptr, &eye))) {
+            eye = nullptr;
+            return;
+        }
+    }
+    float scale = 1.0f / std::tan(GameFov().angleRight);
+    float shift = 0.25f * 0.064f * scale * (g_swapEyes ? -1.0f : 1.0f);  // a typical eye distance
+    depth3d::Eye eyes[2] = {{g_previewEyes[kLeftEye], shift}, {g_previewEyes[kRightEye], -shift}};
+    depth3d::DepthModel model;
+    camera::ProjectionDepth(model.nearPlane, model.depthScale);
+    if (!depth3d::Render(g_device, back, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, eyes, model))
+        return;
+    ID3D11DeviceContext* context = nullptr;
+    g_device->GetImmediateContext(&context);
+    context->CopyResource(back, g_previewEyes[depth3d::MirrorEye()]);
+    context->Release();
 }
 
 XrSwapchainSubImage FullImage(const Swapchain& sc) {
@@ -715,32 +813,66 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         return;
     }
     // This frame belongs to one eye (in the mono test, both); remember the pose it is shown for.
+    // The camera is turned with the left eye's orientation for either eye, so both images are
+    // handed over with that orientation and their own eye's position: if the headset's eyes look
+    // in slightly different directions (angled displays), the right image would otherwise sit off.
     int lag = config::Get().poseLag;
     auto renderPose = [&](int e) {
-        if (lag > 0 && g_posesKept >= lag)
-            return g_poseHistory[(g_poseNewest - (lag - 1) + kPoseHistory) % kPoseHistory][e];
-        return views[e].pose;  // lag 0, or not enough frames yet
+        const XrPosef* poses = lag > 0 && g_posesKept >= lag
+                                   ? g_poseHistory[(g_poseNewest - (lag - 1) + kPoseHistory) % kPoseHistory]
+                                   : nullptr;
+        XrPosef pose = poses ? poses[e] : views[e].pose;  // lag 0, or not enough frames yet
+        pose.orientation = poses ? poses[kLeftEye].orientation : views[kLeftEye].pose.orientation;
+        return pose;
     };
-    int eye = g_nextEye;
-    bool mono = g_stereoTest == kTestMono;
-    for (int e = 0; e < 2; ++e) {
-        if (e != eye && !mono)
-            continue;
-        if (!SubmitImage(back, desc, g_swapchains[e]))
-            return;
-        g_eyePose[e] = renderPose(e);
-        g_eyeValid[e] = true;
+    {
+        static ULONGLONG lastLog = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - lastLog >= 10000) {
+            lastLog = now;
+            const XrQuaternionf& l = views[kLeftEye].pose.orientation;
+            const XrQuaternionf& r = views[kRightEye].pose.orientation;
+            float dot = std::fabs(l.x * r.x + l.y * r.y + l.z * r.z + l.w * r.w);
+            float angle = 2.0f * std::acos(std::min(dot, 1.0f)) * 180.0f / kPi;
+            const XrFovf& fl = views[kLeftEye].fov;
+            const XrFovf& fr = views[kRightEye].fov;
+            Log("Eyes: %.2f degrees apart in direction; left fov %.1f/%.1f/%.1f/%.1f, right %.1f/%.1f/%.1f/%.1f "
+                "(left/right/up/down, degrees)",
+                angle, fl.angleLeft * 180.0f / kPi, fl.angleRight * 180.0f / kPi, fl.angleUp * 180.0f / kPi,
+                fl.angleDown * 180.0f / kPi, fr.angleLeft * 180.0f / kPi, fr.angleRight * 180.0f / kPi,
+                fr.angleUp * 180.0f / kPi, fr.angleDown * 180.0f / kPi);
+        }
     }
-    UpdateMirror(back, desc, mono ? kLeftEye : eye);
-    g_nextEye = 1 - eye;
-
-    // The game's next frame is for the other eye: turn its camera with the head and shift it
-    // half the eye distance that way.
     const XrVector3f& a = views[kLeftEye].pose.position;
     const XrVector3f& b = views[kRightEye].pose.position;
     float ipd = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+    int eye = g_nextEye;
+    bool mono = g_stereoTest == kTestMono;
+    bool fromDepth = g_stereoTest == kTestDepth;
+    if (fromDepth) {
+        if (!SubmitDepth3D(back, desc, ipd))
+            return;
+        for (int e = 0; e < 2; ++e) {
+            g_eyePose[e] = renderPose(e);
+            g_eyeValid[e] = true;
+        }
+    } else {
+        for (int e = 0; e < 2; ++e) {
+            if (e != eye && !mono)
+                continue;
+            if (!SubmitImage(back, desc, g_swapchains[e]))
+                return;
+            g_eyePose[e] = renderPose(e);
+            g_eyeValid[e] = true;
+        }
+        UpdateMirror(back, desc, mono ? kLeftEye : eye);
+    }
+    g_nextEye = 1 - eye;
+
+    // Alternating: the game's next frame is for the other eye, so its camera is shifted half the
+    // eye distance that way. Mono and depth 3D render from between the eyes.
     float side = (g_nextEye == kLeftEye ? -1.0f : 1.0f) * (g_swapEyes ? -1.0f : 1.0f);
-    camera::SetEyeOffset(mono ? 0.0f : 0.5f * ipd * side);
+    camera::SetEyeOffset(mono || fromDepth ? 0.0f : 0.5f * ipd * side);
 
     // The look angles (what BF3 aims and fires along) follow the right controller when it's
     // tracked, otherwise the head. With the controller aiming, the render cameras are turned
@@ -842,6 +974,7 @@ void RenderFrame(IDXGISwapChain* swap) {
     if (g_recenterPending)
         Recenter(frame.predictedDisplayTime);
     input::Sync(g_session, g_space, frame.predictedDisplayTime);
+    depth3d::Probe();
 
     FrameLayers layers;
     if (frame.shouldRender && g_scWidth) {
@@ -849,6 +982,8 @@ void RenderFrame(IDXGISwapChain* swap) {
             BuildStereo(back, desc, frame.predictedDisplayTime, layers);
         else
             BuildTheater(back, desc, layers);
+    } else if (g_scWidth && config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestDepth) {
+        PreviewDepth3D(back, desc);
     }
 
     QueryPerformanceCounter(&t2);
