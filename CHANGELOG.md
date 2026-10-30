@@ -4,6 +4,44 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-30, evening: per-eye rendering and a real left hand (stage: pre-alpha, experimental)
+
+2 commits since the last upload. The 3D is now made by the game itself, and the left glove has
+working fingers. Tested in the headset by the user ("this is amazing... beautiful").
+
+### New
+- **Per-eye stereo** (the new default): BF3 draws both eyes itself every frame, from the same game
+  state, each from its own camera half the eye distance from the middle of the head, so there is
+  real depth everywhere and no halo. It uses a developer setting the retail game still has,
+  `GameRenderSettings.SplitScreenTestViewCount`: set to 2, the game draws a second complete view
+  beside the first. The mod hooks the function that builds the frame's views (found in BF3's
+  decrypted code) and makes the two views the eyes, in a window twice as wide (3200×1600, each eye
+  a square 1600×1600 half); each eye is shown its half. The approach FrostbiteVR takes for Bad
+  Company 2, found already built into BF3. Depth 3D and the other methods stay on Scroll Lock.
+- **The left glove's fingers** follow the controller: the left trigger curls the index finger, the
+  grip the other three, the thumb on the stick folds the thumb in. All three make a fist; the
+  grip alone, a pointing hand. Each finger bends at its own joints, measured from the glove's mesh;
+  relaxed, the fingers are a little curved and apart. Three small cracks in the glove model that
+  bending opened are closed.
+- Tools: `handview.exe` (the glove's finger poses drawn without the game, with checks for
+  clipping and the mesh's openings), `dumpimage.ps1` and `findcode.ps1` (BF3's decrypted code saved
+  and searched, for `dumpbin` disassembly), `dwords.ps1` (memory as values), `alarm.ps1` (rings
+  every speaker when a test is ready).
+
+### Fixed
+- In per-eye views the hands and gun looked giant: BF3 draws the first-person parts of both views
+  from one camera with no eye offset, which reads as far away. The free hands and gun are now
+  shifted per eye (the two views' first-person draws come in order, the left eye's first).
+- In per-eye views the picture showed as a small square: the headset was told the game's own 55°
+  for a 100° picture. It now gets the angle the views were really built with.
+
+### Known issues
+- Smooth turning with the stick stutters a little: about 70 fps against the headset's 72.
+- The HUD is drawn once across both eyes (the minimap in the left eye, the ammo count in the right).
+- With free hands off, the game's own arms and gun have no depth of their own.
+- `[stereo] async_handover=1` silently stops the gun's FOV fix and free hands: keep it 0.
+- A short piece of bare forearm shows under the left glove's cuff.
+
 ## 2026-10-30, later: free hands (stage: pre-alpha, experimental)
 
 2 commits since the last upload. First of the milestones that make it feel like VR.

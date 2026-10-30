@@ -37,6 +37,7 @@
 #include "input.h"
 #include "log.h"
 #include "skin.h"
+#include "views.h"
 #include "window.h"
 #include "xr_runtime.h"
 
@@ -117,8 +118,20 @@ bool g_swapEyes = false;
 // picture still like a wall, so it handles each eye's pose); hybrid (each frame is rendered from
 // one eye, alternately, and goes to that eye as it is; the other eye is made from it and its
 // depth, so both eyes get every frame and only one of them has filled gaps at a time).
-enum StereoTest { kTestDepth, kTestHybrid, kTestNone, kTestMono, kTestFreeze, kStereoTests };
-int g_stereoTest = kTestDepth;
+// Per-eye views (views.cpp): BF3 draws both eyes each frame, side by side; depth 3D and the
+// others are the earlier ways, kept on Scroll Lock.
+enum StereoTest { kTestViews, kTestDepth, kTestHybrid, kTestNone, kTestMono, kTestFreeze, kStereoTests };
+int g_stereoTest = kTestViews;
+// This frame's image holds both eyes, side by side, in the left eye's swapchain.
+bool g_sideBySide = false;
+
+// The field of view (radians) the game really drew the last frame with: with per-eye views what
+// views.cpp built them with (the render camera's pointer chain is lost then), otherwise what the
+// camera module reads from the render view.
+float DrawnFov() {
+    float eyes = views::RenderedFov();
+    return eyes > 0.0f ? eyes : camera::RenderedFov();
+}
 // The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
 // angles written a frame or two earlier, so the view turn uses the yaw from that many frames
 // back ([controllers] view_lag, F11 cycles it); a mismatch shakes the picture as the arm moves.
@@ -572,7 +585,7 @@ void PollHotkeys() {
     camera::SetRenderFov(wideFov);
     // The gun and arms are rescaled only while the world really is drawn wide; with the render
     // camera lost the game draws its own FOV, and the gun has to match it.
-    bool wide = wideFov > 0.0f && std::fabs(camera::RenderedFov() - wideFov) < 0.035f;
+    bool wide = wideFov > 0.0f && std::fabs(DrawnFov() - wideFov) < 0.035f;
     skin::SetProjectionFix(wide ? camera::SourceFov() : 0.0f, wideFov);
     // End: god mode on/off.
     if (KeyPressed(VK_END))
@@ -598,7 +611,8 @@ void PollHotkeys() {
     if (KeyPressed(VK_PAUSE))
         skin::ToggleResearch();
     if (KeyPressed(VK_SCROLL)) {
-        static const char* kNames[] = {"depth 3D (both eyes from each frame and its depth)",
+        static const char* kNames[] = {"per-eye views (BF3 draws both eyes each frame)",
+                                       "depth 3D (both eyes from each frame and its depth)",
                                        "hybrid (each frame from one eye, the other eye from its depth)",
                                        "alternate eyes", "mono (the same picture to both eyes)", "frozen"};
         g_stereoTest = (g_stereoTest + 1) % kStereoTests;
@@ -766,6 +780,15 @@ XrSwapchainSubImage FullImage(const Swapchain& sc) {
     return sub;
 }
 
+// One eye's half of a side-by-side image.
+XrSwapchainSubImage HalfImage(const Swapchain& sc, int eye) {
+    XrSwapchainSubImage sub{};
+    sub.swapchain = sc.handle;
+    const int32_t half = static_cast<int32_t>(g_scWidth / 2);
+    sub.imageRect = {{eye == kRightEye ? half : 0, 0}, {half, static_cast<int32_t>(g_scHeight)}};
+    return sub;
+}
+
 // The game renders a symmetric frustum from its own FOV setting, not the headset's.
 // Telling the compositor exactly what was rendered lets it place the image correctly.
 // With the wider view on, that's the angle the game really drew the last frame with: when the
@@ -775,11 +798,12 @@ XrFovf GameFov() {
     const config::Settings& s = config::Get();
     float fullV = s.gameVerticalFovDeg * kPi / 180.0f;
     if (s.renderFovDeg > 0.0f) {
-        float rendered = camera::RenderedFov();
+        float rendered = DrawnFov();
         fullV = rendered > 0.0f ? rendered : s.renderFovDeg * kPi / 180.0f;
     }
     float halfV = fullV * 0.5f;
-    float halfH = std::atan(std::tan(halfV) * g_scWidth / g_scHeight);
+    float width = g_sideBySide ? g_scWidth / 2.0f : static_cast<float>(g_scWidth);  // one eye's part
+    float halfH = std::atan(std::tan(halfV) * width / g_scHeight);
     return {-halfH, halfH, halfV, -halfV};
 }
 
@@ -812,7 +836,7 @@ void BuildProjection(FrameLayers& out) {
     for (int i = 0; i < 2; ++i) {
         out.views[i].pose = g_eyePose[i];
         out.views[i].fov = fov;
-        out.views[i].subImage = FullImage(g_swapchains[i]);
+        out.views[i].subImage = g_sideBySide ? HalfImage(g_swapchains[kLeftEye], i) : FullImage(g_swapchains[i]);
     }
     out.projection.space = g_space;
     out.projection.viewCount = 2;
@@ -915,10 +939,24 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         }
     }
     int eye = g_nextEye;
+    bool perEye = g_stereoTest == kTestViews && views::Active();
     bool mono = g_stereoTest == kTestMono;
-    bool fromDepth = g_stereoTest == kTestDepth;
+    // Until BF3 draws the two views (the first frames, or no hook), depth 3D.
+    bool fromDepth = g_stereoTest == kTestDepth || (g_stereoTest == kTestViews && !perEye);
     bool hybrid = g_stereoTest == kTestHybrid;
-    if (fromDepth || hybrid) {
+    g_sideBySide = false;
+    if (perEye) {
+        // Both eyes are in this picture, side by side: the left eye's swapchain takes it whole and
+        // each eye shows its half.
+        if (!SubmitImage(back, desc, g_swapchains[kLeftEye]))
+            return;
+        for (int e = 0; e < 2; ++e) {
+            g_eyePose[e] = renderPose(e);
+            g_eyeValid[e] = true;
+        }
+        g_sideBySide = true;
+        depth3d::SaveIfAsked(g_device, back, L"eye_both.bmp");  // depth3d.txt "save N"
+    } else if (fromDepth || hybrid) {
         // Hybrid: this frame was rendered from `eye`, which gets it unchanged; the other eye is a
         // full eye distance away.
         if (!SubmitDepth3D(back, desc, ipd, hybrid ? (eye == kLeftEye ? -1.0f : 1.0f) : 2.0f))
@@ -945,7 +983,11 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     // camera by the share of the eye distance depth 3D uses, so the made eye and the rendered
     // one stay that far apart whichever is rendered.
     float side = (g_nextEye == kLeftEye ? -1.0f : 1.0f) * (g_swapEyes ? -1.0f : 1.0f);
-    camera::SetEyeOffset(mono || fromDepth ? 0.0f : 0.5f * ipd * side * (hybrid ? depth3d::Strength() : 1.0f));
+    camera::SetEyeOffset(perEye || mono || fromDepth ? 0.0f
+                                                     : 0.5f * ipd * side * (hybrid ? depth3d::Strength() : 1.0f));
+    // Per-eye views: each view half the eye distance out from the middle of the head.
+    const float leftSide = g_swapEyes ? 1.0f : -1.0f;
+    views::SetEyeOffsets(0.5f * ipd * leftSide, -0.5f * ipd * leftSide);
 
     // The look angles (what BF3 aims and fires along) follow the right controller when it's
     // tracked, otherwise the head. With the controller aiming, the render cameras are turned
@@ -1136,6 +1178,8 @@ void RenderFrame(IDXGISwapChain* swap) {
             BuildTheater(back, desc, layers);
     } else if (g_scWidth && config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestDepth) {
         PreviewDepth3D(back, desc);
+    } else if (g_scWidth && config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews) {
+        depth3d::SaveIfAsked(g_device, back, L"eye_both.bmp");  // with the headset idle too
     }
 
     QueryPerformanceCounter(&t2);
@@ -1181,6 +1225,12 @@ namespace vr {
 void OnPresent(IDXGISwapChain* swap) {
     // Hotkeys and the camera tools work without a headset.
     PollHotkeys();
+    {
+        // Per-eye views: two views from BF3, in a window twice as wide (each eye a square half).
+        bool perEye = config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews;
+        views::Update(perEye);
+        window::SetWide(perEye);
+    }
     window::Maintain();
     fov::Apply();
     god::Apply();

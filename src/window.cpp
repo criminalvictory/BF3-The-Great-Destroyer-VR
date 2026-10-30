@@ -9,6 +9,7 @@ namespace {
 
 HWND g_window = nullptr;
 WNDPROC g_originalProc = nullptr;
+bool g_wide = false;
 
 // Windows normally refuses to make a window bigger than the screen; let BF3's grow.
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -39,11 +40,14 @@ void Maintain() {
     int size = config::Get().windowSize;
     if (size <= 0)
         return;
+    int width = g_wide ? 2 * size : size;
     static ULONGLONG lastCheck = 0;
+    static bool lastWide = false;
     ULONGLONG now = GetTickCount64();
-    if (now - lastCheck < 2000)
+    if (now - lastCheck < 2000 && g_wide == lastWide)
         return;
     lastCheck = now;
+    lastWide = g_wide;
 
     if (!g_window || !IsWindow(g_window)) {
         g_window = nullptr;
@@ -61,16 +65,20 @@ void Maintain() {
         return;
     RECT client;
     GetClientRect(g_window, &client);
-    if (client.right - client.left == size && client.bottom - client.top == size)
+    if (client.right - client.left == width && client.bottom - client.top == size)
         return;
 
-    RECT frame{0, 0, size, size};
+    RECT frame{0, 0, width, size};
     AdjustWindowRectEx(&frame, style, FALSE, GetWindowLongW(g_window, GWL_EXSTYLE));
     // Asynchronous: this runs on BF3's render thread, and the window belongs to its main thread,
     // which may be waiting on the render thread. A synchronous resize could deadlock them.
     SetWindowPos(g_window, nullptr, 0, 0, frame.right - frame.left, frame.bottom - frame.top,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-    Log("Window: resizing to %dx%d", size, size);
+    Log("Window: resizing to %dx%d", width, size);
+}
+
+void SetWide(bool wide) {
+    g_wide = wide;
 }
 
 }

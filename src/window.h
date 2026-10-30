@@ -8,4 +8,7 @@ namespace window {
 // bigger than the monitor: the mod lifts Windows' screen-size limit for it.
 void Maintain();
 
+// Per-eye views (views.cpp): the window twice as wide, so each eye's half is the square size.
+void SetWide(bool wide);
+
 }

@@ -58,6 +58,15 @@ void SetGunFlip(bool flip);
 // The field of view to make the game render with, in radians (0 = the game's own). Written into
 // the render and cull views and their source each time a camera breakpoint fires.
 void SetRenderFov(float radians);
+float WantedFov();
+
+// Per-eye views (views.cpp) turn and shift the render and cull cameras where the game builds them:
+// the breakpoints then leave those alone (still watching them, for RenderedFov) and only turn the
+// weapon camera.
+void SetViewsMode(bool on);
+// A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
+// unchanged) while no view turn is set.
+bool TurnToHead(float* transform);
 
 // The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
 float SourceFov();

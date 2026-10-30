@@ -832,6 +832,18 @@ void Reset() {
     g_res.targets.clear();
 }
 
+bool SaveIfAsked(ID3D11Device* device, ID3D11Texture2D* picture, const wchar_t* name) {
+    if (g_saveRequest.load() == g_saved)
+        return false;
+    g_saved = g_saveRequest.load();
+    ID3D11DeviceContext* context = nullptr;
+    device->GetImmediateContext(&context);
+    bool written = SaveBmp(device, context, picture, name);
+    context->Release();
+    Log("Depth 3D: picture %s (save %d)", written ? "written" : "could not be written", g_saved);
+    return written;
+}
+
 void Probe() {
     static ULONGLONG lastLog = 0, lastRead = 0;
     ULONGLONG now = GetTickCount64();

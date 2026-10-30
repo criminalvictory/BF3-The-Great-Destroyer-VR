@@ -41,6 +41,7 @@ constexpr int kCullSlot = 2;
 std::atomic<uintptr_t> g_slots[kSlots];
 std::atomic<uintptr_t> g_slotOffsets[kSlots];
 std::atomic<float> g_eyeOffset{0.0f};
+std::atomic<bool> g_viewsMode{false};  // views.cpp makes the render and cull cameras itself
 std::atomic<uintptr_t> g_weaponAddress{0};
 std::atomic<bool> g_gunFlip{false};
 std::atomic<uint32_t> g_hits{0};
@@ -277,6 +278,8 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
             continue;
         if (i == 0)
             g_cameraBuilds.fetch_add(1, std::memory_order_relaxed);
+        if (i != kWeaponSlot && g_viewsMode.load(std::memory_order_relaxed))
+            continue;  // already turned, shifted and widened where the views were built
         // Wider FOV: the render view's and the cull view's own pair, once the copy has put the
         // game's there (the breakpoint then sits past it, on the near plane), and the
         // first-person view's.
@@ -561,6 +564,24 @@ void SetGunFlip(bool flip) {
 
 void SetRenderFov(float radians) {
     g_renderFov = radians;
+}
+
+float WantedFov() {
+    return g_renderFov.load(std::memory_order_relaxed);
+}
+
+void SetViewsMode(bool on) {
+    g_viewsMode = on;
+}
+
+bool TurnToHead(float* transform) {
+    const ViewTurnState& view = g_view[g_viewIndex.load(std::memory_order_acquire)];
+    if (!view.active || !IsCamera(transform))
+        return false;
+    float local[4];
+    ViewTurnLocal(transform, view.turn, local);
+    TurnLocal(transform, local);
+    return true;
 }
 
 uint32_t TakeCameraBuilds() {

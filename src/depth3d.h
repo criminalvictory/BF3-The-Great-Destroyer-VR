@@ -49,4 +49,8 @@ void Probe();
 // The headset images went away (resize): forget the views made on them.
 void Reset();
 
+// depth3d.txt "save N" for a picture made another way (per-eye views): when N has changed, writes
+// it to name next to the DLL. True if written.
+bool SaveIfAsked(ID3D11Device* device, ID3D11Texture2D* picture, const wchar_t* name);
+
 }

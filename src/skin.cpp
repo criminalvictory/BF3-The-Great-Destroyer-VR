@@ -58,6 +58,7 @@
 #include <vector>
 
 #include "log.h"
+#include "views.h"
 
 namespace {
 
@@ -290,7 +291,15 @@ bool g_haveViewToArms = false;
 struct ViewByBuffer {
     ID3D11Resource* buffer = nullptr;
     float viewToArms[12] = {};
+    int eye = -1;  // per-eye views: which eye's view this is (0 left, 1 right; -1 not known)
 };
+// Per-eye views: which eye each first-person view upload is for. BF3 makes both views' from its one
+// weapon camera, so they're the same, eye and all, and their draws use one viewport the width of
+// the whole picture; but the render thread draws view after view, the left eye's first, each view
+// uploading the same number of them (traced 2026-10-30: four a view, all into one buffer). So the
+// first half of a frame's uploads are the left eye's, by the last frame's count.
+std::atomic<uint32_t> g_frameSerial{0};  // frames shown so far (skin::Update)
+uint32_t g_armsFrame = 0, g_armsUploads = 0, g_armsUploadsBefore = 0;  // under g_fpMutex
 ViewByBuffer g_viewByBuffer[8];
 int g_viewByBufferNext = 0;
 thread_local ID3D11Resource* t_uploadResource = nullptr;  // the upload being looked at
@@ -332,10 +341,23 @@ void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
                 return;
             a[0] /= length, a[1] /= length, a[2] /= length;
         }
+        // Right = up x back: the x row may also carry where in the picture the view goes (one half
+        // with per-eye views), which tilts it; the up and back rows never do.
+        axes[0][0] = axes[1][1] * axes[2][2] - axes[1][2] * axes[2][1];
+        axes[0][1] = axes[1][2] * axes[2][0] - axes[1][0] * axes[2][2];
+        axes[0][2] = axes[1][0] * axes[2][1] - axes[1][1] * axes[2][0];
         for (int i = 0; i < 3; ++i) {
             g_viewToArms[i * 4] = axes[0][i], g_viewToArms[i * 4 + 1] = axes[1][i];
             g_viewToArms[i * 4 + 2] = axes[2][i], g_viewToArms[i * 4 + 3] = eyeArms[i];
         }
+        // Which eye: the first half of this frame's uploads are the left eye's.
+        if (uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); frame != g_armsFrame) {
+            g_armsFrame = frame;
+            g_armsUploadsBefore = g_armsUploads;
+            g_armsUploads = 0;
+        }
+        const uint32_t k = g_armsUploads++, n = g_armsUploadsBefore;
+        const int eye = views::Active() && n >= 2 && n % 2 == 0 ? (k < n / 2 ? 0 : 1) : -1;
         g_haveViewToArms = true;
         ++g_viewUploads;
         if (ID3D11Resource* buffer = t_uploadResource) {
@@ -349,6 +371,7 @@ void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
                 slot->buffer = buffer;
             }
             std::memcpy(slot->viewToArms, g_viewToArms, sizeof(g_viewToArms));
+            slot->eye = eye;
         }
     }
     float eyeWorld[3];
@@ -370,12 +393,16 @@ void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
 
 void Compose(const float* a, const float* b, float* out);
 
+// Hand draws per eye since the last log (not known or one view, left, right).
+std::atomic<uint32_t> g_drawsByEye[3];
+
 // The hands' targets, from the view's space into the arms' space with the view this draw is drawn
 // with (the latest, if its constant buffer isn't known). False until a view has been seen.
 bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
     ID3D11Buffer* bound[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
     ctx->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, bound);
     float v[12];
+    int viewEye = -1;
     {
         std::lock_guard lock(g_fpMutex);
         if (!g_haveViewToArms) {
@@ -393,12 +420,23 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
                     if (std::memcmp(view.viewToArms, v, sizeof(v)) != 0)
                         ++g_viewDiffered;
                     std::memcpy(v, view.viewToArms, sizeof(v));
+                    viewEye = view.eye;
                 }
         ++(found ? g_viewBound : g_viewLatest);
     }
     for (ID3D11Buffer* b : bound)
         if (b)
             b->Release();
+    // Per-eye views: this draw's view is one eye's, half the eye distance from the middle of the
+    // head the targets are measured from; that's taken off along the view's right. (Its viewport
+    // can't tell: BF3 draws both views with one the width of the whole picture.)
+    {
+        int eye = views::Active() ? viewEye : -1;
+        ++g_drawsByEye[eye + 1];
+        if (float offset = views::EyeOffset(eye); eye >= 0 && offset != 0.0f)
+            for (int i = 0; i < 3; ++i)
+                v[i * 4 + 3] -= v[i * 4] * offset;
+    }
     float pose[12];
     Compose(v, t.gunPose, pose);
     std::memcpy(t.gunPose, pose, sizeof(pose));
@@ -2155,6 +2193,12 @@ void Probe() {
     if (now - lastLog < 1000)
         return;
     lastLog = now;
+    if (uint32_t left = g_drawsByEye[1].exchange(0), right = g_drawsByEye[2].exchange(0),
+        unknown = g_drawsByEye[0].exchange(0);
+        views::Active())
+        Log("Hands: draws placed for the left eye %u, the right eye %u, eye not known %u (first-person views a "
+            "frame: %u)",
+            left, right, unknown, g_armsUploadsBefore);
     if (g_wideScale.load() > 0.0f) {
         LARGE_INTEGER frequency;
         QueryPerformanceFrequency(&frequency);
@@ -2259,6 +2303,7 @@ bool RifleInHand() {
 
 void Update() {
     UpdateDrop();
+    ++g_frameSerial;
 }
 
 bool Watching() {

@@ -3,11 +3,11 @@
 An OpenXR VR mod for the **Battlefield 3 campaign** (PC, 32-bit `bf3.exe` 1.6.0.0, Steam version).
 It injects into the running game and turns it into stereo 3D with head tracking and motion controllers.
 
-**Status: pre-alpha (experimental).** The campaign is playable in 3D with head tracking and
-controller aiming, but the features that make it feel like VR are still being built: moving your
-head (lean, duck, peek), the gun in your hand, free hands. It's tested on one setup (Steam
-`bf3.exe` 1.6.0.0, SteamVR, Steam Frame, RTX 3080); expect rough edges. Every upload is logged in
-[CHANGELOG.md](CHANGELOG.md).
+**Status: pre-alpha (experimental).** The campaign is playable in true stereo (BF3 draws each eye
+itself) with head tracking, the gun in your right hand and a free left hand, but more of what makes
+it feel like VR is still being built: moving your head (lean, duck, peek), reloading by hand,
+two-handed aiming. It's tested on one setup (Steam `bf3.exe` 1.6.0.0, SteamVR, Steam Frame, RTX
+3080); expect rough edges. Every upload is logged in [CHANGELOG.md](CHANGELOG.md).
 
 It becomes **alpha** when: the head's position moves the view, the gun sits in the right hand and
 the left hand is free, every campaign weapon aims correctly, it installs from the quick start
@@ -27,26 +27,39 @@ account banned. This project contains only its own code; it ships no EA files.
 
 If the picture looks wrong:
 
-- **Scroll Lock** cycles how the 3D is made: depth 3D (normal), hybrid, alternate eyes, mono,
-  frozen. If one looks better to you, that's useful to know.
+- **Scroll Lock** cycles how the 3D is made: per-eye views (normal), depth 3D, hybrid, alternate
+  eyes, mono, frozen. If one looks better to you, that's useful to know.
 - **Delete** turns the wide view off and on; **Page Up / Page Down** make it wider or narrower.
 - The settings files are in the `build` folder: `bf3vr.ini` (general), `depth3d.txt` (the 3D
   tuning, changes apply at once).
 
 ## What works
 
-- **Stereo 3D from depth** (the default): every game frame becomes both eyes. Each pixel is shifted
+- **Per-eye stereo** (the default): BF3 draws both eyes itself, every frame, from the same game
+  state, each from its own camera half your eye distance from the middle of your head: real depth
+  everywhere and no halo. It uses a developer setting the retail game still has,
+  `GameRenderSettings.SplitScreenTestViewCount`: set to 2 the game draws a second complete view
+  beside the first. `src/views.cpp` hooks the function that builds the frame's views and makes them
+  the two eyes (the left eye in the left half, the right eye in the right half of a window twice as
+  wide), and each eye is shown its half. This is how FrostbiteVR renders Bad Company 2 (a native
+  second view), found in BF3's own code. BF3 draws the gun and arms of both views from one camera,
+  so the free hands and gun are shifted per eye by the mod (the game's own arms, with free hands
+  off, have no depth of their own). Two full views hold the headset's 72 fps in most of the
+  campaign's opening level, with dips to about 66.
+- **Stereo 3D from depth** (Scroll Lock): every game frame becomes both eyes. Each pixel is shifted
   sideways by the eye's offset over its distance, read from BF3's own depth buffer, so both eyes
   update every frame and head turns no longer double the picture (alternate-eye rendering, one
   frame per eye in turn, did). The gun and arms get their real depth too: BF3 draws them squeezed
   towards the eye and marks them in the stencil buffer, so the mod un-squeezes exactly those
-  pixels. Scroll Lock cycles depth 3D / hybrid / alternate eyes / mono / frozen; tuning is in
-  `build\depth3d.txt` (see below).
+  pixels. Cheaper than per-eye views, but around near things against far ones it shows a soft halo.
+  Scroll Lock cycles per-eye views / depth 3D / hybrid / alternate eyes / mono / frozen; tuning is
+  in `build\depth3d.txt` (see below).
 - **Head tracking**: the head turns the picture, including tilt.
 - **Motion controller aiming**: the right controller aims; bullets, muzzle flash and the gun model
   follow it. Buttons and sticks are sent to the game as keyboard and mouse.
 - **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
-  more view top to bottom and a sharper headset image. It may be bigger than the monitor.
+  more view top to bottom and a sharper headset image; with per-eye views twice as wide (3200×1600:
+  each eye a square half). It may be bigger than the monitor.
 - **Floating screen** (theater) mode as an alternative to stereo.
 - **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100°): the campaign
   renders a fixed 55° whatever the menu says, which in a headset looks like a square window. The
@@ -84,6 +97,12 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
 ## Known issues
 
+- Per-eye views: smooth turning with the stick stutters a little, at about 70 fps against the
+  headset's 72 (the graphics card is only about half busy; the cause isn't found yet). The HUD is
+  drawn once across both halves, so the minimap is only in the left eye and the ammo count only in
+  the right. Keep `[stereo] async_handover=0`: handing frames to SteamVR on a thread of its own
+  switches the graphics device to its locked functions, which go round the mod's draw hooks (the
+  gun's FOV fix and free hands stop).
 - Depth 3D: around near things against far ones (the gun, a soldier against the sky) the gap the
   other eye would see behind them is filled from the background beside it, which can look like a
   soft halo. `bias -1` / `bias 1` in `depth3d.txt` keeps one eye exactly as the game drew it and
@@ -215,7 +234,12 @@ expected value is there), `watch.ps1`/`watchabs.ps1`/`treewatch.ps1`/`treediff.p
 change), `findref.ps1`/`findtext.ps1`/`findfloat.ps1` (search), `fields.ps1`/`owner.ps1` (read
 BF3's own type tables), `soldiers.ps1`/`corpses.ps1` (the server's soldiers and their bodies),
 `findints.ps1`/`pokeint.ps1` (find and set whole numbers such as the ammo), `pathto.ps1` (pointer
-paths from an object to an address).
+paths from an object to an address), `dwords.ps1` (memory as values, pointers into bf3.exe named).
+Code research: `dumpimage.ps1` saves bf3.exe as it is in memory (its code is only decrypted there)
+to `build\bf3_mem.exe`, which Visual Studio's `dumpbin /disasm /range:...` disassembles;
+`findcode.ps1` lists where the code uses an address (a global, a function, a string), with the
+instructions around it. `tools/alarm.ps1` rings on every speaker at once (with SteamVR running,
+Windows' default output is the headset) to call the tester back when a test is ready.
 
 `CAMERA_GUIDE.md` describes finding the camera by hand with Cheat Engine instead.
 
@@ -232,6 +256,8 @@ paths from an object to an address).
 - `src/window.cpp`: keeps the game window square, past the screen size limit.
 - `src/skin.cpp`: hooks the bone uploads and draws of skinned meshes; finds the hands' draws and
   draws them with changed bones.
+- `src/views.cpp`: per-eye views: BF3's split-screen test turned on, its view builder hooked so
+  the two views are the eyes.
 - `src/depth3d.cpp`: finds BF3's depth buffer (by its clears) and makes both eyes from the frame
   and its depth in a pixel shader.
 - `src/god.cpp`: keeps the health of the server's and the client's copy of the player's soldier.
