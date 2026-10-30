@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "handpose.h"
 #include "input.h"
 #include "log.h"
 #include "skin.h"
@@ -43,10 +44,18 @@ bool g_leftOffsetSet = false;
 // press keeps where the hand is relative to the glove.
 bool g_lining = false;
 float g_heldLeft[12] = {};
-float g_close = 0.0f;  // the left glove's closing, smoothed
-// How far the open glove is curled towards the closed grip: fully open (its bind pose) looked flat
-// to the user. grip.txt "open 0.2".
-float g_openCurl = 0.2f;
+// The left glove's fingers, smoothed: the index finger (the trigger), the other three (the grip)
+// and the thumb (on the stick).
+float g_index = 0.0f, g_grip = 0.0f, g_thumb = 0.0f;
+// How far apart the relaxed fingers are (0-1: the user wanted space between them) and how much
+// wider the palm is drawn (it looked skinny; the whole glove 10% bigger looked huge, the whole hand
+// widened alike thick): grip.txt "spread 0.7", "leftwidth 1.15".
+float g_spread = 0.7f;
+float g_leftWidth = 1.15f;
+// grip.txt "fingers i g t": the index finger, the other three and the thumb held so (0-1 each)
+// whatever the controller says, to check the poses in the game.
+bool g_fingersFixed = false;
+float g_fixedFingers[3] = {};
 
 // Row-major 3x3 from a quaternion (x, y, z, w).
 void QuatToMatrix(const XrQuaternionf& q, float* m) {
@@ -137,25 +146,31 @@ void ReadTuning() {
     if (_wfopen_s(&f, path, L"r") != 0 || !f)
         return;
     char line[512];
+    g_fingersFixed = false;
     while (fgets(line, sizeof(line), f)) {
         float v[12];
-        if (std::strncmp(line, "gun", 3) == 0 && sscanf_s(line + 3, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
+        if (std::strncmp(line, "fingers", 7) == 0 && sscanf_s(line + 7, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
+            std::memcpy(g_fixedFingers, v, sizeof(g_fixedFingers)), g_fingersFixed = true;
+        else if (std::strncmp(line, "gun", 3) == 0 && sscanf_s(line + 3, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
             std::memcpy(g_gunGrip, v, 3 * sizeof(float)), g_gunGripTuned = true;
         else if (std::strncmp(line, "leftpose", 8) == 0 &&
                  sscanf_s(line + 8, "%f %f %f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
                           &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) == 12)
             std::memcpy(g_leftOffset, v, sizeof(g_leftOffset)), g_leftOffsetSet = true;
-        else if (std::strncmp(line, "open", 4) == 0 && sscanf_s(line + 4, "%f", &v[0]) == 1)
-            g_openCurl = std::fmin(std::fmax(v[0], 0.0f), 1.0f);
+        else if (std::strncmp(line, "spread", 6) == 0 && sscanf_s(line + 6, "%f", &v[0]) == 1)
+            g_spread = std::fmin(std::fmax(v[0], 0.0f), 1.0f);
+        else if (std::strncmp(line, "leftwidth", 9) == 0 && sscanf_s(line + 9, "%f", &v[0]) == 1)
+            g_leftWidth = std::fmin(std::fmax(v[0], 0.8f), 1.5f);
         else if (std::strncmp(line, "leftturn", 8) == 0 && sscanf_s(line + 8, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
             std::memcpy(g_leftTurn, v, 3 * sizeof(float));
         else if (std::strncmp(line, "left", 4) == 0 && sscanf_s(line + 4, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
             std::memcpy(g_leftAnchor, v, 3 * sizeof(float));
     }
     fclose(f);
-    Log("Hands: gun grip (%.3f %.3f %.3f), left palm (%.3f %.3f %.3f), left turn (%.0f %.0f %.0f)", g_gunGrip[0],
-        g_gunGrip[1], g_gunGrip[2], g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2], g_leftTurn[0], g_leftTurn[1],
-        g_leftTurn[2]);
+    Log("Hands: gun grip (%.3f %.3f %.3f), left palm (%.3f %.3f %.3f), left turn (%.0f %.0f %.0f), fingers apart "
+        "%.2f, palm %.2f wide",
+        g_gunGrip[0], g_gunGrip[1], g_gunGrip[2], g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2], g_leftTurn[0],
+        g_leftTurn[1], g_leftTurn[2], g_spread, g_leftWidth);
 }
 
 // The left glove's line-up, kept in grip.txt (rewritten whole).
@@ -173,7 +188,8 @@ void SaveLeftOffset() {
     if (g_gunGripTuned)
         fprintf(f, "gun %.4f %.4f %.4f\n", g_gunGrip[0], g_gunGrip[1], g_gunGrip[2]);
     fprintf(f, "left %.4f %.4f %.4f\n", g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2]);
-    fprintf(f, "open %.2f\n", g_openCurl);
+    fprintf(f, "spread %.2f\n", g_spread);
+    fprintf(f, "leftwidth %.2f\n", g_leftWidth);
     const float* o = g_leftOffset;
     fprintf(f, "leftpose %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\n", o[0], o[1], o[2], o[3], o[4],
             o[5], o[6], o[7], o[8], o[9], o[10], o[11]);
@@ -274,8 +290,22 @@ void Update(const XrPosef& head) {
         }
         Compose(fromHead, g_lining ? g_heldLeft : glove, t.leftPose);
         Transform(t.leftPose, g_leftAnchor, t.leftWrist);  // the palm, where the arm folds into
-        g_close += (input::LeftSqueeze() - g_close) * 0.35f;
-        t.leftClose = g_lining ? 0.0f : g_openCurl + (1.0f - g_openCurl) * g_close;
+        // The fingers follow the controller: the trigger the index finger, the grip the other three,
+        // the thumb on the stick folds the thumb in; all of them, a fist. Relaxed while lining up.
+        const float* fixed = g_fingersFixed ? g_fixedFingers : nullptr;
+        float index = fixed ? fixed[0] : input::LeftTrigger(), grip = fixed ? fixed[1] : input::LeftSqueeze(),
+              thumb = fixed ? fixed[2] : input::LeftThumbOnStick() ? 1.0f : 0.0f;
+        g_index += ((g_lining ? 0.0f : index) - g_index) * 0.35f;
+        g_grip += ((g_lining ? 0.0f : grip) - g_grip) * 0.35f;
+        g_thumb += ((g_lining ? 0.0f : thumb) - g_thumb) * 0.35f;
+        handpose::Fingers fingers;
+        fingers.curl[0] = g_index;
+        fingers.curl[1] = fingers.curl[2] = fingers.curl[3] = g_grip;
+        // Folded part way on its own; with the grip held, down onto the curled middle finger (also
+        // when the index finger points: hovering over it looked wrong, user 2026-10-30).
+        fingers.thumb = g_thumb * (0.6f + 0.4f * g_grip);
+        fingers.spread = g_spread;
+        handpose::Pose(fingers, g_leftWidth, t.leftFingers);
         t.left = true;
     }
     // Once a second: frames where a controller wasn't tracked (the game's own gun or hand is drawn

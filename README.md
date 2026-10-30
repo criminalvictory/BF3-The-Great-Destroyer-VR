@@ -55,12 +55,17 @@ If the picture looks wrong:
   headset image is shown at the same angle, so the world stays life-size.
 - **Free hands** (Insert on/off, on by default): the gun is drawn in your right hand, pointing
   where the controller points, held where the game's own hand holds it, with its scope and stock;
-  the left glove follows the left controller, open when empty, closing into a grip as you squeeze
-  the left grip. The arms, sleeves and body are folded away (floating hands). On the Steam Frame,
-  the left View button lines the glove up: the first press holds it still, put your hand into it
-  and press again (kept in `build\grip.txt`). BF3 draws the first-person arms in a space of their
-  own whose origin jumps a metre at a time as you walk; each draw places the hands with the eye
-  and axes of the view-projection it is drawn with, so they stay steady while moving.
+  the left glove follows the left controller, its fingers following yours: the left trigger
+  curls the index finger, the left grip the other three, and resting your thumb on the stick folds
+  the thumb in (all three: a fist; the grip alone: pointing). Relaxed, the fingers are a little
+  curved and apart. Each finger bends at its own joints (`src/handpose.cpp`), and three small
+  cracks in the glove model that bending opens are filled. The arms, sleeves and body are folded
+  away (floating hands). On the Steam Frame, the left View button lines the glove up: the first
+  press holds it still, put your hand into it and press again (kept in `build\grip.txt`, with
+  "spread 0.7" for how far apart the relaxed fingers are and "leftwidth 1.15" for the palm's
+  width). BF3 draws the first-person arms in a space of their own whose origin jumps a metre at a
+  time as you walk; each draw places the hands with the eye and axes of the view-projection it is
+  drawn with, so they stay steady while moving.
 - **God mode** (End on/off, on by default): the campaign runs the game's own server inside
   `bf3.exe`, and the health that decides deaths is the server's copy of your soldier. The mod finds
   it every spawn and keeps health and maximum health at `[god] value` (100000), so hits are undone
@@ -88,8 +93,8 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 - With the wide view, the sleeve near the shoulder can look stretched: that part of BF3's arm
   model is normally off screen.
 - Free hands: only the campaign's M16-type rifle is known (other guns get the game's own arms);
-  bullets still leave from where the game holds its gun, not the drawn muzzle; the open hand is a
-  bit flat (`grip.txt` "open 0.2" curls it); two-handed aiming isn't done.
+  bullets still leave from where the game holds its gun, not the drawn muzzle; two-handed aiming
+  isn't done. A short piece of bare forearm shows under the left glove's cuff.
 
 Scenery no longer disappears when the controller aims away from where you look: the camera BF3
 decides what to draw from is found once with the cull hunt (F10, then F6/F5) and turned with the
@@ -120,12 +125,13 @@ runtime path, which a 32-bit game can't load.
 | Controller | Action |
 |---|---|
 | Right trigger | Fire |
-| Left trigger | Aim down sights |
+| Left trigger | Aim down sights (not while the left grip is held); curls the left index finger |
 | Left stick / click | Move / sprint |
 | Right stick | Turn |
 | A / B | Jump / crouch |
 | X | Magazine: tap to eject / insert, hold to reload |
-| Left grip | Close the left hand (open when let go) |
+| Left grip | Curl the left hand's middle, ring and little fingers |
+| Left thumb on the stick | Fold the left thumb in |
 | View (left, Steam Frame) | Line up the left glove with your hand |
 | Y | Use |
 | Right grip | Grenade |
@@ -195,6 +201,11 @@ view, god mode, bodies and the 3D's depth buffer all came up.
 `tools/weapontest.ps1` tries weapon.txt settings in turn and puts the game's own picture for each
 side by side (saved by the mod, so no screenshot shows an old frame). `tools/videoframes.ps1` pulls
 frames out of a recording (Windows' own media components, no ffmpeg) into one sheet.
+`handview.exe` (built with the mod, from `tools/handview.cpp`) draws the left glove from its mesh
+dump in finger poses, each from four sides, without the game: `handview build out.bmp
+0,1,1,1,1,0.7` (index, middle, ring, little, thumb, spread). It reports how deep fingers sink into
+each other, whether the depth passes stand out of the glove, and with "a=1" the glove's pieces
+and openings; "c=-1" culls back faces as the game does.
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
 sent by virtual-key code alone; `-Action fire` holds the mouse button across frames, `f16` is
 the magazine button) and takes screenshots while BF3 is in front; `tools/say.ps1`
@@ -229,4 +240,6 @@ paths from an object to an address).
   the magazine falling).
 - `src/hands.cpp`: free hands: where the gun and the left glove go relative to the head, from the
   controllers (`skin.cpp` redraws the gun and arms there).
+- `src/handpose.cpp`: the left glove's fingers, bent joint by joint (joints and finger directions
+  measured from the mesh dump).
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.

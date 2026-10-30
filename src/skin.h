@@ -1,5 +1,7 @@
 #pragma once
 
+#include "handpose.h"
+
 namespace skin {
 
 // Research into BF3's skinning: the bone matrices it uploads to the graphics card to bend
@@ -68,7 +70,9 @@ struct HandTargets {
     float gunPose[12] = {};
     float leftPose[12] = {};
     float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point
-    float leftClose = 0.0f;  // 0: the left glove open (its bind pose), 1: closed as the game holds it
+    // Each of the left glove's bones bent as its fingers are held, in the gloves' bind space
+    // (handpose.cpp): the glove is drawn with leftPose composed with these.
+    float leftFingers[handpose::kBones][12] = {};
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

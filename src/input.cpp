@@ -34,11 +34,15 @@ XrAction g_sprint = XR_NULL_HANDLE;
 XrSpace g_aimSpace = XR_NULL_HANDLE;
 // Both hands' grip poses (left 0, right 1), for drawing the hands where the controllers are.
 XrAction g_hand = XR_NULL_HANDLE;
-// The left grip, squeezed: the left glove closes (open when let go). The Steam Frame's left View
-// button: lines the left glove up with the hand.
+// The left grip, squeezed: the left glove's middle, ring and little fingers curl (its trigger, aim
+// down sights, curls the index finger). The Steam Frame's left View button: lines the left glove
+// up with the hand.
 XrAction g_squeeze = XR_NULL_HANDLE;
 XrAction g_calibrate = XR_NULL_HANDLE;
-float g_leftSqueeze = 0.0f;
+// The left thumb resting on the stick: the glove's thumb folds in.
+XrAction g_thumbTouch = XR_NULL_HANDLE;
+float g_leftSqueeze = 0.0f, g_leftTrigger = 0.0f;
+bool g_leftThumb = false;
 bool g_calibrateDown = false, g_calibratePressed = false;
 XrPath g_handPaths[2] = {};
 XrSpace g_handSpaces[2] = {};
@@ -120,8 +124,10 @@ bool Suggest(const char* profile, const std::vector<std::pair<XrAction, const ch
         suggested.push_back({b.first, Path(b.second)});
     suggested.push_back({g_hand, Path("/user/hand/left/input/grip/pose")});
     suggested.push_back({g_hand, Path("/user/hand/right/input/grip/pose")});
-    if (leftSqueeze)
+    if (leftSqueeze) {
         suggested.push_back({g_squeeze, Path("/user/hand/left/input/squeeze/value")});
+        suggested.push_back({g_thumbTouch, Path("/user/hand/left/input/thumbstick/touch")});
+    }
     XrInteractionProfileSuggestedBinding info{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     info.interactionProfile = Path(profile);
     info.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
@@ -185,8 +191,10 @@ void SuggestBindings() {
             b.push_back({g_grenade, "/user/hand/right/input/grip/value"});
             b.push_back({g_squeeze, "/user/hand/left/input/grip/value"});
         }
-        if (view)
+        if (view) {
             b.push_back({g_calibrate, "/user/hand/left/input/view/click"});
+            b.push_back({g_thumbTouch, "/user/hand/left/input/thumbstick/touch"});
+        }
         return b;
     };
     if (!Suggest(kFrame, with(true, false, true), false) && !Suggest(kFrame, with(false, true, true), false) &&
@@ -296,7 +304,8 @@ bool Init(XrInstance instance, XrSession session) {
     if (!Check(xrCreateAction(g_set, &hand, &g_hand), "hand"))
         return false;
     if (!MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_squeeze", "Close the left hand", g_squeeze) ||
-        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "calibrate_left", "Line up the left hand", g_calibrate))
+        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "calibrate_left", "Line up the left hand", g_calibrate) ||
+        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "left_thumb_touch", "Left thumb on the stick", g_thumbTouch))
         return false;
     bool ok = MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim", "Aim (right hand)", g_aim) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "fire", "Fire", g_fire) &&
@@ -391,6 +400,14 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         if (down && !g_calibrateDown)
             g_calibratePressed = true;
         g_calibrateDown = down;
+        get.action = g_thumbTouch;
+        XrActionStateBoolean thumb{XR_TYPE_ACTION_STATE_BOOLEAN};
+        g_leftThumb = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &thumb)) && thumb.isActive && thumb.currentState;
+        get.action = g_ads;  // the left trigger
+        XrActionStateFloat trigger{XR_TYPE_ACTION_STATE_FLOAT};
+        g_leftTrigger = XR_SUCCEEDED(xrGetActionStateFloat(session, &get, &trigger)) && trigger.isActive
+                            ? trigger.currentState
+                            : 0.0f;
     }
 
     if (!GameHasFocus()) {
@@ -413,6 +430,9 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
                    state.currentState;
         }
         if (down && m.action == &g_fire && FireBlocked())
+            down = false;
+        // The left trigger is aim down sights, unless the grip is held with it: a fist.
+        if (down && m.action == &g_ads && g_leftSqueeze > 0.5f)
             down = false;
         if (down != m.down) {
             Press(m, down);
@@ -474,6 +494,14 @@ bool AimPose(XrPosef& out) {
 
 float LeftSqueeze() {
     return g_leftSqueeze;
+}
+
+float LeftTrigger() {
+    return g_leftTrigger;
+}
+
+bool LeftThumbOnStick() {
+    return g_leftThumb;
 }
 
 bool TakeCalibratePress() {

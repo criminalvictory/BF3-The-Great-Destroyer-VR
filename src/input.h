@@ -21,8 +21,12 @@ bool AimPose(XrPosef& out);
 // A hand's grip pose (0 left, 1 right) from the last Sync, in the same space, if it's tracked.
 bool HandPose(int hand, XrPosef& out);
 
-// How far the left grip is squeezed (0-1): the left glove closes.
+// The left glove's fingers: how far the grip is squeezed (0-1, the middle, ring and little
+// fingers), how far the trigger is pulled (0-1, the index finger), and the thumb resting on the
+// stick. All three: a fist.
 float LeftSqueeze();
+float LeftTrigger();
+bool LeftThumbOnStick();
 // The left View button (Steam Frame) was pressed since the last call: line up the left glove.
 bool TakeCalibratePress();
 

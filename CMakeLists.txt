@@ -50,6 +50,7 @@ add_library(bf3vr SHARED
     src/bodies.cpp
     src/ammo.cpp
     src/hands.cpp
+    src/handpose.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler)
@@ -58,6 +59,10 @@ target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler
 add_executable(xrtest tools/xrtest.cpp)
 target_compile_definitions(xrtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(xrtest PRIVATE openxr_loader)
+
+# The left glove's finger poses drawn from a mesh dump, to shape them without the game.
+add_executable(handview tools/handview.cpp src/handpose.cpp)
+target_compile_definitions(handview PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 add_executable(injector injector/main.cpp)
 target_compile_definitions(injector PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

@@ -1008,8 +1008,42 @@ ID3D11Buffer* OwnBuffer(ID3D11DeviceContext* ctx, UINT size) {
 
 // Draws with these bones bound in place of BF3's buffer (in the slot it's in), then puts BF3's
 // back. The buffer is refilled with WRITE_DISCARD, so it can serve several draws in a row.
+// Cracks in the gloves' mesh (tools/handview.cpp "a=1"): three thin slivers where two edges meet but
+// were never joined, their sides on different bones (the middle and ring fingers' webbing, the back
+// of the little finger's knuckle, the thumb's web). Hidden in the game's own poses, they opened into
+// holes with the fingers spread or curled (user, 2026-10-30). Each is closed with a triangle of the
+// same vertices of the gloves' buffer, both ways round (the one facing out is drawn).
+constexpr uint16_t kGlovePatch[] = {7, 8, 1723, 7, 1723, 8, 9, 11, 1597, 9, 1597, 11, 13, 14, 1393, 13, 1393, 14};
+
+void DrawGlovePatch(int which, ID3D11DeviceContext* ctx, INT base) {
+    static std::once_flag created;
+    static ID3D11Buffer* s_patch = nullptr;
+    std::call_once(created, [ctx] {
+        ID3D11Device* device = nullptr;
+        ctx->GetDevice(&device);
+        if (!device)
+            return;
+        D3D11_BUFFER_DESC desc{sizeof(kGlovePatch), D3D11_USAGE_IMMUTABLE, D3D11_BIND_INDEX_BUFFER, 0, 0, 0};
+        D3D11_SUBRESOURCE_DATA data{kGlovePatch, 0, 0};
+        if (FAILED(device->CreateBuffer(&desc, &data, &s_patch)))
+            s_patch = nullptr;
+        device->Release();
+    });
+    if (!s_patch)
+        return;
+    ID3D11Buffer* indices = nullptr;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    UINT offset = 0;
+    ctx->IAGetIndexBuffer(&indices, &format, &offset);
+    ctx->IASetIndexBuffer(s_patch, DXGI_FORMAT_R16_UINT, 0);
+    g_origDrawIndexed[which](ctx, static_cast<UINT>(std::size(kGlovePatch)), 0, base);
+    ctx->IASetIndexBuffer(indices, format, offset);
+    if (indices)
+        indices->Release();
+}
+
 bool DrawWithPalette(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base,
-                     ID3D11Resource* original, const uint8_t* bytes, UINT size) {
+                     ID3D11Resource* original, const uint8_t* bytes, UINT size, bool patchGloves = false) {
     int slot = BoundSlot(ctx, original);
     ID3D11Buffer* own = slot < 0 ? nullptr : OwnBuffer(ctx, size);
     D3D11_MAPPED_SUBRESOURCE mapped;
@@ -1020,6 +1054,8 @@ bool DrawWithPalette(int which, ID3D11DeviceContext* ctx, UINT count, UINT start
     g_origUnmap[which](ctx, own, 0);
     ctx->VSSetConstantBuffers(slot, 1, &own);
     g_origDrawIndexed[which](ctx, count, start, base);
+    if (patchGloves)
+        DrawGlovePatch(which, ctx, base);
     auto buffer = static_cast<ID3D11Buffer*>(original);
     ctx->VSSetConstantBuffers(slot, 1, &buffer);
     return true;
@@ -1175,26 +1211,24 @@ void MoveBone(const float* m, const Drop& d, float* out) {
 std::mutex g_handsMutex;
 bool g_handsOn = false;
 skin::HandTargets g_hands;
-// The moves found this frame: the gun's (and the right hand's on it), from its body bone, and the
-// left hand's, from its root bone, for draws that don't have those bones.
-float g_gunDelta[12] = {}, g_leftDelta[12] = {};
-bool g_haveGunDelta = false, g_haveLeftDelta = false;
+// The move found this frame: the gun's (and the right hand's on it), from its body bone, for draws
+// that don't have that bone.
+float g_gunDelta[12] = {};
+bool g_haveGunDelta = false;
 constexpr float kEyeHeight = 1.6f;  // a dropped magazine's floor this far below the eye (standing)
-// Bones placed from a bone of another draw (the gun's body, the left hand's root): their offset
-// from it, learned as they're drawn. A move worked out in that other draw and reused here was a
-// frame off whenever the game's own gun bobbed (walking): black copies, flicker (user's video).
+// Bones placed from a bone of another draw (the gun's body): their offset from it, learned as
+// they're drawn. A move worked out in that other draw and reused here was a frame off whenever the
+// game's own gun bobbed (walking): black copies, flicker (user's video).
 struct Learned {
     float rel[kPaletteBones][12] = {};
     bool have[kPaletteBones] = {};
 };
 std::unordered_map<DrawKey, Learned, DrawKeyHash> g_learned;  // under g_handsMutex
-float g_leftRootOrig[12] = {};  // the left hand's root bone as the game drew it last
-bool g_haveLeftRootOrig = false;
-// Which frame those were drawn in (the count of view uploads then: a frame's start uploads its
-// views, its draws follow). An offset is only learned from a reference of the same frame: across
-// frames the arms' space moves a frame's walk, or a whole metre when its origin jumps, and the
-// right glove, scope and stock jumped about while walking (user's video, 2026-10-30).
-uint32_t g_gunBodyView = 0, g_leftRootView = 0;
+// Which frame the gun's body was drawn in (the count of view uploads then: a frame's start uploads
+// its views, its draws follow). An offset is only learned from a reference of the same frame:
+// across frames the arms' space moves a frame's walk, or a whole metre when its origin jumps, and
+// the right glove, scope and stock jumped about while walking (user's video, 2026-10-30).
+uint32_t g_gunBodyView = 0;
 // Draws of the gun and arms that couldn't be moved, since the last log: no copy of their bones,
 // someone else's, or BF3's bone buffer not bound.
 std::atomic<uint32_t> g_handsUnmoved{0}, g_handsMovedDraws{0};
@@ -1256,13 +1290,23 @@ void Collapse(float* bone, const float* point) {
 // what each palette entry is, from where its vertices sit in the bind pose: L / R a hand's bone,
 // moved with that hand; l / r that side's arm or sleeve, folded into its hand (its triangles shrink
 // into the glove); c the body and legs, folded onto the line between the hands (zero-area
-// triangles, never drawn); '-' no vertices. root: the left hand's root bone, where the draw has it.
+// triangles, never drawn); '-' no vertices.
 struct ArmDraw {
     DrawKey key;
     const char* roles;
-    int leftRoot;
     int rightRoot = -1;  // the right hand's root bone, where the draw has it (for the gun's grip)
+    // Which of the gloves' left-hand bones (handpose.cpp's 0-22) each 'L' entry is, where the
+    // numbering isn't the gloves' own (-1: none, moved with the glove's cuff).
+    const int8_t* leftBones = nullptr;
+    size_t leftBoneCount = 0;
 };
+// Matched by vertices at the same place in the gloves' mesh dump and these depth passes', so the
+// fingers bend alike in every pass. The bare forearms share no vertices with the gloves: their 'L'
+// entries, at the wrist, go with the cuff.
+constexpr int8_t kGloveDepthLeft[] = {-1, -1, 14, 13, 16, -1, 8, 9, 19, 15, 18, 17, 2};
+constexpr int8_t kBodyDepthLeft[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4,
+                                     0,  1,  6,  7,  21, 22, 12, 11, 20, 10, 14, 13, 16, 3,  8,  9,  19, 15, 18, 17, 2};
+constexpr int8_t kForearmLeft[] = {-1};
 // The right hand root's vertices' centre in the gloves' bind pose (the mesh dump).
 constexpr float kRightPalm[3] = {-0.505f, 1.129f, 0.150f};
 // The gun's body bone as the game animated it, and from it and the right hand, where the game's
@@ -1272,12 +1316,14 @@ bool g_haveGunBodyOrig = false;
 float g_gripModel[3] = {};
 bool g_haveGrip = false;
 constexpr ArmDraw kArmDraws[] = {
-    {{13755, 15051, 0}, "LLLLLLLLLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRRRRRRRR", 0, 37},                // gloves
-    {{7617, 49995, 0}, "--LLL-LLLLLLLrrrRRRRRRRRRRRRRRRRRRRRRRr", -1},                         // their depth
-    {{2016, 13035, 0}, "llLlL-l-LLrrRrR-rR", -1},                                              // bare forearms
-    {{8529, 0, 0}, "cllllll-rrrrrr", -1},                                                      // chest, sleeves
-    {{21189, 28806, 0}, "cc-ccccccccccccllllLLLLLLLLLLLLLLLLLLLLLLlrrrrrRRRRRRRr", 20},        // body's depth
-    {{4506, 8529, 0}, "c---ccccccccccccc", -1},                                                // legs
+    {{13755, 15051, 0}, "LLLLLLLLLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRRRRRRRR", 37},  // gloves
+    {{7617, 49995, 0}, "--LLL-LLLLLLLrrrRRRRRRRRRRRRRRRRRRRRRRr", -1, kGloveDepthLeft,
+     std::size(kGloveDepthLeft)},  // their depth
+    {{2016, 13035, 0}, "llLlL-l-LLrrRrR-rR", -1, kForearmLeft, std::size(kForearmLeft)},  // bare forearms
+    {{8529, 0, 0}, "cllllll-rrrrrr", -1},                                                 // chest, sleeves
+    {{21189, 28806, 0}, "cc-ccccccccccccllllLLLLLLLLLLLLLLLLLLLLLLlrrrrrRRRRRRRr", -1, kBodyDepthLeft,
+     std::size(kBodyDepthLeft)},              // body's depth
+    {{4506, 8529, 0}, "c---ccccccccccccc", -1},  // legs
 };
 
 // The gun's other skinned model (the mesh dumps: 7848 + 1440 indices drawn in colour, the 9288 of
@@ -1522,23 +1568,9 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
                 g_haveGrip = true;
             }
         }
-        // The left hand: from this draw's own root bone where it has one, else from each bone's
-        // learned offset from the root as last drawn (in the gloves' draw).
-        float leftDelta[12];
-        bool ownLeft = false;
-        if (draw.leftRoot >= 0) {
-            std::memcpy(g_leftRootOrig, bones + draw.leftRoot * 12, sizeof(g_leftRootOrig));
-            g_haveLeftRootOrig = true;
-            g_leftRootView = frame;
-            if (t.left && Invert(bones + draw.leftRoot * 12, inverse)) {
-                Compose(t.leftPose, inverse, leftDelta);
-                ownLeft = true;
-            }
-        }
-        // References drawn earlier in this same frame, to learn offsets from.
-        float gunInverse[12], leftInverse[12];
+        // The gun's body drawn earlier in this same frame, to learn offsets from.
+        float gunInverse[12];
         bool gunRef = g_haveGunBodyOrig && g_gunBodyView == frame && Invert(g_gunBodyOrig, gunInverse);
-        bool leftRef = g_haveLeftRootOrig && g_leftRootView == frame && Invert(g_leftRootOrig, leftInverse);
         Learned& learned = g_learned[draw.key];
         float mid[3];
         for (int i = 0; i < 3; ++i)
@@ -1547,20 +1579,12 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             float* bone = bones + k * 12;
             switch (draw.roles[k]) {
             case 'L':
-                // Open, every bone in its bind pose (the whole hand placed as one: fingers out), to
-                // closed as the game animates it, holding the gun, as the grip is squeezed.
+                // The whole hand placed as one, each bone bent as its finger is held. (Blending the
+                // matrices towards the game's own grip and past it folded the hand flat: user,
+                // 2026-10-30.)
                 if (t.left) {
-                    if (!ownLeft && leftRef)
-                        Learn(learned, k, leftInverse, bone);
-                    if (!ownLeft && !learned.have[k])
-                        break;
-                    float closed[12];
-                    if (ownLeft)
-                        Compose(leftDelta, bone, closed);
-                    else
-                        Compose(t.leftPose, learned.rel[k], closed);
-                    for (int i = 0; i < 12; ++i)
-                        bone[i] = t.leftPose[i] + (closed[i] - t.leftPose[i]) * t.leftClose;
+                    int g = !draw.leftBones ? static_cast<int>(k) : k < draw.leftBoneCount ? draw.leftBones[k] : -1;
+                    Compose(t.leftPose, t.leftFingers[g >= 0 && g < handpose::kBones ? g : 0], bone);
                 }
                 break;
             case 'R':
@@ -1586,7 +1610,8 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             }
         }
     }
-    bool drawn = DrawWithPalette(which, ctx, count, start, base, u.resource, t_arms.data(), kGloveUploadSize);
+    bool drawn = DrawWithPalette(which, ctx, count, start, base, u.resource, t_arms.data(), kGloveUploadSize,
+                                 &draw == &kArmDraws[0]);  // the gloves: their cracks closed
     if (drawn)
         ++g_handsMovedDraws;
     else
@@ -2264,7 +2289,7 @@ void SetHands(const HandTargets* targets) {
     if (targets) {
         g_hands = *targets;
     } else {
-        g_haveGunDelta = g_haveLeftDelta = false;
+        g_haveGunDelta = false;
     }
     g_handsActive = g_handsOn;
 }
