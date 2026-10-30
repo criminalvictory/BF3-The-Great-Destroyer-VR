@@ -22,6 +22,11 @@ constexpr uintptr_t kHealthModuleType = 0x1CC8A58;
 constexpr uintptr_t kSoldierData = 0x14;
 constexpr uintptr_t kHealthModule = 0xE8;  // in the soldier's data
 constexpr uintptr_t kTimeForCorpse = 0x08;  // in the health module data
+// Each soldier copies it at spawn into a component of its own (soldier +0x4E8, then +0x480), so
+// soldiers spawned before the data was changed (all of a level's first ones) need that copy too.
+constexpr uintptr_t kCopyHolder = 0x4E8;
+constexpr uintptr_t kCopyHolderType = 0x1CB46C0;  // its vtable, a bf3.exe offset
+constexpr uintptr_t kCopy = 0x480;
 
 uintptr_t ReadPointer(uintptr_t address) {
     uint32_t value = 0;
@@ -53,9 +58,17 @@ void Apply() {
     if (!camera::SafeRead(base + kServerEntities, slots, sizeof(slots)))
         return;
     std::unordered_set<uintptr_t> done;  // modules are shared by many soldiers
+    int copies = 0;
     for (uint32_t soldier : slots) {
         if (!soldier || ReadPointer(soldier) != base + kServerSoldierType)
             continue;
+        const uintptr_t holder = ReadPointer(soldier + kCopyHolder);
+        float copy = 0.0f;
+        // Only a living soldier's own copy (the times seen are 15 and 30 s).
+        if (holder && ReadPointer(holder) == base + kCopyHolderType &&
+            camera::SafeRead(holder + kCopy, &copy, sizeof(copy)) && copy > 0.0f && copy < seconds && copy <= 120.0f &&
+            SafeWrite(holder + kCopy, seconds))
+            ++copies;
         const uintptr_t data = ReadPointer(soldier + kSoldierData);
         const uintptr_t module = data ? ReadPointer(data + kHealthModule) : 0;
         if (!module || ReadPointer(module) != base + kHealthModuleType || !done.insert(module).second)
@@ -68,6 +81,8 @@ void Apply() {
             Log("Bodies: soldiers' bodies at %08X now stay %.0f s (were %.0f s)", static_cast<unsigned>(module),
                 seconds, current);
     }
+    if (copies)
+        Log("Bodies: %d soldiers already spawned will lie %.0f s too", copies, seconds);
 }
 
 }

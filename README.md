@@ -1,4 +1,4 @@
-# BF3: The Great Destroyer VR
+﻿# BF3: The Great Destroyer VR
 
 An OpenXR VR mod for the **Battlefield 3 campaign** (PC, 32-bit `bf3.exe` 1.6.0.0, Steam version).
 It injects into the running game and turns it into stereo 3D with head tracking and motion controllers.
@@ -18,11 +18,11 @@ account banned. This project contains only its own code; it ships no EA files.
 - **Head tracking**: the head turns the picture, including tilt.
 - **Motion controller aiming**: the right controller aims; bullets, muzzle flash and the gun model
   follow it. Buttons and sticks are sent to the game as keyboard and mouse.
-- **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
+- **Square window**: in windowed mode the game is kept square (default 1600Ã—1600), which gives
   more view top to bottom and a sharper headset image. It may be bigger than the monitor.
 - **Floating screen** (theater) mode as an alternative to stereo.
-- **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100°): the campaign
-  renders a fixed 55° whatever the menu says, which in a headset looks like a square window. The
+- **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100Â°): the campaign
+  renders a fixed 55Â° whatever the menu says, which in a headset looks like a square window. The
   mod widens the render, cull and first-person views each frame, and rescales the gun and arms'
   projection where it is uploaded to the graphics card, so they keep their real size. The
   headset image is shown at the same angle, so the world stays life-size.
@@ -35,7 +35,7 @@ account banned. This project contains only its own code; it ships no EA files.
   the next frame and the screen stays clean. Scripted deaths still happen (leaving the area of
   operation fails the mission).
 - **Bodies stay** (`[world] corpse_seconds`, 600 here; 0 = the game's own 15 s): raises how long
-  dead soldiers lie before the game removes them.
+  dead soldiers lie before the game removes them (tested: none of 12 removed in 3 minutes).
 
 Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
@@ -93,7 +93,7 @@ runtime path, which a 32-bit game can't load.
 | F8 | Switch floating screen / stereo |
 | F9 | Recenter |
 | Delete | Wide field of view on / off (saved) |
-| Page Up / Page Down | With the wide view on: its angle, 5° a step. Otherwise: zoom of the headset image |
+| Page Up / Page Down | With the wide view on: its angle, 5Â° a step. Otherwise: zoom of the headset image |
 | F1 | Flip which way the gun model follows the hand |
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
