@@ -1,0 +1,10 @@
+# Build output and logs
+build/
+build64/
+bld.txt
+*.log
+
+# Local testing material
+screenshots/
+AmmoTest/
+bf3 codes.txt
