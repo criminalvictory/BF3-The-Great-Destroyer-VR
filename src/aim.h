@@ -7,7 +7,8 @@ namespace aim {
 // BF3 then turns, culls, renders and aims from them itself.
 // headYaw: radians, turning left is positive. headPitch: radians, looking up is positive.
 // turn: the right stick's smooth turn for this frame (radians, left positive), added with it.
-// False when the look yaw can't be reached (no [aim] yaw, or it doesn't resolve).
+// False while the angles aren't known: they're looked for from the player's soldier (each new
+// life or checkpoint) in the background, and nothing is written until then.
 bool Update(float headYaw, float headPitch, float turn = 0.0f);
 
 // Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.

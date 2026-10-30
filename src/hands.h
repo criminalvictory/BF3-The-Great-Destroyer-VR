@@ -15,4 +15,7 @@ void Update(const XrPosef& head);
 // Insert: free hands on / off (on by default).
 void Toggle();
 
+// Free hands are on (the left trigger then works the charging handle instead of zooming).
+bool On();
+
 }

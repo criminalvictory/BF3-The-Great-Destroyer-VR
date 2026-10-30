@@ -16,4 +16,7 @@ void Toggle();
 // ammo), or 0. Render thread.
 uintptr_t PlayerServerSoldier();
 
+// The client's copy of the player's soldier (what the player sees and aims with), or 0.
+uintptr_t PlayerClientSoldier();
+
 }

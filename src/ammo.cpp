@@ -132,4 +132,16 @@ void Refill() {
     Log("Ammo: spare rounds %d -> 300 (weapon.txt \"refill\")", spare);
 }
 
+void Empty() {
+    uintptr_t firing = Firing();
+    int loaded = 0, spare = 0;
+    if (!firing || !Read(firing, loaded, spare)) {
+        Log("Ammo: the gun's rounds weren't found; not emptied");
+        return;
+    }
+    WriteInt(firing + kSpare, spare + loaded);
+    WriteInt(firing + kLoaded, 0);
+    Log("Ammo: %d rounds in the gun -> 0, to the spare ones (weapon.txt \"empty\")", loaded);
+}
+
 }

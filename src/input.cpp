@@ -15,9 +15,11 @@
 
 #include "ammo.h"
 #include "config.h"
+#include "hands.h"
 #include "log.h"
 #include "reload.h"
 #include "skin.h"
+#include "sounds.h"
 
 namespace {
 
@@ -536,8 +538,11 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         }
         if (down && m.action == &g_fire && FireBlocked())
             down = false;
-        // The left trigger is aim down sights, unless the grip is held with it: a fist.
-        if (down && m.action == &g_ads && g_leftSqueeze > 0.5f)
+        // The left trigger is aim down sights, unless the grip is held with it: a fist. With free
+        // hands the scope is looked through by holding the gun up to the eye, and the trigger
+        // works the charging handle (reload.cpp) and curls the glove's index finger (user,
+        // 2026-10-30).
+        if (down && m.action == &g_ads && (hands::On() || g_leftSqueeze > 0.5f))
             down = false;
         if (down != m.down) {
             Press(m, down);
@@ -697,8 +702,10 @@ void MagazineTap() {
     if (skin::MagazineOut()) {
         ammo::Insert();
         skin::InsertMagazine();
+        sounds::Play("mag_in", reload::GunPan());
     } else if (skin::EjectMagazine()) {
         ammo::Eject();
+        sounds::Play("mag_out", reload::GunPan());
     }
 }
 

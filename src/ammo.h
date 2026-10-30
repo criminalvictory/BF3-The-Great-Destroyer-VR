@@ -23,4 +23,8 @@ int MagazineSize();
 // Testing (weapon.txt "refill"): the gun in hand gets 300 spare rounds. Render thread.
 void Refill();
 
+// Testing (weapon.txt "empty"): no rounds left in the gun in hand, so the game's own reload (R)
+// is its empty one, bolt release and all, to record its sounds from. Render thread.
+void Empty();
+
 }

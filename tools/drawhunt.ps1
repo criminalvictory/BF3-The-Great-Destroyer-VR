@@ -3,6 +3,7 @@
 #   -Action vanished  : the arms disappeared in the last screenshot (F13)
 #   -Action visible   : the arms were still there (F14)
 #   -Action shot      : just take a screenshot
+#   -Action f3        : F3, the look-angle finder (theater mode; move the mouse when it beeps three times)
 #   -Action flip      : F1, gun follows hand on/off (off keeps the arms centred in view)
 #   -Action insert    : Insert, hand shift on/off
 #   -Action delete    : Delete, wider render FOV on/off; pageup / pagedown change it
@@ -16,7 +17,7 @@
 #   -Action hold -Vk k -Seconds s : hold a game key (by scan code) for s seconds
 # A minimized game window is restored first.
 param(
-    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'f17', 'f18', 'f19', 'pause', 'scroll', 'end', 'hold', 'fire')] [string]$Action,
+    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'f3', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'f17', 'f18', 'f19', 'pause', 'scroll', 'end', 'hold', 'fire')] [string]$Action,
     [string]$Name = 'hunt',
     [int]$X = 0,
     [int]$Y = 0,
@@ -77,7 +78,7 @@ $procId = [uint32]0
 [void][DrawHunt.U]::GetWindowThreadProcessId([DrawHunt.U]::GetForegroundWindow(), [ref]$procId)
 if ($procId -ne $game.Id) { Write-Host 'BF3 is not the focused window: no input sent.'; exit 2 }
 
-$keys = @{ start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; f17 = 0x80; f18 = 0x81; f19 = 0x82; pause = 0x13; scroll = 0x91; end = 0x23 }
+$keys = @{ f3 = 0x72; start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; f17 = 0x80; f18 = 0x81; f19 = 0x82; pause = 0x13; scroll = 0x91; end = 0x23 }
 if ($keys.ContainsKey($Action)) {
     [DrawHunt.U]::Key($keys[$Action], $true); Start-Sleep -Milliseconds 120; [DrawHunt.U]::Key($keys[$Action], $false)
     Start-Sleep -Milliseconds 1200

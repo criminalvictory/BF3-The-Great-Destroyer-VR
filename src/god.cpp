@@ -145,6 +145,10 @@ void Toggle() {
     Beep(g.enabled ? 1200 : 440, 200);
 }
 
+uintptr_t PlayerClientSoldier() {
+    return ClientSoldier(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+}
+
 uintptr_t PlayerServerSoldier() {
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const uintptr_t client = ClientSoldier(base);

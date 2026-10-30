@@ -63,6 +63,7 @@
 #include "effects.h"
 #include "log.h"
 #include "reload.h"
+#include "sounds.h"
 #include "views.h"
 
 namespace {
@@ -300,13 +301,19 @@ struct ViewByBuffer {
     float viewToArms[12] = {};
     int eye = -1;  // per-eye views: which eye's view this is (0 left, 1 right; -1 not known)
 };
-// Per-eye views: which eye each first-person view upload is for. BF3 makes both views' from its one
-// weapon camera, so they're the same, eye and all, and their draws use one viewport the width of
-// the whole picture; but the render thread draws view after view, the left eye's first, each view
-// uploading the same number of them (traced 2026-10-30: four a view, all into one buffer). So the
-// first half of a frame's uploads are the left eye's, by the last frame's count.
+// Per-eye views: which eye each first-person view upload is for (eight a frame, all into one
+// buffer, on one thread; their draws use one viewport the width of the whole picture). views.cpp
+// shifts each eye's first-person camera half the eye distance along its right, so a frame's uploads
+// sit in two places along that right, the left eye's further left. Their order in a frame stays
+// the same from frame to frame, so the last frame's, read that way, gives each upload its eye as
+// it comes. (Taking the first half for the left eye, as before, labelled some of the left eye's
+// passes the right's if the passes take turns between the eyes: the right eye got ~6 more hand
+// draws a frame, and the user saw a black layer around the arms and gun, 2026-10-30.)
 std::atomic<uint32_t> g_frameSerial{0};  // frames shown so far (skin::Update)
 uint32_t g_armsFrame = 0, g_armsUploads = 0, g_armsUploadsBefore = 0;  // under g_fpMutex
+float g_frameFirstEye[3] = {}, g_frameRight[3] = {};  // this frame's first upload's eye and right
+std::vector<float> g_frameSides;  // each upload's eye along that right, from the first's
+std::vector<int8_t> g_eyeOrder;   // the eye of each upload, by its place in the frame
 ViewByBuffer g_viewByBuffer[8];
 int g_viewByBufferNext = 0;
 // The constant buffers the first-person view-projection in the world went into (effects.cpp's
@@ -337,6 +344,10 @@ bool g_haveFpOrigin = false;
 // weapon.txt "dumpview": the next 352-byte upload with the first-person view in it is logged
 // whole, to find the rest of what BF3 keeps per view there (the main view-projection).
 std::atomic<bool> g_dumpView{false};
+// weapon.txt "eyetrace": the next 40 first-person view uploads are logged with the frame they fell
+// in, their place in it, the eye given and the thread (the right eye got ~6 more hand draws a frame
+// than the left, 2026-10-30: one pass of the left eye's taken for the right's?).
+std::atomic<int> g_eyeTrace{0};
 
 void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
     bool arms = size == 352 && offset == 176, world = size == 80 && offset == 0;
@@ -376,14 +387,42 @@ void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
             g_viewToArms[i * 4] = axes[0][i], g_viewToArms[i * 4 + 1] = axes[1][i];
             g_viewToArms[i * 4 + 2] = axes[2][i], g_viewToArms[i * 4 + 3] = eyeArms[i];
         }
-        // Which eye: the first half of this frame's uploads are the left eye's.
+        // Which eye: by the place the last frame's uploads were in, in its order.
         if (uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); frame != g_armsFrame) {
             g_armsFrame = frame;
             g_armsUploadsBefore = g_armsUploads;
             g_armsUploads = 0;
+            g_eyeOrder.clear();
+            if (g_frameSides.size() >= 2) {
+                const auto [lo, hi] = std::minmax_element(g_frameSides.begin(), g_frameSides.end());
+                const bool leftIsLeft = views::EyeOffset(0) <= views::EyeOffset(1);  // unless swapped
+                if (*hi - *lo > 0.01f)  // two places a few centimetres apart
+                    for (float side : g_frameSides)
+                        g_eyeOrder.push_back((side < (*lo + *hi) / 2) == leftIsLeft ? 0 : 1);
+            }
+            g_frameSides.clear();
         }
         const uint32_t k = g_armsUploads++, n = g_armsUploadsBefore;
-        const int eye = views::Active() && n >= 2 && n % 2 == 0 ? (k < n / 2 ? 0 : 1) : -1;
+        if (k == 0) {
+            std::memcpy(g_frameFirstEye, eyeArms, sizeof(eyeArms));
+            std::memcpy(g_frameRight, axes[0], sizeof(g_frameRight));
+        }
+        float side = 0.0f;
+        for (int i = 0; i < 3; ++i)
+            side += (eyeArms[i] - g_frameFirstEye[i]) * g_frameRight[i];
+        g_frameSides.push_back(side);
+        int eye = -1;
+        if (views::Active() && n == g_eyeOrder.size() && k < n)
+            eye = g_eyeOrder[k];
+        else if (views::Active() && n >= 2 && n % 2 == 0)
+            eye = k < n / 2 ? 0 : 1;  // no order learned: the first half
+        if (g_eyeTrace.load(std::memory_order_relaxed) > 0) {
+            --g_eyeTrace;
+            Log("Eye trace: frame %u, upload %u of %u last frame -> eye %d (%s), %+.1f mm along the first's right, "
+                "thread %lu",
+                g_armsFrame, k, n, eye, n == g_eyeOrder.size() ? "by place" : "first half", side * 1000.0f,
+                GetCurrentThreadId());
+        }
         g_haveViewToArms = true;
         ++g_viewUploads;
         if (ID3D11Resource* buffer = t_uploadResource) {
@@ -648,7 +687,10 @@ void ReadWeaponSelection() {
     //   "flashmats 2"        which view constants moved draws change (effects.cpp)
     //   "flashlift 1"        what's moved with the gun lifted this far too (to see it plainly)
     //   "refill"             300 spare rounds for the gun in hand
+    //   "empty"              no rounds left in it: the game's reload (R) is then its empty one
     //   "dumpview"           log BF3's per-view constants once
+    //   "eyetrace"           log the next 40 first-person view uploads and the eye each is given
+    //   "sound bolt"         play that reload sound (build\sounds\bolt.wav), a little to the right
     float shift[3] = {}, floor = 0.0f, wcam[3] = {};
     bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
     UINT hideFx[4] = {};
@@ -673,6 +715,11 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "refill")) {
             ammo::Refill();
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "empty")) {
+            ammo::Empty();
             line = next;
             continue;
         }
@@ -719,6 +766,18 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "dumpview")) {
             g_dumpView = true;
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "eyetrace")) {
+            g_eyeTrace = 40;
+            line = next;
+            continue;
+        }
+        if (const char* sd = std::strstr(line, "sound")) {
+            char name[32] = {};
+            if (sscanf_s(sd + 5, "%31s", name, static_cast<unsigned>(sizeof(name))) == 1)
+                sounds::Play(name, 0.3f);
             line = next;
             continue;
         }
@@ -1451,6 +1510,29 @@ void MoveBy(const float* delta, float* bone) {
     std::memcpy(bone, moved, sizeof(moved));
 }
 
+// The rifle's ejection port cover (bone 3) swung open by angle (radians) on its hinge: the rod
+// along its bottom edge, at this x and y in the gun's model space (x left, y up, z to the muzzle;
+// the mesh dump as posed, 2026-10-30). Opening, the top swings out to the right and down. bones
+// is the gun's palette, its body (bone 2) already where it's drawn.
+void SwingCover(float* bones, float angle) {
+    constexpr float kHinge[2] = {-0.021f, 0.033f};
+    if (angle <= 0.0f)
+        return;
+    const float c = std::cos(angle), s = std::sin(angle), hx = kHinge[0], hy = kHinge[1];
+    // About the model's z axis through the hinge: p' = R (p - h) + h.
+    const float turn[12] = {c, -s, 0.0f, hx - (c * hx - s * hy),
+                            s, c,  0.0f, hy - (s * hx + c * hy),
+                            0.0f, 0.0f, 1.0f, 0.0f};
+    const float* body = bones + 2 * 12;
+    float inverse[12], local[12], around[12], moved[12];
+    if (!Invert(body, inverse))
+        return;
+    Compose(body, turn, local);
+    Compose(local, inverse, around);  // the turn where the gun is: body, turn, body inverse
+    Compose(around, bones + 3 * 12, moved);
+    std::memcpy(bones + 3 * 12, moved, sizeof(moved));
+}
+
 // A bone whose vertices all land on one point: folded away.
 void Collapse(float* bone, const float* point) {
     std::memset(bone, 0, 12 * sizeof(float));
@@ -1642,23 +1724,18 @@ bool DrawGun(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT ba
                 g_gunDeltaTrueTime = GetTickCount64();
                 for (int k = 0; k < 6; ++k)
                     MoveBy(g_gunDelta, bones + k * 12);
-                // The moving parts (the user saw them, 2026-10-30): the part in the ejection port
-                // (bone 3, the bolt) kicks back 2 cm with each shot and returns, stays back while
-                // the bolt is locked, and rides back with the charging handle (bone 0), which the
-                // left hand pulls (reload.cpp).
+                // The moving parts (the user saw them, 2026-10-30): the charging handle (bone 0)
+                // slides back with the left hand (reload.cpp), and the ejection port's cover
+                // (bone 3) swings open on its hinge when the bolt moves.
                 {
                     const float* body = bones + 2 * 12;
                     const float z[3] = {body[2], body[6], body[10]};  // the barrel's way (forward)
                     const float length = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
-                    const ULONGLONG since = effects::MsSinceShot();
-                    const float kick = since >= 60 ? 0.0f : since < 15 ? since / 15.0f : 1.0f - (since - 15) / 45.0f;
-                    const float back[2] = {reload::HandleBack(), std::max(reload::BoltOffset(), 0.02f * kick)};
-                    const int parts[2] = {0, 3};
-                    for (int i = 0; i < 2 && length > 0.0f; ++i) {
-                        const float s = -back[i] / length;
-                        float* b = bones + parts[i] * 12;
-                        b[3] += z[0] * s, b[7] += z[1] * s, b[11] += z[2] * s;
+                    if (length > 0.0f) {
+                        const float s = -reload::HandleBack() / length;
+                        bones[3] += z[0] * s, bones[7] += z[1] * s, bones[11] += z[2] * s;
                     }
+                    SwingCover(bones, reload::CoverAngle());
                 }
                 // weapon.txt "wiggle N": bone N slides 2 cm back and forth along the barrel, to tell
                 // which part of the gun it is.

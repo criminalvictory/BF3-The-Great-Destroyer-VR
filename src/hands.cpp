@@ -328,8 +328,12 @@ void Update(const XrPosef& head) {
         frames = noGun = noLeft = 0;
     }
     // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's space.
-    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? t.leftWrist : nullptr, input::LeftSqueeze());
+    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? t.leftWrist : nullptr, input::LeftTrigger());
     skin::SetHands(t.gun || t.left ? &t : nullptr);
+}
+
+bool On() {
+    return g_on;
 }
 
 void Toggle() {

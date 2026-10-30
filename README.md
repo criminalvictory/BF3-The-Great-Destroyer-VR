@@ -103,6 +103,21 @@ If the picture looks wrong:
   doesn't fire with the magazine out or one round left (run dry, the game would reload by
   itself). With any other gun, a tap is the game's reload. The ammo is the count in the game's own
   server, which decides firing.
+- **Reloading by hand** (the rifle): run dry, the bolt locks back and the gun won't fire. With a
+  full magazine in, either slap the bolt release on the left of the receiver, behind the magazine
+  well, with the left hand (the flat-screen game's empty reload), or put the left hand on the
+  charging handle at the back of the receiver's top, hold the left trigger, pull back at least
+  4.5 cm and let go. The handle slides back with the hand and springs home. The ejection port's
+  cover swings open on its hinge when the bolt moves (a shot, the bolt locked back, the handle
+  drawn) and shuts again once it has been still for a moment.
+- **Reload sounds**: the magazine coming out, going in, and the bolt going home are the game's own
+  sounds, recorded from its empty reload (`capture.exe`) and played by the mod at the gun when the
+  hands do the same (`build\sounds\*.wav`). They follow bf3.exe's volume in Windows like the game.
+  The clips are the game's, so they aren't in this repository: record your own with the rifle in
+  hand at a quiet spot (`capture record 9 take.wav` while `build\weapon.txt` holds `empty`, which
+  empties the gun so the game does its empty reload), find the three clicks with `capture loud`
+  (about 0.6, 1.5 and 2.2 s after emptying), and cut each with `capture cut` into
+  `build\sounds\mag_out.wav`, `mag_in.wav` and `bolt.wav`.
 
 Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
@@ -123,6 +138,12 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 - Free hands: only the campaign's M16-type rifle is known (other guns get the game's own arms);
   bullets still leave from where the game holds its gun, not the drawn muzzle; two-handed aiming
   isn't done. A short piece of bare forearm shows under the left glove's cuff.
+- The muzzle flash, its smoke and the spent casings are drawn where the game holds its own gun
+  (at the chest), not at the drawn gun.
+- A dark layer shows around the arms, glove and gun, plainest against bright light (being looked
+  into: one pass of the arms placed for the wrong eye is the suspect).
+- The charging handle has no sound of its own yet (the M16's reloads never use it); letting it
+  go plays the bolt going home.
 
 Scenery no longer disappears when the controller aims away from where you look: the camera BF3
 decides what to draw from is found once with the cull hunt (F10, then F6/F5) and turned with the
@@ -153,7 +174,7 @@ runtime path, which a 32-bit game can't load.
 | Controller | Action |
 |---|---|
 | Right trigger | Fire |
-| Left trigger | Aim down sights (not while the left grip is held); curls the left index finger |
+| Left trigger | Grabs the rifle's charging handle when the hand is on it (pull back, let go); curls the left index finger. Without free hands: aim down sights (not while the left grip is held) |
 | Left stick / click | Move / sprint |
 | Right stick | Turn |
 | A / B | Jump / crouch |
@@ -239,6 +260,12 @@ time, from outside the game: `sampler 5 10` pauses the 10 busiest a thousand tim
 5 s and lists, per thread, the code it ran and the system calls it waited in, with the game code
 behind them (it found the 11 ms memory statistics call). Thread CPU is read from cycle counts:
 Windows' thread times are only charged at clock ticks and make bursty threads look idle.
+`capture.exe` records what the PC plays (`capture record 7 take.wav`), shows how loud each 10 ms
+was (`loud`), cuts mono clips (`cut take.wav 3.19 0.28 bolt.wav 4.17`, the gain undoing bf3.exe's
+volume slider at the time) and lists each app's volume (`sessions`); `playtest.exe bolt` plays a
+clip as the mod does. `anglescan.exe` finds the look angles from outside the game (pairs that
+match the game camera; `test` nudges each), what points at an address (`refs`), pointer paths
+from the soldier (`path`), and the level's ambient occlusion settings (`ao`).
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
 sent by virtual-key code alone; `-Action fire` holds the mouse button across frames, `f16` is
 the magazine button, `f17` turns as the right stick does for 3 s, with the turn's evenness frame
@@ -266,6 +293,9 @@ Windows' default output is the headset) to call the tester back when a test is r
 - `src/camera.cpp`: hardware write breakpoints on BF3's camera copies. Right after the game writes
   one, the mod shifts it per eye and turns it to the head.
 - `src/aim.cpp`: writes the player's look angles, so the game aims where the controller points.
+  It finds them itself from the player's soldier at each life or checkpoint, writes only to an
+  object of their type, and of those only to the one that keeps a small nudge (the others are
+  copies the game rebuilds every frame).
 - `src/input.cpp`: OpenXR actions for the controllers, injected as keyboard and mouse.
 - `src/finder.cpp`: in-game memory finders for the camera, look angles and settings.
 - `src/window.cpp`: keeps the game window square, past the screen size limit.
@@ -284,4 +314,9 @@ Windows' default output is the headset) to call the tester back when a test is r
 - `src/handpose.cpp`: the left glove's fingers, bent joint by joint (joints and finger directions
   measured from the mesh dump).
 - `src/perfinfo.cpp`: answers the game's once-a-frame memory statistics call from a copy.
+- `src/reload.cpp`: the rifle's bolt, charging handle, bolt release and ejection port cover, worked
+  by the left hand.
+- `src/sounds.cpp`: plays the recorded reload sounds (XAudio2, on a thread of its own).
+- `src/effects.cpp`: research into the muzzle flash and the casings (drawn where the game holds
+  its own gun).
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.
