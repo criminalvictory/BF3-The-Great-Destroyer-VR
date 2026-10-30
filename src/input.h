@@ -34,4 +34,17 @@ bool TakeCalibratePress();
 // or with it out a new one in. With a gun the mod doesn't know the magazine of, the game's reload.
 void MagazineTap();
 
+// F17 (from tools/drawhunt.ps1): for 3 s, turns the way the right stick held all the way does,
+// to measure how even the turn is without the controller.
+void StartTurnTest();
+// Once per frame, after Sync: the smooth turn from the right stick (or the F17 test), only while
+// BF3 has focus. direct: the frame's turn is taken with TakeTurn and written into the look yaw
+// with the head's (aim.cpp), which the picture follows; otherwise a thread moves the mouse.
+void UpdateTurn(bool direct);
+// The direct turn since the last call: radians, left positive ([controllers] turn_degrees).
+float TakeTurn();
+// The turn's evenness from frame to frame, logged once a second while the stick turns: which 0 =
+// the yaw of the game's own camera as built, 1 = the yaw shown. Radians.
+void NoteTurnStep(int which, float yaw);
+
 }

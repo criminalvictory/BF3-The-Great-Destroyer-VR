@@ -36,6 +36,7 @@
 #include "hands.h"
 #include "input.h"
 #include "log.h"
+#include "perfinfo.h"
 #include "skin.h"
 #include "views.h"
 #include "window.h"
@@ -93,6 +94,8 @@ int g_poseNewest = 0;
 int g_posesKept = 0;
 
 bool g_aimingWithHand = false;
+// The look yaw could be written last frame, so the stick's turn goes in with it (input.cpp).
+bool g_turnDirect = false;
 
 // Yaw (turning left positive) and pitch (looking up positive) of where q points: (0, 0, -1) rotated by q.
 void LookAngles(const XrQuaternionf& q, float& yaw, float& pitch) {
@@ -593,6 +596,9 @@ void PollHotkeys() {
     // F16 (sent by tools/drawhunt.ps1): the X button's magazine eject / insert.
     if (KeyPressed(VK_F16))
         input::MagazineTap();
+    // F17 (tools/drawhunt.ps1): 3 s of turning as the stick does, to measure how even it is.
+    if (KeyPressed(VK_F17))
+        input::StartTurnTest();
     // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.
     if (KeyPressed(VK_F15))
         skin::HuntStart();
@@ -1018,7 +1024,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             yaw = headYaw + std::clamp(offset, -limit, limit);
             pitch = headPitch + std::clamp(pitch - headPitch, -limit, limit);
         }
-        aim::Update(yaw, pitch);
+        g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
         g_yawHistory[g_yawHistoryNext] = yaw;
         int lagged = (g_yawHistoryNext - config::Get().viewLag + kYawHistory) % kYawHistory;
         g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
@@ -1027,6 +1033,9 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             turn.currentYaw = yaw;
             turn.haveLook = aim::LookYaw(turn.lookYaw, turn.lookSign);
             camera::SetViewTurn(&turn);
+            // The picture's turn: the look yaw written against the controller's (camera.cpp).
+            if (turn.haveLook)
+                input::NoteTurnStep(1, turn.lookSign * turn.lookYaw - yaw);
         } else {
             camera::SetViewTurn(nullptr);
         }
@@ -1168,6 +1177,8 @@ void RenderFrame(IDXGISwapChain* swap) {
     if (g_recenterPending)
         Recenter(frame.predictedDisplayTime);
     input::Sync(g_session, g_space, frame.predictedDisplayTime);
+    input::UpdateTurn(g_turnDirect && frame.shouldRender && config::Get().mode == config::Mode::Stereo &&
+                      config::Get().headTracking);
     depth3d::Probe();
 
     FrameLayers layers;
@@ -1206,6 +1217,7 @@ void RenderFrame(IDXGISwapChain* swap) {
         Log("Frame timing (ms per frame): whole frame %.1f, of it waiting for the headset %.1f, our copy %.1f, "
             "handing over %.1f; %d frames",
             g_timing.frame / n, g_timing.wait / n, g_timing.build / n, g_timing.end / n, g_timing.frames);
+        perfinfo::LogStats();
         if (async) {
             std::lock_guard lock(g_handover.mutex);
             if (g_handover.frames)

@@ -3,10 +3,12 @@
 namespace aim {
 
 // Head or controller tracking by way of the player's look angles: each stereo frame, the change
-// in yaw since the last frame is added (the mouse and stick turn the body too), and pitch is set
-// outright. BF3 then turns, culls, renders and aims from them itself.
+// in yaw since the last frame is added (the mouse turns the body too), and pitch is set outright.
+// BF3 then turns, culls, renders and aims from them itself.
 // headYaw: radians, turning left is positive. headPitch: radians, looking up is positive.
-void Update(float headYaw, float headPitch);
+// turn: the right stick's smooth turn for this frame (radians, left positive), added with it.
+// False when the look yaw can't be reached (no [aim] yaw, or it doesn't resolve).
+bool Update(float headYaw, float headPitch, float turn = 0.0f);
 
 // Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.
 void Reset();

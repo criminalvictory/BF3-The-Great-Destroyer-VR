@@ -8,6 +8,7 @@
 #include "config.h"
 #include "depth3d.h"
 #include "log.h"
+#include "perfinfo.h"
 #include "skin.h"
 #include "xr_runtime.h"
 
@@ -149,12 +150,14 @@ bool Install() {
     bool skinHooked = skin::InstallHooks(contexts.map, contexts.unmap, contexts.drawIndexed);
     // Depth clears, to find the depth buffer for depth-based 3D (depth3d.cpp).
     bool depthHooked = depth3d::InstallHooks(contexts.clearDepth);
+    // The game's memory statistics, from a copy (perfinfo.cpp).
+    bool statsHooked = perfinfo::Install();
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         Log("MH_EnableHook failed");
         return false;
     }
-    Log("Present/ResizeBuffers hooked%s%s", skinHooked ? ", Map/Unmap/DrawIndexed hooked" : "",
-        depthHooked ? ", ClearDepthStencilView hooked" : "");
+    Log("Present/ResizeBuffers hooked%s%s%s", skinHooked ? ", Map/Unmap/DrawIndexed hooked" : "",
+        depthHooked ? ", ClearDepthStencilView hooked" : "", statsHooked ? ", GetPerformanceInfo hooked" : "");
     return true;
 }
 

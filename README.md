@@ -44,8 +44,14 @@ If the picture looks wrong:
   wide), and each eye is shown its half. This is how FrostbiteVR renders Bad Company 2 (a native
   second view), found in BF3's own code. BF3 draws the gun and arms of both views from one camera,
   so the free hands and gun are shifted per eye by the mod (the game's own arms, with free hands
-  off, have no depth of their own). Two full views hold the headset's 72 fps in most of the
-  campaign's opening level, with dips to about 66.
+  off, have no depth of their own). Two full views hold the headset's 72 fps with about 6 ms to
+  spare a frame (tested in the campaign's opening level).
+- **A steady frame rate**: every frame, BF3 asks Windows for the PC's memory statistics
+  (`GetPerformanceInfo`), and Windows counts every process and thread on the computer to answer:
+  11 ms of the 13.9 ms a frame has at 72 Hz, with SteamVR, a browser and the usual apps open
+  (380 processes, 7,800 threads). Made in 2011, it took microseconds then. The mod answers it from
+  a copy refreshed once a second (`src/perfinfo.cpp`); with two views the frames no longer missed
+  the headset and turning with the stick stopped stuttering.
 - **Stereo 3D from depth** (Scroll Lock): every game frame becomes both eyes. Each pixel is shifted
   sideways by the eye's offset over its distance, read from BF3's own depth buffer, so both eyes
   update every frame and head turns no longer double the picture (alternate-eye rendering, one
@@ -56,7 +62,12 @@ If the picture looks wrong:
   in `build\depth3d.txt` (see below).
 - **Head tracking**: the head turns the picture, including tilt.
 - **Motion controller aiming**: the right controller aims; bullets, muzzle flash and the gun model
-  follow it. Buttons and sticks are sent to the game as keyboard and mouse.
+  follow it. Buttons and sticks are sent to the game as keyboard and mouse, except the smooth turn:
+  in stereo the right stick's turn goes into the look angle the mod writes each frame, which the
+  picture follows, so it turns in step with the frames (`[controllers] turn_degrees`, 266° a
+  second at full deflection). As a mouse move once a frame it stuttered: BF3 reads the mouse on a
+  rhythm of its own, and about 6 times a second a frame barely turned and the next turned double.
+  In theater mode the stick still moves the mouse, a little every millisecond.
 - **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
   more view top to bottom and a sharper headset image; with per-eye views twice as wide (3200×1600:
   each eye a square half). It may be bigger than the monitor.
@@ -97,12 +108,10 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
 ## Known issues
 
-- Per-eye views: smooth turning with the stick stutters a little, at about 70 fps against the
-  headset's 72 (the graphics card is only about half busy; the cause isn't found yet). The HUD is
-  drawn once across both halves, so the minimap is only in the left eye and the ammo count only in
-  the right. Keep `[stereo] async_handover=0`: handing frames to SteamVR on a thread of its own
-  switches the graphics device to its locked functions, which go round the mod's draw hooks (the
-  gun's FOV fix and free hands stop).
+- Per-eye views: the HUD is drawn once across both halves, so the minimap is only in the left eye
+  and the ammo count only in the right. Keep `[stereo] async_handover=0`: handing frames to
+  SteamVR on a thread of its own switches the graphics device to its locked functions, which go
+  round the mod's draw hooks (the gun's FOV fix and free hands stop).
 - Depth 3D: around near things against far ones (the gun, a soldier against the sky) the gap the
   other eye would see behind them is filled from the background beside it, which can look like a
   soft halo. `bias -1` / `bias 1` in `depth3d.txt` keeps one eye exactly as the game drew it and
@@ -225,9 +234,15 @@ dump in finger poses, each from four sides, without the game: `handview build ou
 0,1,1,1,1,0.7` (index, middle, ring, little, thumb, spread). It reports how deep fingers sink into
 each other, whether the depth passes stand out of the glove, and with "a=1" the glove's pieces
 and openings; "c=-1" culls back faces as the game does.
+`sampler.exe` (built with the mod, from `tools/sampler.cpp`) shows where BF3's threads spend their
+time, from outside the game: `sampler 5 10` pauses the 10 busiest a thousand times a second for
+5 s and lists, per thread, the code it ran and the system calls it waited in, with the game code
+behind them (it found the 11 ms memory statistics call). Thread CPU is read from cycle counts:
+Windows' thread times are only charged at clock ticks and make bursty threads look idle.
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
 sent by virtual-key code alone; `-Action fire` holds the mouse button across frames, `f16` is
-the magazine button) and takes screenshots while BF3 is in front; `tools/say.ps1`
+the magazine button, `f17` turns as the right stick does for 3 s, with the turn's evenness frame
+to frame in the log) and takes screenshots while BF3 is in front; `tools/say.ps1`
 reads test instructions aloud. Memory tools for campaign research, run with the 32-bit
 PowerShell: `peek.ps1`/`peekabs.ps1` (read), `poke.ps1`/`pokeabs.ps1` (write, refusing unless the
 expected value is there), `watch.ps1`/`watchabs.ps1`/`treewatch.ps1`/`treediff.ps1` (watch values
@@ -268,4 +283,5 @@ Windows' default output is the headset) to call the tester back when a test is r
   controllers (`skin.cpp` redraws the gun and arms there).
 - `src/handpose.cpp`: the left glove's fingers, bent joint by joint (joints and finger directions
   measured from the mesh dump).
+- `src/perfinfo.cpp`: answers the game's once-a-frame memory statistics call from a copy.
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.

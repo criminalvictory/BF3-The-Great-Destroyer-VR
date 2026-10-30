@@ -36,7 +36,10 @@ struct Settings {
     // Stereo mode: aim and fire with the right controller instead of the head; the head then
     // only turns the picture.
     bool controllerAim = true;
-    // Right stick turning: mouse counts per frame at full deflection.
+    // Right stick turning at full deflection: in stereo, degrees a second (written into the look
+    // yaw); in theater mode, mouse counts per 72nd of a second. 266 degrees is what 15 counts made
+    // with the game's mouse sensitivity on the test setup.
+    float turnDegrees = 266.0f;
     float turnSpeed = 15.0f;
     // Which way the gun model is swung to follow the hand (F1 flips it).
     bool gunFlip = false;

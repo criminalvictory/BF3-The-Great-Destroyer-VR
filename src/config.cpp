@@ -55,7 +55,9 @@ const char kDefaultIni[] =
     "[controllers]\n"
     "; 1 = aim and fire with the right controller; the head then only turns the picture.\n"
     "aim=1\n"
-    "; Right stick turning speed (mouse counts per frame at full deflection).\n"
+    "; Right stick turning speed at full deflection, in stereo (degrees a second).\n"
+    "turn_degrees=266\n"
+    "; The same in theater mode, where the stick moves the mouse (counts per 72nd of a second).\n"
     "turn_speed=15\n"
     "; 1 = swing the gun model the other way (F1 in game) if it moves away from your hand.\n"
     "gun_flip=0\n"
@@ -202,6 +204,7 @@ void Load(HMODULE self) {
     s.headTracking = ReadBool(L"head", L"tracking", true);
     s.mirrorOneEye = ReadBool(L"stereo", L"mirror_one_eye", true);
     s.controllerAim = ReadBool(L"controllers", L"aim", true);
+    s.turnDegrees = ReadFloat(L"controllers", L"turn_degrees", s.turnDegrees);
     s.turnSpeed = ReadFloat(L"controllers", L"turn_speed", s.turnSpeed);
     s.gunFlip = ReadBool(L"controllers", L"gun_flip", false);
     s.maxAimOffsetDeg = ReadFloat(L"controllers", L"max_aim_offset", s.maxAimOffsetDeg);

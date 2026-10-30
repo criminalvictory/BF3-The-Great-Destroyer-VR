@@ -10,7 +10,6 @@
 #include "camera.h"
 
 #include <windows.h>
-#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
@@ -383,6 +382,27 @@ void DesiredSlots(uintptr_t (&out)[kSlots]) {
     g_weaponAddress = out[kWeaponSlot] ? weaponAddress : 0;
 }
 
+// The game's own threads. (A Toolhelp snapshot lists every thread on the PC: 11 ms with SteamVR
+// and browsers running, and this thread took one about every 50 ms.)
+std::vector<DWORD> GameThreads() {
+    using NextThread = LONG(NTAPI*)(HANDLE, HANDLE, ACCESS_MASK, ULONG, ULONG, PHANDLE);
+    static const auto next =
+        reinterpret_cast<NextThread>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtGetNextThread"));
+    std::vector<DWORD> ids;
+    if (!next)
+        return ids;
+    HANDLE thread = nullptr, following = nullptr;
+    while (next(GetCurrentProcess(), thread, THREAD_QUERY_LIMITED_INFORMATION, 0, 0, &following) >= 0) {
+        if (thread)
+            CloseHandle(thread);
+        thread = following;
+        ids.push_back(GetThreadId(thread));
+    }
+    if (thread)
+        CloseHandle(thread);
+    return ids;
+}
+
 // Every 50 ms: re-resolve what to watch, since BF3 moves the render camera to new memory every
 // few seconds and each moment unwatched is a frame without the eye shift. Game threads are
 // re-armed straight away when it moves, and new threads are picked up twice a second.
@@ -433,19 +453,13 @@ DWORD WINAPI WatchThread(LPVOID) {
         if (!moved && tick % 10 != 0)
             continue;
 
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap == INVALID_HANDLE_VALUE)
-            continue;
-        THREADENTRY32 entry{sizeof(entry)};
-        DWORD self = GetCurrentThreadId(), process = GetCurrentProcessId();
-        for (BOOL ok = Thread32First(snap, &entry); ok; ok = Thread32Next(snap, &entry)) {
-            if (entry.th32OwnerProcessID != process || entry.th32ThreadID == self ||
-                std::find(armed.begin(), armed.end(), entry.th32ThreadID) != armed.end())
+        DWORD self = GetCurrentThreadId();
+        for (DWORD id : GameThreads()) {
+            if (id == self || std::find(armed.begin(), armed.end(), id) != armed.end())
                 continue;
-            if (ArmThread(entry.th32ThreadID, current, currentOffsets))
-                armed.push_back(entry.th32ThreadID);
+            if (ArmThread(id, current, currentOffsets))
+                armed.push_back(id);
         }
-        CloseHandle(snap);
     }
 }
 

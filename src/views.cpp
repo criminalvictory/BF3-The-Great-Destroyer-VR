@@ -4,9 +4,11 @@
 #include <MinHook.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 
 #include "camera.h"
+#include "input.h"
 #include "log.h"
 
 namespace {
@@ -47,6 +49,8 @@ void WriteFov(uint8_t* camera, float fov) {
 // are turned to the head, and are shifted half the eye distance each way along the head's right.
 void MakeEyes(uint8_t* views) {
     uint8_t* eye[2] = {views, views + kViewSize};
+    const float* game = reinterpret_cast<const float*>(eye[0] + kMainCamera);
+    input::NoteTurnStep(0, std::atan2(game[8], game[10]));  // the stick turn's evenness, as built
     // The second view is the split-screen test's: the first one's camera turned round.
     std::memcpy(eye[1] + kMainCamera, eye[0] + kMainCamera, kCameraSize);
     std::memcpy(eye[1] + kCullCamera, eye[0] + kCullCamera, kCameraSize);

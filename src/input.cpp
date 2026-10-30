@@ -6,6 +6,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -52,6 +54,22 @@ bool g_handTracked[2] = {};
 bool g_ready = false;
 bool g_aimTracked = false;
 XrPosef g_aimPose{};
+
+// The smooth turn. Through the mouse it stuttered: BF3 reads the mouse on a rhythm of its own, and
+// one move a frame landed on both sides of a read about 6 times a second, so a frame barely turned
+// and the next turned double (logged 2026-10-30). In stereo the stick's turn now goes into the look
+// yaw the mod writes each frame (aim.cpp), which the picture follows, so it's drawn in step with
+// the frames. Otherwise (theater mode, no [aim] yaw) a thread moves the mouse a little every
+// millisecond. The stick (or F17 test), the mouse thread's speed (counts a second), the direct
+// turn's stick and when it was last taken, and when the turn started and was last asked for (ms,
+// QueryPerformanceCounter).
+float g_stickTurn = 0.0f;
+int g_turnTestFrames = 0;
+std::atomic<float> g_turnRate{0.0f};
+bool g_turnThread = false;
+float g_directTurn = 0.0f;
+double g_lastTake = 0.0;
+std::atomic<double> g_turnSince{0.0}, g_turnLast{0.0};
 
 // DirectInput scan codes, which BF3 reads.
 constexpr WORD kScanW = 0x11, kScanA = 0x1E, kScanS = 0x1F, kScanD = 0x20;
@@ -229,11 +247,15 @@ void SendMouseMove(int dx) {
     SendInput(1, &in, sizeof(in));
 }
 
-void Press(const Mapping& m, bool down) {
-    if (m.output == Output::Key)
-        SendKey(m.scan, down);
-    else
-        SendMouseButton(m.output == Output::LeftMouse, down);
+double NowMs() {
+    static LARGE_INTEGER frequency = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return f;
+    }();
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart);
 }
 
 // Injected input goes to whichever window has focus; never type into anything but BF3.
@@ -241,6 +263,87 @@ bool GameHasFocus() {
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     return pid == GetCurrentProcessId();
+}
+
+// Moves the mouse at g_turnRate, carrying the fractions over. It stops on its own when the frames
+// stop asking (a loading screen, a stalled game) or BF3 loses focus.
+DWORD WINAPI TurnThread(LPVOID) {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    double carry = 0.0, last = NowMs();
+    for (;;) {
+        LARGE_INTEGER due;
+        due.QuadPart = -10000;  // 1 ms
+        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+            WaitForSingleObject(timer, INFINITE);
+        else
+            Sleep(1);
+        const double now = NowMs(), elapsed = std::min(now - last, 20.0);
+        last = now;
+        const float rate = g_turnRate.load();
+        if (rate == 0.0f || now - g_turnLast.load() > 50.0 || !GameHasFocus()) {
+            carry = 0.0;
+            continue;
+        }
+        carry += rate * elapsed / 1000.0;
+        if (int dx = static_cast<int>(carry)) {  // toward zero, the rest carried
+            carry -= dx;
+            SendMouseMove(dx);
+        }
+    }
+}
+
+// How far the stick at x (-1 to 1) is past its dead zone (0 to 1).
+float TurnAmount(float x) {
+    return std::fabs(x) > 0.2f ? (std::fabs(x) - 0.2f) / 0.8f : 0.0f;
+}
+
+void NoteTurning() {
+    const double now = NowMs();
+    if (now - g_turnLast.load() > 40.0)
+        g_turnSince.store(now);
+    g_turnLast.store(now);
+}
+
+// The mouse thread's speed for the stick at x (inside the dead zone: none). turn_speed is the
+// mouse counts of a 72nd of a second at full deflection.
+void SetMouseTurn(float x) {
+    const float amount = TurnAmount(x);
+    if (amount == 0.0f) {
+        g_turnRate.store(0.0f);
+        return;
+    }
+    if (!g_turnThread) {
+        g_turnThread = true;
+        if (HANDLE t = CreateThread(nullptr, 0, TurnThread, nullptr, 0, nullptr))
+            CloseHandle(t);
+    }
+    NoteTurning();
+    g_turnRate.store(std::copysign(amount * config::Get().turnSpeed * 72.0f, x));
+}
+
+// The stick turn seen from frame to frame while it turns steadily: 0 = the game's own camera as
+// built (views.cpp), 1 = what is shown (the look yaw written this frame against the controller's,
+// xr_runtime.cpp). Even steps are a smooth turn; a frame without a step and then a double one is a
+// stutter. Logged once a second while turning.
+struct TurnSteps {
+    const char* name;
+    float lastYaw = 0.0f;
+    bool haveLast = false;
+    std::vector<float> steps;  // degrees
+    ULONGLONG lastLog = 0;
+};
+TurnSteps g_turnSteps[2] = {{"the game's camera"}, {"shown"}};
+
+bool TurningSteadily() {
+    const double now = NowMs();
+    return now - g_turnLast.load() < 40.0 && now - g_turnSince.load() > 100.0;
+}
+
+void Press(const Mapping& m, bool down) {
+    if (m.output == Output::Key)
+        SendKey(m.scan, down);
+    else
+        SendMouseButton(m.output == Output::LeftMouse, down);
 }
 
 void PressR(bool down) {
@@ -259,6 +362,7 @@ void ReleaseAll() {
             SendKey(k.scan, false), k.down = false;
     PressR(false);
     g_xDown = g_xHeld = false;
+    g_stickTurn = 0.0f;
 }
 
 // The gun doesn't fire with its magazine out, nor its last round: run dry, the game would reload
@@ -474,15 +578,80 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         }
     }
 
-    // Smooth turning: the right stick moves the mouse sideways, like turning with the mouse.
-    XrVector2f turn = Stick(session, g_turn);
-    if (std::fabs(turn.x) > 0.2f) {
-        float speed = config::Get().turnSpeed;
-        float amount = (std::fabs(turn.x) - 0.2f) / 0.8f;
-        int dx = static_cast<int>(std::copysign(amount * speed, turn.x));
-        if (dx)
-            SendMouseMove(dx);
+    g_stickTurn = Stick(session, g_turn).x;  // turned in UpdateTurn
+}
+
+void StartTurnTest() {
+    g_turnTestFrames = 216;  // 3 s at 72 Hz
+    Log("Turn test: 3 s of the stick held right");
+}
+
+void UpdateTurn(bool direct) {
+    float x = GameHasFocus() ? g_stickTurn : 0.0f;
+    if (g_turnTestFrames > 0 && GameHasFocus()) {
+        --g_turnTestFrames;
+        x = 1.0f;
     }
+    SetMouseTurn(direct ? 0.0f : x);
+    g_directTurn = direct ? x : 0.0f;
+    if (direct && TurnAmount(x) > 0.0f)
+        NoteTurning();
+}
+
+float TakeTurn() {
+    const double now = NowMs();
+    double elapsed = now - g_lastTake;
+    g_lastTake = now;
+    if (elapsed < 0.0 || elapsed > 50.0)
+        elapsed = 1000.0 / 72.0;  // after a pause, one frame's worth
+    const float amount = TurnAmount(g_directTurn);
+    if (amount == 0.0f)
+        return 0.0f;
+    // Left is positive; the stick to the right turns right.
+    const float radians = amount * config::Get().turnDegrees * 0.01745329f * static_cast<float>(elapsed / 1000.0);
+    return g_directTurn > 0.0f ? -radians : radians;
+}
+
+void NoteTurnStep(int which, float yaw) {
+    constexpr float kPi = 3.14159265f;
+    if (which < 0 || which > 1)
+        return;
+    TurnSteps& t = g_turnSteps[which];
+    if (t.haveLast && TurningSteadily()) {
+        float step = yaw - t.lastYaw;
+        if (step > kPi)
+            step -= 2.0f * kPi;
+        else if (step < -kPi)
+            step += 2.0f * kPi;
+        t.steps.push_back(std::fabs(step) * 57.29578f);
+    }
+    t.lastYaw = yaw;
+    t.haveLast = true;
+    ULONGLONG now = GetTickCount64();
+    if (now - t.lastLog < 1000)
+        return;
+    t.lastLog = now;
+    if (t.steps.empty())
+        return;
+    std::vector<float> sorted = t.steps;
+    std::sort(sorted.begin(), sorted.end());
+    const float median = sorted[sorted.size() / 2];
+    int none = 0, doubled = 0;
+    for (float s : t.steps) {
+        none += s < 0.25f * median;
+        doubled += s > 1.75f * median;
+    }
+    Log("Turn (%s): %zu frames turning; the yaw moved %.3f degrees a frame (median), %.3f to %.3f; %d frames "
+        "without a step, %d with a double one",
+        t.name, t.steps.size(), median, sorted.front(), sorted.back(), none, doubled);
+    if (none || doubled || sorted.back() > 1.25f * median || sorted.front() < 0.75f * median) {
+        char text[512];
+        int used = 0;
+        for (size_t i = 0; i < t.steps.size() && i < 48 && used < 480; ++i)
+            used += snprintf(text + used, sizeof(text) - used, " %.2f", t.steps[i]);
+        Log("Turn (%s): steps%s", t.name, text);
+    }
+    t.steps.clear();
 }
 
 bool AimPose(XrPosef& out) {

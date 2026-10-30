@@ -37,14 +37,16 @@ void SetTo(const config::CameraPointer& pointer, float value) {
         ++g_writes;
 }
 
-void AddTo(const config::CameraPointer& pointer, float delta) {
+// False when the angle can't be reached at all.
+bool AddTo(const config::CameraPointer& pointer, float delta) {
     uintptr_t address = 0;
     float value = 0.0f;
-    if (!pointer.base || delta == 0.0f || !camera::Resolve(pointer, address) ||
-        !camera::SafeRead(address, &value, sizeof(value)) || !std::isfinite(value))
-        return;
-    if (SafeWrite(address, value + delta))
+    if (!pointer.base || !camera::Resolve(pointer, address) || !camera::SafeRead(address, &value, sizeof(value)) ||
+        !std::isfinite(value))
+        return false;
+    if (delta != 0.0f && SafeWrite(address, value + delta))
         ++g_writes;
+    return true;
 }
 
 void LogAngle(const char* name, const config::CameraPointer& pointer) {
@@ -62,12 +64,13 @@ void LogAngle(const char* name, const config::CameraPointer& pointer) {
 
 namespace aim {
 
-void Update(float headYaw, float headPitch) {
+bool Update(float headYaw, float headPitch, float turn) {
+    config::Aim a = config::GetAim();
     if (!g_havePrevious) {
         g_previousYaw = headYaw;
         g_previousPitch = headPitch;
         g_havePrevious = true;
-        return;
+        return AddTo(a.yaw, 0.0f);
     }
     float yaw = headYaw - g_previousYaw;
     if (yaw > kPi)
@@ -77,16 +80,19 @@ void Update(float headYaw, float headPitch) {
     g_previousYaw = headYaw;
     g_previousPitch = headPitch;
 
-    config::Aim a = config::GetAim();
-    // Yaw: add the change, since the mouse and right stick also turn the body.
+    // Yaw: add the change, since the mouse also turns the body, and the stick's turn with it.
+    // The picture follows the yaw written here (camera.cpp), so the turn is drawn in step with
+    // the frame, whenever the game itself reads it.
+    yaw += turn;
     if (a.invertYaw)
         yaw = -yaw;
-    AddTo(a.yaw, a.yawDegrees ? yaw * kRadToDeg : yaw);
+    const bool reached = AddTo(a.yaw, a.yawDegrees ? yaw * kRadToDeg : yaw);
     // Pitch: set it outright. Adding changes drifted: BF3 clamps how far the player can look
     // up or down, so whatever went past the clamp was lost and the game ended up aiming low.
     // The stored pitch is the true view pitch (positive = up), so it takes the angle as is.
     float pitch = a.invertPitch ? -headPitch : headPitch;
     SetTo(a.pitch, a.pitchDegrees ? pitch * kRadToDeg : pitch);
+    return reached;
 }
 
 void Reset() {
