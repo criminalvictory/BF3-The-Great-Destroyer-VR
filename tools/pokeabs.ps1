@@ -8,7 +8,9 @@ param(
     [Parameter(Mandatory)] [float]$Value,
     [Parameter(Mandatory)] [float]$Expect,
     [string]$Chains = '',
-    [double]$Seconds = 8
+    [double]$Seconds = 8,
+    # How far the value may have moved from -Expect (a value the game keeps changing, like health).
+    [float]$Tolerance = 0
 )
 Add-Type -Namespace PokeAbs -Name M -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern System.IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -36,7 +38,7 @@ function Report([string]$when) {
     Write-Host $line
 }
 Report 'before'
-if ((ReadF $target) -ne $Expect) { Write-Host ('refused: it holds {0}, not {1}' -f (ReadF $target), $Expect); exit 2 }
+if (-not ([Math]::Abs((ReadF $target) - $Expect) -le $Tolerance)) { Write-Host ('refused: it holds {0}, not {1}' -f (ReadF $target), $Expect); exit 2 }
 $n = 0
 [void][PokeAbs.M]::WriteProcessMemory($h, (Ptr $target), [BitConverter]::GetBytes($Value), 4, [ref]$n)
 $start = Get-Date

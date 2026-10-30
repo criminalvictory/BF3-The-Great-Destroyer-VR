@@ -87,11 +87,11 @@ struct Fov {
     float value = 110.0f;
 };
 
-// God mode (campaign only): pointers to the player's health, found by the health finder (Home x3).
+// God mode (campaign only). health: extra pointers from the old health finder (Home x3, F16).
 struct God {
     std::vector<CameraPointer> health;
     bool enabled = true;
-    float value = 100.0f;  // what health is kept at
+    float value = 100000.0f;  // what health and maximum health are kept at
 };
 
 // Reads bf3vr.ini next to the mod DLL, writing a default one if it doesn't exist.

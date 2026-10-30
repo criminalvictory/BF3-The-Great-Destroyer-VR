@@ -45,6 +45,14 @@ public static void Key(ushort vk, bool down) {
     var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = down ? 0u : 0x2u;
     SendInput(1, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
 }
+[DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
+// The game itself reads the keyboard by scan code: a key sent by its virtual-key code alone
+// reaches our hooks but not the game.
+public static void ScanKey(ushort vk, bool down) {
+    var i = new INPUT[1]; i[0].type = 1; i[0].ki.wScan = (ushort)MapVirtualKey(vk, 0);
+    i[0].ki.dwFlags = 0x8u | (down ? 0u : 0x2u);
+    SendInput(1, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+}
 '@
 
 $game = Get-Process bf3 -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -65,7 +73,8 @@ if ($keys.ContainsKey($Action)) {
     Start-Sleep -Milliseconds 1200
 }
 if ($Action -eq 'hold') {
-    [DrawHunt.U]::Key([uint16]$Vk, $true); Start-Sleep -Milliseconds ([int]($Seconds * 1000)); [DrawHunt.U]::Key([uint16]$Vk, $false)
+    [DrawHunt.U]::ScanKey([uint16]$Vk, $true); Start-Sleep -Milliseconds ([int]($Seconds * 1000)); [DrawHunt.U]::ScanKey([uint16]$Vk, $false)
+    Start-Sleep -Milliseconds 1200
 }
 if ($Action -eq 'click') {
     $pt = New-Object DrawHunt.U+POINT

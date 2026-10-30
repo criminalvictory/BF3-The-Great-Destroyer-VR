@@ -10,7 +10,8 @@ param(
     [int]$ChildSize = 0x400,
     [int]$Depth = 2,
     [double]$Seconds = 60,
-    [int]$MaxLines = 400
+    [int]$MaxLines = 400,
+    [switch]$List
 )
 Add-Type -TypeDefinition @'
 using System;
@@ -45,6 +46,7 @@ $root = [Convert]::ToInt64($Address, 16)
 $seen = New-Object 'System.Collections.Generic.HashSet[long]'
 [Tree]::Walk($h, $root, $Size, $ChildSize, $Depth, $Value, '', $seen)
 Write-Host ("{0} values at {1} in {2} objects" -f [Tree]::Addresses.Count, $Value, $seen.Count)
+if ($List) { for ($i = 0; $i -lt [Tree]::Addresses.Count; ++$i) { Write-Host ('{0:X8}  {1}' -f [Tree]::Addresses[$i], [Tree]::Paths[$i]) } }
 function ReadF([long]$a) { $b = [Tree]::Read($h, $a, 4); if ($b) { [BitConverter]::ToSingle($b, 0) } else { [float]::NaN } }
 function ClientHealth() {
     $a = $base + 0x1F80B58
