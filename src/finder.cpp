@@ -826,6 +826,337 @@ void RunAngles() {
     BeepSuccess();
 }
 
+// ---- Skeleton finder (F12), research only: reads and logs, never writes ----
+// Animated skeletons are stored as rows of bone records back to back. The first-person arms
+// should be a row whose bones move or turn while the player reloads or aims. BF3's format isn't
+// known, so several common ones are tried:
+//   0: 64-byte LinearTransform (right, up, forward, translation rows), like the cameras
+//   1: 32-byte QuatTransform, translation + scale first, then the rotation quaternion
+//   2: 32-byte QuatTransform, rotation quaternion first, then translation + scale
+//   3: 48-byte 3x4 matrix, rows of (axis x, y, z, translation component), as fed to GPUs
+// Bones relative to their parent barely change position while animating, only rotation, so
+// rotation counts as activity too.
+
+constexpr size_t kMaxBoneRuns = 20000;
+constexpr int kMinBones = 12;
+constexpr int kMaxBones = 256;
+constexpr int kBoneSamples = 100;  // 10 s at 10 Hz
+constexpr int kBoneFormats = 4;
+constexpr size_t kBoneStride[kBoneFormats] = {64, 32, 32, 48};
+const char* const kBoneFormatName[kBoneFormats] = {"matrix 4x4", "quat (trans first)", "quat (rot first)",
+                                                   "matrix 3x4"};
+
+// One bone's position and an orientation signature (where its local z axis points).
+struct BonePose {
+    float pos[3];
+    float axis[3];
+};
+
+bool Finite(const float* v, int n) {
+    for (int i = 0; i < n; ++i)
+        if (!std::isfinite(v[i]) || std::fabs(v[i]) > 1e5f)
+            return false;
+    return true;
+}
+
+bool UnitRows(const float* a, const float* b, const float* c) {
+    for (const float* v : {a, b, c})
+        if (std::fabs(Dot3(v, v) - 1.0f) > 0.02f)
+            return false;
+    return std::fabs(Dot3(a, b)) < 0.02f && std::fabs(Dot3(a, c)) < 0.02f && std::fabs(Dot3(b, c)) < 0.02f;
+}
+
+// Reads one bone in a format; false if the bytes don't look like a bone in it.
+bool ReadBone(int format, const float* m, BonePose& out) {
+    switch (format) {
+    case 0:
+        if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || (m[15] != 1.0f && m[15] != 0.0f) || !Finite(m, 15) ||
+            !UnitRows(m, m + 4, m + 8))
+            return false;
+        std::memcpy(out.pos, m + 12, sizeof(out.pos));
+        std::memcpy(out.axis, m + 8, sizeof(out.axis));
+        return true;
+    case 1:
+    case 2: {
+        const float* t = format == 1 ? m : m + 4;
+        const float* q = format == 1 ? m + 4 : m;
+        if (!Finite(m, 8) || std::fabs(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] - 1.0f) > 0.01f ||
+            t[3] < 0.5f || t[3] > 2.0f)
+            return false;
+        std::memcpy(out.pos, t, sizeof(out.pos));
+        // z axis rotated by q
+        out.axis[0] = 2 * (q[0] * q[2] + q[3] * q[1]);
+        out.axis[1] = 2 * (q[1] * q[2] - q[3] * q[0]);
+        out.axis[2] = 1 - 2 * (q[0] * q[0] + q[1] * q[1]);
+        return true;
+    }
+    default: {
+        float r0[3] = {m[0], m[1], m[2]}, r1[3] = {m[4], m[5], m[6]}, r2[3] = {m[8], m[9], m[10]};
+        if (!Finite(m, 12) || !UnitRows(r0, r1, r2))
+            return false;
+        out.pos[0] = m[3], out.pos[1] = m[7], out.pos[2] = m[11];
+        std::memcpy(out.axis, r2, sizeof(out.axis));
+        return true;
+    }
+    }
+}
+
+bool IsIdentityish(const BonePose& p) {
+    return Dot3(p.pos, p.pos) < 1e-8f && std::fabs(p.axis[2] - 1.0f) < 1e-5f;
+}
+
+struct BoneRun {
+    uintptr_t address;
+    int format;
+    int count;
+    bool local;       // positions near the origin (model or parent space) rather than near the camera
+    int valid;        // samples where the whole run still looked like bones
+    int activeBones;  // bones that moved or turned relative to the camera while watched
+    float maxMove;    // largest movement of any bone relative to the camera, metres
+    float maxTurn;    // largest turn of any bone's axis, radians
+    float distance;   // mean distance of the bones from the camera (world runs) or origin (local)
+};
+
+float Distance3(const float* a, const float* b) {
+    float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    return std::sqrt(Dot3(d, d));
+}
+
+bool ReadRun(const BoneRun& run, std::vector<BonePose>& out) {
+    size_t stride = kBoneStride[run.format];
+    std::vector<uint8_t> raw(stride * run.count);
+    if (!camera::SafeRead(run.address, raw.data(), raw.size()))
+        return false;
+    out.resize(run.count);
+    for (int b = 0; b < run.count; ++b)
+        if (!ReadBone(run.format, reinterpret_cast<const float*>(raw.data() + b * stride), out[b]))
+            return false;
+    return true;
+}
+
+void ScanBones(Block<Region>& regions, Block<uint8_t>& buffer, const float* camera, Block<BoneRun>& out) {
+    const float origin[3] = {0, 0, 0};
+    ForEachChunk(regions, buffer, [&](uintptr_t address, const uint8_t* data, size_t bytes) {
+        for (size_t i = 0; i + 32 <= bytes;) {
+            size_t advance = 16;
+            for (int format = 0; format < kBoneFormats; ++format) {
+                size_t stride = kBoneStride[format];
+                int count = 0, identities = 0;
+                BonePose pose;
+                float nearCamera = 1e9f, farFromOrigin = 0.0f, sumCamera = 0.0f, sumOrigin = 0.0f;
+                while (count < kMaxBones && i + (count + 1) * stride <= bytes &&
+                       ReadBone(format, reinterpret_cast<const float*>(data + i + count * stride), pose)) {
+                    identities += IsIdentityish(pose);
+                    float dc = Distance3(pose.pos, camera), d0 = Distance3(pose.pos, origin);
+                    nearCamera = std::min(nearCamera, dc);
+                    farFromOrigin = std::max(farFromOrigin, d0);
+                    sumCamera += dc;
+                    sumOrigin += d0;
+                    ++count;
+                }
+                // Empty pools are rows of identity transforms; a skeleton is mostly real bones.
+                if (count < kMinBones || identities * 10 > count * 7)
+                    continue;
+                bool world = nearCamera < 3.0f;
+                bool local = !world && farFromOrigin < 3.0f;
+                if (world || local) {
+                    BoneRun run{address + i, format, count, local, 0, 0, 0.0f, 0.0f,
+                                (local ? sumOrigin : sumCamera) / count};
+                    if (!out.Push(run))
+                        return;
+                }
+                advance = std::max(advance, count * stride);
+                break;
+            }
+            i += advance;
+        }
+    });
+}
+
+// Watches each run while the player reloads and aims. Movement is measured relative to the
+// camera, so walking or turning doesn't count; only the arms' own animation does.
+void TrackBones(Block<BoneRun>& runs) {
+    std::vector<std::vector<BonePose>> first(runs.size);
+    std::vector<std::vector<uint8_t>> active(runs.size);
+    std::vector<BonePose> pose;
+    for (int sample = 0; sample < kBoneSamples; ++sample) {
+        Sleep(100);
+        camera::Transform cam;
+        if (!camera::Read(cam))
+            continue;
+        for (size_t r = 0; r < runs.size; ++r) {
+            BoneRun& run = runs.data[r];
+            if (!ReadRun(run, pose))
+                continue;
+            ++run.valid;
+            if (!run.local)
+                for (BonePose& p : pose)
+                    for (int k = 0; k < 3; ++k)
+                        p.pos[k] -= cam.trans[k];
+            if (first[r].empty()) {
+                first[r] = pose;
+                active[r].assign(run.count, 0);
+                continue;
+            }
+            for (int b = 0; b < run.count; ++b) {
+                float move = Distance3(pose[b].pos, first[r][b].pos);
+                float turn = std::acos(std::clamp(Dot3(pose[b].axis, first[r][b].axis), -1.0f, 1.0f));
+                run.maxMove = std::max(run.maxMove, move);
+                run.maxTurn = std::max(run.maxTurn, turn);
+                if (move > 0.02f || turn > 0.1f)
+                    active[r][b] = 1;
+            }
+        }
+    }
+    for (size_t r = 0; r < runs.size; ++r)
+        for (uint8_t a : active[r])
+            runs.data[r].activeBones += a;
+}
+
+// Writes each bone of the best runs to skeleton.csv next to the DLL, so the hands and arms can
+// be picked out. World runs are given relative to the camera in its own axes.
+void DumpBones(const std::vector<BoneRun>& best) {
+    camera::Transform cam;
+    if (!camera::Read(cam))
+        return;
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&DumpBones), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"skeleton.csv");
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f)
+        return;
+    fprintf(f, "run,address,format,space,bone,right,up,forward,x,y,z\n");
+    const float forward[3] = {-cam.forward[0], -cam.forward[1], -cam.forward[2]};
+    std::vector<BonePose> pose;
+    for (size_t r = 0; r < best.size(); ++r) {
+        const BoneRun& run = best[r];
+        if (!ReadRun(run, pose))
+            continue;
+        for (int b = 0; b < run.count; ++b) {
+            const float* t = pose[b].pos;
+            float rel[3] = {t[0] - cam.trans[0], t[1] - cam.trans[1], t[2] - cam.trans[2]};
+            if (run.local)
+                rel[0] = t[0], rel[1] = t[1], rel[2] = t[2];
+            fprintf(f, "%zu,%08X,%d,%s,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", r + 1, static_cast<unsigned>(run.address),
+                    run.format, run.local ? "local" : "world", b, Dot3(rel, cam.right), Dot3(rel, cam.up),
+                    Dot3(rel, forward), t[0], t[1], t[2]);
+        }
+    }
+    fclose(f);
+    Log("Skeleton finder: bone positions written to skeleton.csv");
+}
+
+// Logs the player's own bones: the stretch of the best row within arm's reach of the camera.
+// (Writing them didn't move the arms drawn: this is the gameplay skeleton. See skin.cpp.)
+void LogPlayerBones(const std::vector<BoneRun>& rows) {
+    camera::Transform cam;
+    if (!camera::Read(cam))
+        return;
+    std::vector<BonePose> pose;
+    for (const BoneRun& run : rows) {
+        if (run.local || run.format != 1 || !ReadRun(run, pose))
+            continue;
+        int first = -1, last = -1;
+        for (int b = 0; b < run.count; ++b) {
+            if (Distance3(pose[b].pos, cam.trans) < 1.2f) {
+                if (first < 0)
+                    first = b;
+                last = b;
+            }
+        }
+        if (first < 0)
+            continue;
+        Log("Skeleton finder: player's bones are %d-%d of %08X", first, last, static_cast<unsigned>(run.address));
+        return;
+    }
+}
+
+void RunSkeleton() {
+    SkipOwnMemory();
+    camera::Transform cam;
+    if (!camera::Read(cam)) {
+        Log("Skeleton finder: can't read the camera ([camera] base in bf3vr.ini)");
+        BeepFailure();
+        return;
+    }
+    BeepStart();
+    Log("Skeleton finder: hold still while memory is scanned...");
+    Block<Region> regions(kMaxRegions);
+    Block<uint8_t> buffer(kChunkSize);
+    Block<BoneRun> runs(kMaxBoneRuns);
+    if (!regions.data || !buffer.data || !runs.data) {
+        Log("Skeleton finder: out of memory");
+        BeepFailure();
+        return;
+    }
+    CollectRegions(regions);
+    ScanBones(regions, buffer, cam.trans, runs);
+    size_t perFormat[kBoneFormats] = {};
+    for (const BoneRun& r : runs)
+        ++perFormat[r.format];
+    Log("Skeleton finder: %zu rows of bones (4x4: %zu, quat t-first: %zu, quat q-first: %zu, 3x4: %zu)%s",
+        runs.size, perFormat[0], perFormat[1], perFormat[2], perFormat[3],
+        runs.size == runs.capacity ? " (hit the limit)" : "");
+    if (!runs.size) {
+        BeepFailure();
+        return;
+    }
+
+    BeepMoveNow();
+    Log("Skeleton finder: watching for 10 s. Reload, aim down sights and swing the gun around.");
+    TrackBones(runs);
+    BeepWorking();
+
+    // Arms: stayed valid, and many of their bones moved or turned, by arm-sized amounts.
+    std::vector<BoneRun> best;
+    for (const BoneRun& r : runs)
+        if (r.valid >= kBoneSamples * 8 / 10 && r.activeBones >= 5 && r.maxMove < 2.0f)
+            best.push_back(r);
+    std::sort(best.begin(), best.end(),
+              [](const BoneRun& a, const BoneRun& b) { return a.activeBones > b.activeBones; });
+    Log("Skeleton finder: %zu rows had 5 or more bones move or turn", best.size());
+    if (best.size() > 15)
+        best.resize(15);
+    for (size_t i = 0; i < best.size(); ++i)
+        Log("Skeleton finder: #%zu at %08X  %s  %d bones (%d active)  %s  moved %.2f m  turned %.0f deg  "
+            "distance %.2f m",
+            i + 1, static_cast<unsigned>(best[i].address), kBoneFormatName[best[i].format], best[i].count,
+            best[i].activeBones, best[i].local ? "local" : "near camera", best[i].maxMove,
+            best[i].maxTurn * 57.3f, best[i].distance);
+    if (best.empty()) {
+        BeepFailure();
+        return;
+    }
+    std::vector<BoneRun> dump(best.begin(), best.begin() + std::min<size_t>(best.size(), 5));
+    DumpBones(dump);
+    LogPlayerBones(dump);
+
+    // Pointers to the top few, to see whether they can be found again after a restart.
+    std::vector<Candidate> targets;
+    for (const BoneRun& r : dump) {
+        Candidate c{};
+        c.address = r.address;
+        targets.push_back(c);
+    }
+    CollectRegions(regions);
+    std::vector<Link> links;
+    std::vector<Hit> hits = FindPointers(targets, regions, buffer, links);
+    std::vector<Chain> chains = RankChains(hits, links, targets);
+    for (size_t i = 0; i < targets.size(); ++i) {
+        auto it = std::find_if(chains.begin(), chains.end(),
+                               [&](const Chain& c) { return c.camera == static_cast<int>(i); });
+        if (it == chains.end())
+            Log("Skeleton finder: no static pointer to #%zu", i + 1);
+        else
+            LogChain(*it, static_cast<int>(i + 1));
+    }
+    BeepSuccess();
+}
+
 // F5 during the cull hunt: the copy being tried made the missing scenery come back. Stop the
 // hunt there and save a pointer to it as the cull camera.
 void RunSaveCull() {
@@ -1020,6 +1351,128 @@ void FovThirdStep() {
     BeepSuccess();
 }
 
+// ---- Health finder (Home, three times) ----
+// At full health the player's health reads 100. Values that read 100, then dropped after taking
+// damage, then came back to 100 once health refilled, are the player's health.
+
+constexpr size_t kMaxHealthCandidates = 400000;
+constexpr float kFullHealth = 100.0f;
+
+Block<uintptr_t>* g_healthCandidates = nullptr;
+std::atomic<int> g_healthStep{0};  // 0 = idle, 1 = scanned at full health, 2 = filtered after damage
+
+void HealthFirstScan() {
+    SkipOwnMemory();
+    delete g_healthCandidates;
+    g_healthCandidates = new Block<uintptr_t>(kMaxHealthCandidates);
+    Block<Region> regions(kMaxRegions);
+    Block<uint8_t> buffer(kChunkSize);
+    if (!g_healthCandidates->data || !regions.data || !buffer.data) {
+        Log("Health finder: out of memory");
+        BeepFailure();
+        return;
+    }
+    CollectRegions(regions);
+    ForEachChunk(regions, buffer, [&](uintptr_t address, const uint8_t* data, size_t bytes) {
+        for (size_t i = 0; i + 4 <= bytes; i += 4)
+            if (*reinterpret_cast<const float*>(data + i) == kFullHealth && !g_healthCandidates->Push(address + i))
+                return;
+    });
+    Log("Health finder: %zu values read %.0f. Take a little damage, then press Home.", g_healthCandidates->size,
+        kFullHealth);
+    g_healthStep = 1;
+    BeepStart();
+}
+
+// Keeps the candidates whose value passes the test.
+template <class Test>
+size_t HealthFilter(Test test) {
+    size_t kept = 0;
+    for (uintptr_t address : *g_healthCandidates) {
+        float v = 0.0f;
+        if (camera::SafeRead(address, &v, sizeof(v)) && test(v))
+            g_healthCandidates->data[kept++] = address;
+    }
+    g_healthCandidates->size = kept;
+    return kept;
+}
+
+void HealthSecondStep() {
+    size_t kept = HealthFilter([](float v) { return v > 0.0f && v < kFullHealth; });
+    Log("Health finder: %zu of them dropped. Wait for health to refill, then press Home.", kept);
+    if (!kept) {
+        g_healthStep = 0;
+        BeepFailure();
+        return;
+    }
+    g_healthStep = 2;
+    for (int i = 0; i < 2; ++i)
+        Beep(1000, 80), Sleep(60);
+}
+
+void HealthThirdStep() {
+    SkipOwnMemory();
+    size_t kept = HealthFilter([](float v) { return v == kFullHealth; });
+    Log("Health finder: %zu went 100 -> lower -> 100", kept);
+    std::vector<Candidate> found;
+    for (uintptr_t address : *g_healthCandidates) {
+        if (found.size() == config::kMaxCameras)
+            break;
+        Candidate c{};
+        c.address = address;
+        found.push_back(c);
+        Log("Health finder: health at %08X", static_cast<unsigned>(address));
+    }
+    delete g_healthCandidates;
+    g_healthCandidates = nullptr;
+    g_healthStep = 0;
+    if (found.empty()) {
+        Log("Health finder: nothing followed. Press Home at full health to start again.");
+        BeepFailure();
+        return;
+    }
+
+    BeepWorking();
+    Block<Region> regions(kMaxRegions);
+    Block<uint8_t> buffer(kChunkSize);
+    if (!regions.data || !buffer.data) {
+        BeepFailure();
+        return;
+    }
+    CollectRegions(regions);
+    std::vector<Link> links;
+    std::vector<Hit> hits = FindPointers(found, regions, buffer, links);
+    std::vector<Chain> chains = RankChains(hits, links, found);
+
+    config::God god = config::GetGod();
+    god.health.clear();
+    for (size_t i = 0; i < found.size(); ++i) {
+        auto it = std::find_if(chains.begin(), chains.end(),
+                               [&](const Chain& c) { return c.camera == static_cast<int>(i); });
+        if (it == chains.end())
+            continue;
+        LogChain(*it, static_cast<int>(god.health.size() + 1));
+        god.health.push_back(it->pointer);
+    }
+    if (god.health.empty()) {
+        Log("Health finder: found health but no static pointer to it");
+        BeepFailure();
+        return;
+    }
+    god.enabled = true;
+    config::SetGod(god);
+    Log("Health finder: saved %zu pointers; god mode on (End toggles it)", god.health.size());
+    BeepSuccess();
+}
+
+void RunHealthStep() {
+    switch (g_healthStep.load()) {
+    case 0: HealthFirstScan(); break;
+    case 1: HealthSecondStep(); break;
+    default: HealthThirdStep(); break;
+    }
+}
+
 void RunFovStep() {
     switch (g_fovStep.load()) {
     case 0: FovFirstScan(); break;
@@ -1057,6 +1510,10 @@ void SaveCull() {
     StartJob(RunSaveCull);
 }
 
+void StartSkeleton() {
+    StartJob(RunSkeleton);
+}
+
 void StartAngles() {
     StartJob(RunAngles);
 }
@@ -1067,6 +1524,14 @@ void FovStep() {
 
 bool FovFinderActive() {
     return g_fovStep.load() != 0;
+}
+
+void HealthStep() {
+    StartJob(RunHealthStep);
+}
+
+bool HealthFinderActive() {
+    return g_healthStep.load() != 0;
 }
 
 }

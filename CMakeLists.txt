@@ -44,6 +44,8 @@ add_library(bf3vr SHARED
     src/input.cpp
     src/fov.cpp
     src/window.cpp
+    src/skin.cpp
+    src/god.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi)

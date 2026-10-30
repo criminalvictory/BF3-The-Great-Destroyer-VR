@@ -6,6 +6,7 @@
 #include <MinHook.h>
 
 #include "log.h"
+#include "skin.h"
 #include "xr_runtime.h"
 
 namespace {
@@ -31,9 +32,22 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, 
     return g_origResizeBuffers(swap, count, width, height, format, flags);
 }
 
-// Swap chain methods are shared by every swap chain from dxgi.dll, so a throwaway
-// device on a hidden window is enough to find their addresses.
-bool FindSwapChainVtable(void**& vtable) {
+// ID3D11DeviceContext vtable slots.
+constexpr int kDrawIndexedSlot = 12;
+constexpr int kMapSlot = 14;
+constexpr int kUnmapSlot = 15;
+
+// Functions of the immediate context and of deferred contexts (which BF3 records draws on from
+// several threads); they may be different functions.
+struct ContextFunctions {
+    void* map[2];
+    void* unmap[2];
+    void* drawIndexed[2];
+};
+
+// Swap chain and device context methods are shared by every object of their kind from
+// d3d11.dll and dxgi.dll, so a throwaway device on a hidden window is enough to find them.
+bool FindSwapChainVtable(void**& vtable, ContextFunctions& contexts) {
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -61,6 +75,18 @@ bool FindSwapChainVtable(void**& vtable) {
     bool ok = SUCCEEDED(hr);
     if (ok) {
         vtable = *reinterpret_cast<void***>(swap);
+        void** immediate = *reinterpret_cast<void***>(context);
+        contexts.map[0] = contexts.map[1] = immediate[kMapSlot];
+        contexts.unmap[0] = contexts.unmap[1] = immediate[kUnmapSlot];
+        contexts.drawIndexed[0] = contexts.drawIndexed[1] = immediate[kDrawIndexedSlot];
+        ID3D11DeviceContext* deferred = nullptr;
+        if (SUCCEEDED(device->CreateDeferredContext(0, &deferred))) {
+            void** table = *reinterpret_cast<void***>(deferred);
+            contexts.map[1] = table[kMapSlot];
+            contexts.unmap[1] = table[kUnmapSlot];
+            contexts.drawIndexed[1] = table[kDrawIndexedSlot];
+            deferred->Release();
+        }
         swap->Release();
         context->Release();
         device->Release();
@@ -79,7 +105,8 @@ namespace hooks {
 
 bool Install() {
     void** vtable = nullptr;
-    if (!FindSwapChainVtable(vtable))
+    ContextFunctions contexts{};
+    if (!FindSwapChainVtable(vtable, contexts))
         return false;
 
     if (MH_Initialize() != MH_OK) {
@@ -92,11 +119,13 @@ bool Install() {
         Log("MH_CreateHook failed");
         return false;
     }
+    // Constant buffer uploads, for the skinning research (skin.cpp). Not fatal if it fails.
+    bool skinHooked = skin::InstallHooks(contexts.map, contexts.unmap, contexts.drawIndexed);
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         Log("MH_EnableHook failed");
         return false;
     }
-    Log("Present/ResizeBuffers hooked");
+    Log("Present/ResizeBuffers hooked%s", skinHooked ? ", Map/Unmap/DrawIndexed hooked" : "");
     return true;
 }
 

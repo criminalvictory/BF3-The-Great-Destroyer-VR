@@ -15,6 +15,7 @@ std::vector<config::CameraPointer> g_cameras;
 config::Aim g_aim;
 config::Fov g_fov;
 config::CameraPointer g_cull;
+config::God g_god;
 std::mutex g_pointerMutex;
 
 // Keys for pointer n (0-based): base/offsets, then base2/offsets2, ...
@@ -79,6 +80,11 @@ const char kDefaultIni[] =
     "; top to bottom; bigger is sharper in the headset. It may be bigger than the monitor.\n"
     "; 0 = leave the window alone.\n"
     "size=1600\n"
+    "\n"
+    "[god]\n"
+    "; Campaign only. Keeps the player's health topped up (found with Home x3; End toggles).\n"
+    "enabled=1\n"
+    "value=100\n"
     "\n"
     "[fov]\n"
     "; BF3's FOV setting, found by the FOV finder (Home in game), so it can go past the menu's 90.\n"
@@ -216,12 +222,22 @@ void Load(HMODULE self) {
 
     CameraPointer cull = ReadPointer(L"camera", L"cull_base", L"cull_offsets");
 
+    God god;
+    god.enabled = ReadBool(L"god", L"enabled", true);
+    god.value = ReadFloat(L"god", L"value", god.value);
+    for (size_t n = 0; n < kMaxCameras; ++n) {
+        CameraPointer health = ReadPointer(L"god", KeyName(L"base", n), KeyName(L"offsets", n));
+        if (health.base)
+            god.health.push_back(health);
+    }
+
     {
         std::lock_guard lock(g_pointerMutex);
         g_cameras = cameras;
         g_aim = aim;
         g_fov = fov;
         g_cull = cull;
+        g_god = god;
     }
 
     Log("Config: mode=%s fov=%.1f camera pointers=%u aim=%s", s.mode == Mode::Stereo ? "stereo" : "theater",
@@ -286,6 +302,25 @@ void SetAim(const Aim& aim) {
     WriteString(L"aim", L"pitch_degrees", aim.pitchDegrees ? L"1" : L"0");
     WriteString(L"aim", L"invert_yaw", aim.invertYaw ? L"1" : L"0");
     WriteString(L"aim", L"invert_pitch", aim.invertPitch ? L"1" : L"0");
+}
+
+God GetGod() {
+    std::lock_guard lock(g_pointerMutex);
+    return g_god;
+}
+
+void SetGod(const God& god) {
+    {
+        std::lock_guard lock(g_pointerMutex);
+        g_god = god;
+    }
+    WriteString(L"god", L"enabled", god.enabled ? L"1" : L"0");
+    wchar_t buf[32];
+    swprintf_s(buf, L"%.0f", god.value);
+    WriteString(L"god", L"value", buf);
+    for (size_t n = 0; n < kMaxCameras; ++n)
+        WritePointer(L"god", KeyName(L"base", n), KeyName(L"offsets", n),
+                     n < god.health.size() ? god.health[n] : CameraPointer{});
 }
 
 CameraPointer GetCull() {

@@ -16,6 +16,10 @@ account banned. This project contains only its own code; it ships no EA files.
 - **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
   more view top to bottom and a sharper headset image. It may be bigger than the monitor.
 - **Floating screen** (theater) mode as an alternative to stereo.
+- **Moving the hands** (work in progress, toward free hands and a shoulder holster): the gloves can
+  be drawn moved away from the gun (Insert lifts them 20 cm as a test), without touching what BF3
+  uploads.
+- **God mode** for testing (End), once the health finder (Home) has run.
 
 Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 
@@ -25,6 +29,9 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
   (about 43 updates a second per eye at 85-90 fps), and SteamVR can smooth head motion but not
   what the hand moves inside the game. A higher frame rate reduces it.
 - The crosshair stays in the centre of the view.
+- God mode doesn't hold yet: the health value the finder picked isn't the one that counts.
+- With the hands test on, a small dark patch can stay where the left glove was (likely lighting
+  or shadow).
 
 Scenery no longer disappears when the controller aims away from where you look: the camera BF3
 decides what to draw from is found once with the cull hunt (F10, then F6/F5) and turned with the
@@ -71,6 +78,8 @@ runtime path, which a 32-bit game can't load.
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
 | F11 | Delay the picture's hand correction by 0-2 frames (if the view shakes as the arm moves) |
+| Insert | Hands test: draw the gloves 20 cm higher / normally |
+| End | God mode on / off (saved; needs the health finder first) |
 
 Finders and tests (needed once per setup; see the log for results):
 
@@ -79,7 +88,12 @@ Finders and tests (needed once per setup; see the log for results):
 | F10 | Camera finder (look around, turn and walk after the beeps) |
 | F6 / F5 | Cull hunt: with the arm held out so scenery is missing, tries one camera copy every 3 s / F5 saves the one that brings it back |
 | F3 | Look-angle finder |
-| Home / End | FOV finder (slider 90 → 60 → 90) / step the FOV override (experimental, off by default: only found menu copies so far) |
+| F12 | Gameplay skeleton finder (research: it turned out not to drive the drawn arms) |
+| Home | Health finder: press at full health, again after taking damage, again once healed |
+| F15, F13 / F14 | Draw hunt, driven by `tools/drawhunt.ps1` (keys no keyboard has): hides half the skinned draws at a time until the one asked about is found |
+
+`tools/drawhunt.ps1` presses the hunt keys and takes screenshots while BF3 is in front;
+`tools/say.ps1` reads test instructions aloud.
 
 `CAMERA_GUIDE.md` describes finding the camera by hand with Cheat Engine instead.
 
@@ -94,4 +108,7 @@ Finders and tests (needed once per setup; see the log for results):
 - `src/input.cpp`: OpenXR actions for the controllers, injected as keyboard and mouse.
 - `src/finder.cpp`: in-game memory finders for the camera, look angles and settings.
 - `src/window.cpp`: keeps the game window square, past the screen size limit.
+- `src/skin.cpp`: hooks the bone uploads and draws of skinned meshes; finds the hands' draws and
+  draws them with changed bones.
+- `src/god.cpp`: keeps the player's health topped up.
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.

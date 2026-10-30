@@ -47,7 +47,6 @@ void SetViewTurn(const ViewTurn* turn);
 // from) is turned the opposite way so the gun stays with the hand. If the gun swings away from
 // the hand instead, the direction is the other way round: flip = true.
 void SetGunFlip(bool flip);
-
 // Cull hunt: BF3 keeps dozens of identical camera copies, and decides what to draw from one that
 // isn't turned with the head, so scenery goes missing when the hand aims away. The finder (F10)
 // hands over every copy it saw; F6 then turns them with the head one at a time, a few seconds

@@ -78,6 +78,13 @@ struct Fov {
     float value = 110.0f;
 };
 
+// God mode (campaign only): pointers to the player's health, found by the health finder (Home x3).
+struct God {
+    std::vector<CameraPointer> health;
+    bool enabled = true;
+    float value = 100.0f;  // what health is kept at
+};
+
 // Reads bf3vr.ini next to the mod DLL, writing a default one if it doesn't exist.
 void Load(HMODULE self);
 const Settings& Get();
@@ -107,6 +114,10 @@ void SetCull(const CameraPointer& pointer);
 // Look angles: read and replace (written to bf3vr.ini).
 Aim GetAim();
 void SetAim(const Aim& aim);
+
+// God mode: read and replace (written to bf3vr.ini).
+God GetGod();
+void SetGod(const God& god);
 
 // FOV override: read and replace (written to bf3vr.ini).
 constexpr size_t kMaxFovTargets = 8;

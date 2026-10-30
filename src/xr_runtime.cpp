@@ -26,8 +26,10 @@
 #include "config.h"
 #include "finder.h"
 #include "fov.h"
+#include "god.h"
 #include "input.h"
 #include "log.h"
+#include "skin.h"
 #include "window.h"
 #include "xr_runtime.h"
 
@@ -498,12 +500,36 @@ void PollHotkeys() {
         config::SaveFov();
         Log("Display FOV %.0f deg", s.gameVerticalFovDeg);
     }
+    // Home: health finder step (full health, after damage, after refill). End: god mode on/off.
     if (KeyPressed(VK_HOME))
-        finder::FovStep();
+        finder::HealthStep();
     if (KeyPressed(VK_END))
-        fov::CycleValue();
+        god::Toggle();
+    // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.
+    if (KeyPressed(VK_F15))
+        skin::HuntStart();
+    if (KeyPressed(VK_F13))
+        skin::HuntAnswer(true);
+    if (KeyPressed(VK_F14))
+        skin::HuntAnswer(false);
     if (KeyPressed(VK_F3))
         finder::StartAngles();
+    if (KeyPressed(VK_F12))
+        finder::StartSkeleton();
+    // Insert: draw the gloves 20 cm higher, the first test of moving the hands.
+    if (KeyPressed(VK_INSERT))
+        skin::ToggleHandShift();
+    // The weapon camera sits at a fixed place in bf3.exe, unlike the render cameras, which move
+    // in memory and can be stale for a moment.
+    {
+        uintptr_t address = 0;
+        camera::Transform cam;
+        if (camera::Resolve(config::GetAim().gameCamera, address) && camera::SafeRead(address, &cam, sizeof(cam)))
+        {
+            const float forward[3] = {-cam.forward[0], -cam.forward[1], -cam.forward[2]};  // true view direction
+            skin::SetCamera(cam.trans, cam.right, cam.up, forward);
+        }
+    }
     if (KeyPressed(VK_F4))
         aim::FlipYaw();
     if (KeyPressed(VK_F2))
@@ -743,6 +769,8 @@ void OnPresent(IDXGISwapChain* swap) {
     PollHotkeys();
     window::Maintain();
     fov::Apply();
+    god::Apply();
+    skin::Probe();
     camera::Probe();
     aim::Probe();
 
