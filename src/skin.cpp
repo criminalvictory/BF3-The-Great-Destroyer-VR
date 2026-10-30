@@ -189,6 +189,9 @@ std::atomic<bool> g_handShift{false};
 // Other soldiers' copies of the same gun are drawn with the same draw, their bones far out in the
 // world; only the one whose bones sit near the origin (the player's, in the body's own space) moves.
 constexpr DrawKey kWeapon{12768, 0, 0};
+// With only this colour pass shifted, a black copy of the gun stays behind (another pass of it).
+// Shifting the draws 9273/12 and 9288/9288 too (hiding either hazes the gun away) left even more
+// black: the gun's other passes aren't pinned down yet.
 constexpr UINT kWeaponBones = 59;
 constexpr float kFirstPersonReach = 5.0f;  // metres from the origin
 std::atomic<bool> g_weaponShift{false};  // weapon.txt names bones
