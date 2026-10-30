@@ -3,6 +3,16 @@
 An OpenXR VR mod for the **Battlefield 3 campaign** (PC, 32-bit `bf3.exe` 1.6.0.0, Steam version).
 It injects into the running game and turns it into stereo 3D with head tracking and motion controllers.
 
+**Status: pre-alpha (experimental).** The campaign is playable in 3D with head tracking and
+controller aiming, but the features that make it feel like VR are still being built: moving your
+head (lean, duck, peek), the gun in your hand, free hands. It's tested on one setup (Steam
+`bf3.exe` 1.6.0.0, SteamVR, Steam Frame, RTX 3080); expect rough edges. Every upload is logged in
+[CHANGELOG.md](CHANGELOG.md).
+
+It becomes **alpha** when: the head's position moves the view, the gun sits in the right hand and
+the left hand is free, every campaign weapon aims correctly, it installs from the quick start
+without the finder steps, and a whole mission plays through without a crash.
+
 **Campaign only.** Never use it on online servers: injecting into the game there can get your
 account banned. This project contains only its own code; it ships no EA files.
 
