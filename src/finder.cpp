@@ -1518,9 +1518,34 @@ void RunHealthAuto() {
     std::vector<uint8_t> wasFull(c.size, 1);
     std::vector<uintptr_t> hit;
     // A hit: values that just left 100 all for the same number (the player's health and its
-    // copies), still together and below 100 three seconds later: BF3 waits several seconds after
-    // a hit before health refills. Earlier tries took any values that dropped together (noise half
-    // a second after the scan) and then a group that went 100 -> 30 -> 100 within two seconds.
+    // copies), still together and below 100 three seconds later (BF3 waits several seconds after
+    // a hit before health refills), then climbing back through values in between: health refills
+    // gradually. Earlier tries took any values that dropped together (noise half a second after
+    // the scan), then a group that went 100 -> 30 -> 100 within two seconds, then groups at 15.00
+    // and 0.11 that jumped straight back.
+    auto refillsGradually = [](const std::vector<uintptr_t>& group) {
+        float last = -1.0f;
+        int steps = 0;
+        for (int poll = 0; poll < 600; ++poll) {  // up to about 90 seconds
+            Sleep(150);
+            size_t full = 0;
+            float first = -1.0f;
+            for (uintptr_t address : group) {
+                float v = 0.0f;
+                if (!camera::SafeRead(address, &v, sizeof(v)))
+                    continue;
+                full += v == kFullHealth;
+                if (first < 0.0f)
+                    first = v;
+            }
+            if (full * 2 > group.size())
+                return steps >= 2;
+            if (last >= 0.0f && first > last + 0.05f && first < kFullHealth)
+                ++steps;
+            last = first;
+        }
+        return false;
+    };
     for (int poll = 0; poll < 1200 && hit.empty(); ++poll) {  // up to about 3 minutes
         Sleep(150);
         std::map<long, std::vector<uintptr_t>> byValue;
@@ -1555,10 +1580,14 @@ void RunHealthAuto() {
             }
             Log("Health finder (auto): %zu values dropped to %.2f; %s", group.size(), key / 100.0f,
                 together ? "still together and low three seconds later" : "noise");
-            if (together) {
+            if (!together)
+                continue;
+            if (refillsGradually(group)) {
+                Log("Health finder (auto): they refilled gradually, like health");
                 hit = group;
                 break;
             }
+            Log("Health finder (auto): they jumped straight back (or never refilled): not health");
         }
     }
     if (hit.empty()) {
@@ -1567,20 +1596,9 @@ void RunHealthAuto() {
         BeepFailure();
         return;
     }
-    Log("Health finder (auto): %zu values dropped together; waiting for them to refill", hit.size());
     c.size = 0;
     for (uintptr_t address : hit)
         c.Push(address);
-    for (int poll = 0; poll < 600; ++poll) {  // up to about 90 seconds
-        Sleep(150);
-        size_t full = 0;
-        for (uintptr_t address : hit) {
-            float v = 0.0f;
-            full += camera::SafeRead(address, &v, sizeof(v)) && v == kFullHealth;
-        }
-        if (full * 2 > hit.size())
-            break;
-    }
     g_healthStep = 2;
     HealthThirdStep();
 }
