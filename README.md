@@ -87,7 +87,7 @@ If the picture looks wrong:
   away (floating hands). On the Steam Frame, the left View button lines the glove up: the first
   press holds it still, put your hand into it and press again (kept in `build\grip.txt`, with
   "spread 0.7" for how far apart the relaxed fingers are and "leftwidth 1.15" for the palm's
-  width). BF3 draws the first-person arms in a space of their own whose origin jumps a metre at a
+  width). Without one, the line-up made on the test setup's Steam Frame is used. BF3 draws the first-person arms in a space of their own whose origin jumps a metre at a
   time as you walk; each draw places the hands with the eye and axes of the view-projection it is
   drawn with, so they stay steady while moving.
 - **God mode** (End on/off, on by default): the campaign runs the game's own server inside

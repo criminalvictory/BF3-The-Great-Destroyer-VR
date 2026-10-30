@@ -36,10 +36,13 @@ bool g_gunGripTuned = false;  // grip.txt set it; otherwise skin::GunGrip, the g
 float g_leftAnchor[3] = {0.502f, 1.146f, 0.144f};
 float g_leftTurn[3] = {0.0f, 0.0f, 0.0f};  // degrees about the grip's x, y, z, after the default
 // The left glove's placement on the left grip pose: the gloves' bind space -> the grip's frame
-// (rows: rotation | translation). From the default turn and palm unless the View button's
-// line-up (saved as grip.txt "leftpose") set it.
-float g_leftOffset[12] = {};
-bool g_leftOffsetSet = false;
+// (rows: rotation | translation). The View button's line-up sets it (saved as grip.txt
+// "leftpose"); built in is the user's own on the Steam Frame (2026-10-30, the most reliable one),
+// so a clean build keeps it. grip.txt "leftturn" without a "leftpose" makes it from the default
+// turn and palm instead.
+float g_leftOffset[12] = {-0.65114f, -0.68371f, -0.32949f, 1.15898f,  -0.54118f, 0.72265f,
+                          -0.43004f, -0.39106f, 0.53211f,  -0.10169f, -0.84054f, 0.02741f};
+bool g_leftOffsetSet = true;
 // The line-up: the first View press holds the glove still, the hand is put into it, the second
 // press keeps where the hand is relative to the glove.
 bool g_lining = false;
@@ -147,6 +150,7 @@ void ReadTuning() {
         return;
     char line[512];
     g_fingersFixed = false;
+    bool pose = false, turn = false;
     while (fgets(line, sizeof(line), f)) {
         float v[12];
         if (std::strncmp(line, "fingers", 7) == 0 && sscanf_s(line + 7, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
@@ -156,17 +160,19 @@ void ReadTuning() {
         else if (std::strncmp(line, "leftpose", 8) == 0 &&
                  sscanf_s(line + 8, "%f %f %f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
                           &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) == 12)
-            std::memcpy(g_leftOffset, v, sizeof(g_leftOffset)), g_leftOffsetSet = true;
+            std::memcpy(g_leftOffset, v, sizeof(g_leftOffset)), g_leftOffsetSet = pose = true;
         else if (std::strncmp(line, "spread", 6) == 0 && sscanf_s(line + 6, "%f", &v[0]) == 1)
             g_spread = std::fmin(std::fmax(v[0], 0.0f), 1.0f);
         else if (std::strncmp(line, "leftwidth", 9) == 0 && sscanf_s(line + 9, "%f", &v[0]) == 1)
             g_leftWidth = std::fmin(std::fmax(v[0], 0.8f), 1.5f);
         else if (std::strncmp(line, "leftturn", 8) == 0 && sscanf_s(line + 8, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
-            std::memcpy(g_leftTurn, v, 3 * sizeof(float));
+            std::memcpy(g_leftTurn, v, 3 * sizeof(float)), turn = true;
         else if (std::strncmp(line, "left", 4) == 0 && sscanf_s(line + 4, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
             std::memcpy(g_leftAnchor, v, 3 * sizeof(float));
     }
     fclose(f);
+    if (turn && !pose)
+        g_leftOffsetSet = false;  // made from the turn and palm (Update)
     Log("Hands: gun grip (%.3f %.3f %.3f), left palm (%.3f %.3f %.3f), left turn (%.0f %.0f %.0f), fingers apart "
         "%.2f, palm %.2f wide",
         g_gunGrip[0], g_gunGrip[1], g_gunGrip[2], g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2], g_leftTurn[0],
