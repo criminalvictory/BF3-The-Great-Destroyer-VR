@@ -58,16 +58,17 @@ bool Watching();
 // position and the view's axes; their difference is where that space sits in the world.
 bool FirstPersonViews(float (&arms)[16], float (&world)[16]);
 
-// Free hands (hands.cpp): where to draw the gun and the left hand this frame. Matrices are three
-// rows, rotation | translation, from the gun's model space / the gloves' bind space into the
-// arms' space.
+// Free hands (hands.cpp): where to draw the gun and the left hand. Matrices are three rows,
+// rotation | translation, from the gun's model space / the gloves' bind space into the view's
+// own space: the eye at the origin, x right, y up, z back, metres. Each draw places that in the
+// arms' space with the eye and axes of the view-projection uploaded for it, so the hands stay put
+// relative to the picture however the arms' space moves.
 struct HandTargets {
     bool gun = false, left = false;  // which of these is tracked
     float gunPose[12] = {};
     float leftPose[12] = {};
-    float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point, in the arms' space
-    float origin[3] = {};  // the arms' space's origin in the world (it moves in whole metres)
-    float floor = 0.0f;    // the ground's height in the arms' space
+    float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point
+    float leftClose = 0.0f;  // 0: the left glove open (its bind pose), 1: closed as the game holds it
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

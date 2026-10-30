@@ -34,6 +34,12 @@ XrAction g_sprint = XR_NULL_HANDLE;
 XrSpace g_aimSpace = XR_NULL_HANDLE;
 // Both hands' grip poses (left 0, right 1), for drawing the hands where the controllers are.
 XrAction g_hand = XR_NULL_HANDLE;
+// The left grip, squeezed: the left glove closes (open when let go). The Steam Frame's left View
+// button: lines the left glove up with the hand.
+XrAction g_squeeze = XR_NULL_HANDLE;
+XrAction g_calibrate = XR_NULL_HANDLE;
+float g_leftSqueeze = 0.0f;
+bool g_calibrateDown = false, g_calibratePressed = false;
 XrPath g_handPaths[2] = {};
 XrSpace g_handSpaces[2] = {};
 XrPosef g_handPoses[2] = {};
@@ -106,20 +112,25 @@ bool MakeAction(XrActionType type, const char* name, const char* label, XrAction
 }
 
 // A runtime may not know every profile; that profile is skipped and the others still apply. Every
-// profile also gets both hands' grip poses.
-bool Suggest(const char* profile, const std::vector<std::pair<XrAction, const char*>>& bindings) {
+// profile also gets both hands' grip poses, and all but the simple one the left grip's squeeze.
+bool Suggest(const char* profile, const std::vector<std::pair<XrAction, const char*>>& bindings,
+             bool leftSqueeze = true) {
     std::vector<XrActionSuggestedBinding> suggested;
     for (const auto& b : bindings)
         suggested.push_back({b.first, Path(b.second)});
     suggested.push_back({g_hand, Path("/user/hand/left/input/grip/pose")});
     suggested.push_back({g_hand, Path("/user/hand/right/input/grip/pose")});
+    if (leftSqueeze)
+        suggested.push_back({g_squeeze, Path("/user/hand/left/input/squeeze/value")});
     XrInteractionProfileSuggestedBinding info{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     info.interactionProfile = Path(profile);
     info.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
     info.suggestedBindings = suggested.data();
-    if (XR_SUCCEEDED(xrSuggestInteractionProfileBindings(g_instance, &info)))
+    if (XR_SUCCEEDED(xrSuggestInteractionProfileBindings(g_instance, &info))) {
+        Log("Controllers: bindings for %s accepted (%zu)", profile, suggested.size());
         return true;
-    Log("Controllers: no bindings for %s on this runtime", profile);
+    }
+    Log("Controllers: no bindings for %s on this runtime (%zu tried)", profile, suggested.size());
     return false;
 }
 
@@ -164,14 +175,23 @@ void SuggestBindings() {
         {g_use, "/user/hand/right/input/y/click"},
         {g_sprint, "/user/hand/left/input/thumbstick/click"}};
     const char* kFrame = "/interaction_profiles/valve/frame_controller";
-    auto withGrip = [&](const char* grip) {
+    // Its grips are squeeze or grip; the View button may not be offered: each try leaves out more.
+    auto with = [&](bool squeeze, bool grip, bool view) {
         auto b = frame;
-        b.push_back({g_grenade, grip});
+        if (squeeze) {
+            b.push_back({g_grenade, "/user/hand/right/input/squeeze/value"});
+            b.push_back({g_squeeze, "/user/hand/left/input/squeeze/value"});
+        } else if (grip) {
+            b.push_back({g_grenade, "/user/hand/right/input/grip/value"});
+            b.push_back({g_squeeze, "/user/hand/left/input/grip/value"});
+        }
+        if (view)
+            b.push_back({g_calibrate, "/user/hand/left/input/view/click"});
         return b;
     };
-    if (!Suggest(kFrame, withGrip("/user/hand/right/input/squeeze/value")) &&
-        !Suggest(kFrame, withGrip("/user/hand/right/input/grip/value")))
-        Suggest(kFrame, frame);
+    if (!Suggest(kFrame, with(true, false, true), false) && !Suggest(kFrame, with(false, true, true), false) &&
+        !Suggest(kFrame, with(true, false, false), false) && !Suggest(kFrame, with(false, true, false), false))
+        Suggest(kFrame, with(false, false, false), false);
     // Anything else: at least aim and fire.
     Suggest("/interaction_profiles/khr/simple_controller",
             {{g_aim, "/user/hand/right/input/aim/pose"}, {g_fire, "/user/hand/right/input/select/click"}});
@@ -275,6 +295,9 @@ bool Init(XrInstance instance, XrSession session) {
     hand.subactionPaths = g_handPaths;
     if (!Check(xrCreateAction(g_set, &hand, &g_hand), "hand"))
         return false;
+    if (!MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_squeeze", "Close the left hand", g_squeeze) ||
+        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "calibrate_left", "Line up the left hand", g_calibrate))
+        return false;
     bool ok = MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim", "Aim (right hand)", g_aim) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "fire", "Fire", g_fire) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "aim_down_sights", "Aim down sights", g_ads) &&
@@ -355,6 +378,20 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         if (g_handTracked[i])
             g_handPoses[i] = hand.pose;
     }
+    {
+        XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
+        get.action = g_squeeze;
+        XrActionStateFloat squeeze{XR_TYPE_ACTION_STATE_FLOAT};
+        g_leftSqueeze = XR_SUCCEEDED(xrGetActionStateFloat(session, &get, &squeeze)) && squeeze.isActive
+                            ? squeeze.currentState
+                            : 0.0f;
+        get.action = g_calibrate;
+        XrActionStateBoolean view{XR_TYPE_ACTION_STATE_BOOLEAN};
+        bool down = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &view)) && view.isActive && view.currentState;
+        if (down && !g_calibrateDown)
+            g_calibratePressed = true;
+        g_calibrateDown = down;
+    }
 
     if (!GameHasFocus()) {
         ReleaseAll();
@@ -433,6 +470,16 @@ bool AimPose(XrPosef& out) {
         return false;
     out = g_aimPose;
     return true;
+}
+
+float LeftSqueeze() {
+    return g_leftSqueeze;
+}
+
+bool TakeCalibratePress() {
+    bool pressed = g_calibratePressed;
+    g_calibratePressed = false;
+    return pressed;
 }
 
 bool HandPose(int hand, XrPosef& out) {

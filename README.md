@@ -53,9 +53,14 @@ If the picture looks wrong:
   mod widens the render, cull and first-person views each frame, and rescales the gun and arms'
   projection where it is uploaded to the graphics card, so they keep their real size. The
   headset image is shown at the same angle, so the world stays life-size.
-- **Moving the hands** (work in progress, toward free hands and a shoulder holster): the gloves can
-  be drawn moved away from the gun (Insert lifts them 20 cm as a test), without touching what BF3
-  uploads.
+- **Free hands** (Insert on/off, on by default): the gun is drawn in your right hand, pointing
+  where the controller points, held where the game's own hand holds it, with its scope and stock;
+  the left glove follows the left controller, open when empty, closing into a grip as you squeeze
+  the left grip. The arms, sleeves and body are folded away (floating hands). On the Steam Frame,
+  the left View button lines the glove up: the first press holds it still, put your hand into it
+  and press again (kept in `build\grip.txt`). BF3 draws the first-person arms in a space of their
+  own whose origin jumps a metre at a time as you walk; each draw places the hands with the eye
+  and axes of the view-projection it is drawn with, so they stay steady while moving.
 - **God mode** (End on/off, on by default): the campaign runs the game's own server inside
   `bf3.exe`, and the health that decides deaths is the server's copy of your soldier. The mod finds
   it every spawn and keeps health and maximum health at `[god] value` (100000), so hits are undone
@@ -82,8 +87,9 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
   CrosshairOpacityMin/Max; reaching them in memory is not done yet).
 - With the wide view, the sleeve near the shoulder can look stretched: that part of BF3's arm
   model is normally off screen.
-- With the hands test on, a small dark patch can stay where the left glove was (likely lighting
-  or shadow).
+- Free hands: only the campaign's M16-type rifle is known (other guns get the game's own arms);
+  bullets still leave from where the game holds its gun, not the drawn muzzle; the open hand is a
+  bit flat (`grip.txt` "open 0.2" curls it); two-handed aiming isn't done.
 
 Scenery no longer disappears when the controller aims away from where you look: the camera BF3
 decides what to draw from is found once with the cull hunt (F10, then F6/F5) and turned with the
@@ -119,6 +125,8 @@ runtime path, which a 32-bit game can't load.
 | Right stick | Turn |
 | A / B | Jump / crouch |
 | X | Magazine: tap to eject / insert, hold to reload |
+| Left grip | Close the left hand (open when let go) |
+| View (left, Steam Frame) | Line up the left glove with your hand |
 | Y | Use |
 | Right grip | Grenade |
 
@@ -136,7 +144,7 @@ and Y are on the left.
 | F4 / F2 | Flip head yaw / pitch direction |
 | F7 | Swap eyes |
 | F11 | How many frames old the head pose each eye image is shown with (0-3, default 1) |
-| Insert | Hands test: draw the gloves moved (bones and direction in `build\hands.txt`) / normally |
+| Insert | Free hands on / off (the game's own arms) |
 | End | God mode on / off (saved) |
 | Scroll Lock | 3D method: depth 3D / hybrid (each frame from one eye, the other from its depth) / alternate eyes / mono / frozen |
 | Pause | Skinning research hooks on / off (off by default: they cost frame rate) |
@@ -185,7 +193,8 @@ Finders and tests (needed once per setup; see the log for results):
 `tools/selfcheck.ps1` confirms from the log, after a launch, that the hooks, OpenXR session, wide
 view, god mode, bodies and the 3D's depth buffer all came up.
 `tools/weapontest.ps1` tries weapon.txt settings in turn and puts the game's own picture for each
-side by side (saved by the mod, so no screenshot shows an old frame).
+side by side (saved by the mod, so no screenshot shows an old frame). `tools/videoframes.ps1` pulls
+frames out of a recording (Windows' own media components, no ffmpeg) into one sheet.
 `tools/drawhunt.ps1` presses the hunt keys and game keys (by scan code: the game ignores keys
 sent by virtual-key code alone; `-Action fire` holds the mouse button across frames, `f16` is
 the magazine button) and takes screenshots while BF3 is in front; `tools/say.ps1`
@@ -218,4 +227,6 @@ paths from an object to an address).
 - `src/bodies.cpp`: keeps dead soldiers' bodies longer.
 - `src/ammo.cpp`: reads and sets the server's ammo count for the magazine eject (`skin.cpp` draws
   the magazine falling).
+- `src/hands.cpp`: free hands: where the gun and the left glove go relative to the head, from the
+  controllers (`skin.cpp` redraws the gun and arms there).
 - `injector/main.cpp`: loads `bf3vr.dll` into `bf3.exe`.

@@ -1,8 +1,9 @@
 // Free hands. Found 2026-10-30: BF3 draws the first-person arms and gun in a space of their own
 // with the world's axes, whose origin sits on whole-metre world coordinates near the player (the
 // eye was at (0.69, 1.68, 0.18) in it, and (1457.69, 70.68, -1564.82) in the world). The view-
-// projection uploaded for those draws (skin::FirstPersonViews) gives the eye's position and the
-// view's axes in that space, so a controller's pose relative to the head lands there directly.
+// projection uploaded for those draws gives the eye's position and the view's axes in that space,
+// so a controller's pose relative to the head lands there directly: this works out the poses
+// relative to the head, and skin.cpp places them with each draw's own view-projection.
 //
 // The gun model's axes match the aim pose's (x right, y up, z back towards the shooter), so the
 // gun takes the right controller's aim orientation, with its grip at the right controller's grip.
@@ -33,46 +34,19 @@ float g_gunGrip[3] = {0.0f, -0.11f, 0.21f};
 bool g_gunGripTuned = false;  // grip.txt set it; otherwise skin::GunGrip, the game's own hold
 float g_leftAnchor[3] = {0.502f, 1.146f, 0.144f};
 float g_leftTurn[3] = {0.0f, 0.0f, 0.0f};  // degrees about the grip's x, y, z, after the default
-constexpr float kEyeHeight = 1.6f;          // the floor this far below the eye (standing)
-
-void Cross(const float* a, const float* b, float* out) {
-    out[0] = a[1] * b[2] - a[2] * b[1];
-    out[1] = a[2] * b[0] - a[0] * b[2];
-    out[2] = a[0] * b[1] - a[1] * b[0];
-}
-
-bool Normalize(float* v) {
-    float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (!(length > 1e-6f))
-        return false;
-    v[0] /= length, v[1] /= length, v[2] /= length;
-    return true;
-}
-
-// The eye: where the clip x, y and w rows of a view-projection are all zero.
-bool SolveEye(const float* m, float* eye) {
-    const float* r[3] = {m, m + 4, m + 12};
-    float a[3][3], b[3];
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j)
-            a[i][j] = r[i][j];
-        b[i] = -r[i][3];
-    }
-    float det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
-                a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-    if (!(std::fabs(det) > 1e-9f))
-        return false;
-    for (int k = 0; k < 3; ++k) {
-        float c[3][3];
-        std::memcpy(c, a, sizeof(c));
-        for (int i = 0; i < 3; ++i)
-            c[i][k] = b[i];
-        eye[k] = (c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1]) - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0]) +
-                  c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])) /
-                 det;
-    }
-    return true;
-}
+// The left glove's placement on the left grip pose: the gloves' bind space -> the grip's frame
+// (rows: rotation | translation). From the default turn and palm unless the View button's
+// line-up (saved as grip.txt "leftpose") set it.
+float g_leftOffset[12] = {};
+bool g_leftOffsetSet = false;
+// The line-up: the first View press holds the glove still, the hand is put into it, the second
+// press keeps where the hand is relative to the glove.
+bool g_lining = false;
+float g_heldLeft[12] = {};
+float g_close = 0.0f;  // the left glove's closing, smoothed
+// How far the open glove is curled towards the closed grip: fully open (its bind pose) looked flat
+// to the user. grip.txt "open 0.2".
+float g_openCurl = 0.2f;
 
 // Row-major 3x3 from a quaternion (x, y, z, w).
 void QuatToMatrix(const XrQuaternionf& q, float* m) {
@@ -104,6 +78,29 @@ void Euler(const float* degrees, float* m) {
           rz[9] = {cz, -sz, 0, sz, cz, 0, 0, 0, 1}, t[9];
     Mul3(ry, rx, t);
     Mul3(rz, t, m);
+}
+
+// Affine 3x4 matrices (three rows: rotation | translation).
+void Compose(const float* a, const float* b, float* out) {
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 4; ++j)
+            out[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j];
+        out[i * 4 + 3] += a[i * 4 + 3];
+    }
+}
+
+// The inverse of a rotation | translation (no scale).
+void InvertRigid(const float* m, float* out) {
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            out[i * 4 + j] = m[j * 4 + i];
+    for (int i = 0; i < 3; ++i)
+        out[i * 4 + 3] = -(out[i * 4] * m[3] + out[i * 4 + 1] * m[7] + out[i * 4 + 2] * m[11]);
+}
+
+void Transform(const float* m, const float* p, float* out) {
+    for (int i = 0; i < 3; ++i)
+        out[i] = m[i * 4] * p[0] + m[i * 4 + 1] * p[1] + m[i * 4 + 2] * p[2] + m[i * 4 + 3];
 }
 
 // A pose matrix (three rows: rotation | translation) putting the point anchor at position.
@@ -139,20 +136,48 @@ void ReadTuning() {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path, L"r") != 0 || !f)
         return;
-    char line[256];
+    char line[512];
     while (fgets(line, sizeof(line), f)) {
-        float v[3];
+        float v[12];
         if (std::strncmp(line, "gun", 3) == 0 && sscanf_s(line + 3, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
-            std::memcpy(g_gunGrip, v, sizeof(v)), g_gunGripTuned = true;
+            std::memcpy(g_gunGrip, v, 3 * sizeof(float)), g_gunGripTuned = true;
+        else if (std::strncmp(line, "leftpose", 8) == 0 &&
+                 sscanf_s(line + 8, "%f %f %f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                          &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) == 12)
+            std::memcpy(g_leftOffset, v, sizeof(g_leftOffset)), g_leftOffsetSet = true;
+        else if (std::strncmp(line, "open", 4) == 0 && sscanf_s(line + 4, "%f", &v[0]) == 1)
+            g_openCurl = std::fmin(std::fmax(v[0], 0.0f), 1.0f);
         else if (std::strncmp(line, "leftturn", 8) == 0 && sscanf_s(line + 8, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
-            std::memcpy(g_leftTurn, v, sizeof(v));
+            std::memcpy(g_leftTurn, v, 3 * sizeof(float));
         else if (std::strncmp(line, "left", 4) == 0 && sscanf_s(line + 4, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
-            std::memcpy(g_leftAnchor, v, sizeof(v));
+            std::memcpy(g_leftAnchor, v, 3 * sizeof(float));
     }
     fclose(f);
     Log("Hands: gun grip (%.3f %.3f %.3f), left palm (%.3f %.3f %.3f), left turn (%.0f %.0f %.0f)", g_gunGrip[0],
         g_gunGrip[1], g_gunGrip[2], g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2], g_leftTurn[0], g_leftTurn[1],
         g_leftTurn[2]);
+}
+
+// The left glove's line-up, kept in grip.txt (rewritten whole).
+void SaveLeftOffset() {
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&SaveLeftOffset), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"grip.txt");
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f)
+        return;
+    if (g_gunGripTuned)
+        fprintf(f, "gun %.4f %.4f %.4f\n", g_gunGrip[0], g_gunGrip[1], g_gunGrip[2]);
+    fprintf(f, "left %.4f %.4f %.4f\n", g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2]);
+    fprintf(f, "open %.2f\n", g_openCurl);
+    const float* o = g_leftOffset;
+    fprintf(f, "leftpose %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\n", o[0], o[1], o[2], o[3], o[4],
+            o[5], o[6], o[7], o[8], o[9], o[10], o[11]);
+    fclose(f);
 }
 
 }
@@ -161,33 +186,30 @@ namespace hands {
 
 void Update(const XrPosef& head) {
     ReadTuning();
-    float arms[16], world[16], eye[3], eyeWorld[3];
-    if (!g_on || !skin::FirstPersonViews(arms, world) || !SolveEye(arms, eye) || !SolveEye(world, eyeWorld)) {
+    if (!g_on) {
         skin::SetHands(nullptr);
         return;
     }
-    // The view's axes in the arms' space: OpenXR's head axes (x right, y up, z back) map onto them.
-    float right[3] = {arms[0], arms[1], arms[2]}, up[3] = {arms[4], arms[5], arms[6]},
-          back[3] = {-arms[12], -arms[13], -arms[14]};
-    if (!Normalize(right) || !Normalize(up) || !Normalize(back)) {
-        skin::SetHands(nullptr);
-        return;
-    }
-    float view[9] = {right[0], up[0], back[0], right[1], up[1], back[1], right[2], up[2], back[2]};
-    float headTurn[9], headInverse[9];
+    // Everything is worked out in the recentered space, then given to skin.cpp in the view's own
+    // space (relative to the head), which places it with each frame's eye. The gun flickered
+    // while walking when this placed it in the arms' space itself: that space's origin jumps a
+    // metre at a time as the player moves, and the targets were a frame late.
+    float headTurn[9], toView[9];
     QuatToMatrix(head.orientation, headTurn);
-    Transpose3(headTurn, headInverse);
-    float toArms[9];  // the recentered space's directions -> the arms' space
-    Mul3(view, headInverse, toArms);
-    auto position = [&](const XrVector3f& p, float* out) {
-        float d[3] = {p.x - head.position.x, p.y - head.position.y, p.z - head.position.z};
-        for (int i = 0; i < 3; ++i)
-            out[i] = eye[i] + toArms[i * 3] * d[0] + toArms[i * 3 + 1] * d[1] + toArms[i * 3 + 2] * d[2];
-    };
-    auto orientation = [&](const XrQuaternionf& q, float* out) {
+    Transpose3(headTurn, toView);
+    auto pose = [](const XrPosef& p, float* out) {
         float m[9];
-        QuatToMatrix(q, m);
-        Mul3(toArms, m, out);
+        QuatToMatrix(p.orientation, m);
+        const float at[3] = {p.position.x, p.position.y, p.position.z};
+        for (int i = 0; i < 3; ++i)
+            out[i * 4] = m[i * 3], out[i * 4 + 1] = m[i * 3 + 1], out[i * 4 + 2] = m[i * 3 + 2], out[i * 4 + 3] = at[i];
+    };
+    float headPose[12], fromHead[12];  // the recentered space -> the view's
+    pose(head, headPose);
+    InvertRigid(headPose, fromHead);
+    auto toViewPoint = [&](const XrVector3f& p, float* out) {
+        const float at[3] = {p.x, p.y, p.z};
+        Transform(fromHead, at, out);
     };
 
     skin::HandTargets t;
@@ -197,34 +219,77 @@ void Update(const XrPosef& head) {
         // back and the gun pointed at the player), the aim pose's x right, y up, z back: half a
         // turn about y between them.
         const float flip[9] = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
-        float turn[9], gunTurn[9];
-        orientation(aim.orientation, turn);
+        float aimTurn[9], turn[9], gunTurn[9];
+        QuatToMatrix(aim.orientation, aimTurn);
+        Mul3(toView, aimTurn, turn);
         Mul3(turn, flip, gunTurn);
-        position(grip.position, t.rightWrist);
+        toViewPoint(grip.position, t.rightWrist);
         // Where the game's own right hand holds the gun, unless grip.txt says otherwise.
         float anchor[3];
-        if (g_gunGripTuned || !skin::GunGrip(anchor))
+        if (g_gunGripTuned || !skin::GunGrip(anchor)) {
             std::memcpy(anchor, g_gunGrip, sizeof(anchor));
+        } else {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                Log("Hands: the game holds the gun at (%.3f %.3f %.3f) in its model space", anchor[0], anchor[1],
+                    anchor[2]);
+            }
+        }
         PlaceAt(gunTurn, anchor, t.rightWrist, t.gunPose);
         t.gun = true;
     }
     if (input::HandPose(0, grip)) {
-        // The glove's bind axes onto the grip pose's: x (outward) -> +Y, y (back of the hand) -> +X,
-        // z (fingers) -> -Z. Then the tuning turn.
-        const float glove[9] = {0, 1, 0, 1, 0, 0, 0, 0, -1};
-        float tuned[9], local[9], turn[9];
-        Euler(g_leftTurn, tuned);
-        Mul3(tuned, glove, local);
-        orientation(grip.orientation, turn);
-        float full[9];
-        Mul3(turn, local, full);
-        position(grip.position, t.leftWrist);
-        PlaceAt(full, g_leftAnchor, t.leftWrist, t.leftPose);
+        if (!g_leftOffsetSet) {
+            // The glove's bind axes onto the grip pose's: x (outward) -> +Y, y (back of the hand)
+            // -> +X, z (fingers) -> -Z, then the tuning turn; the palm at the grip.
+            const float glove[9] = {0, 1, 0, 1, 0, 0, 0, 0, -1};
+            const float origin[3] = {};
+            float tuned[9], local[9];
+            Euler(g_leftTurn, tuned);
+            Mul3(tuned, glove, local);
+            PlaceAt(local, g_leftAnchor, origin, g_leftOffset);
+        }
+        // In the recentered space: the glove held still there during the line-up stays put in the
+        // room while the head moves.
+        float controller[12], glove[12];
+        pose(grip, controller);
+        Compose(controller, g_leftOffset, glove);
+        if (input::TakeCalibratePress()) {
+            if (!g_lining) {
+                std::memcpy(g_heldLeft, glove, sizeof(g_heldLeft));
+                g_lining = true;
+                Log("Hands: the left glove is held still; put the left hand into it and press View again");
+                Beep(880, 150);
+            } else {
+                float inverse[12];
+                InvertRigid(controller, inverse);
+                Compose(inverse, g_heldLeft, g_leftOffset);
+                g_leftOffsetSet = true;
+                g_lining = false;
+                SaveLeftOffset();
+                Log("Hands: the left glove is lined up with the hand (saved to grip.txt)");
+                Beep(1320, 200);
+            }
+        }
+        Compose(fromHead, g_lining ? g_heldLeft : glove, t.leftPose);
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);  // the palm, where the arm folds into
+        g_close += (input::LeftSqueeze() - g_close) * 0.35f;
+        t.leftClose = g_lining ? 0.0f : g_openCurl + (1.0f - g_openCurl) * g_close;
         t.left = true;
     }
-    for (int i = 0; i < 3; ++i)
-        t.origin[i] = eyeWorld[i] - eye[i];
-    t.floor = eye[1] - kEyeHeight;
+    // Once a second: frames where a controller wasn't tracked (the game's own gun or hand is drawn
+    // for those).
+    static int frames = 0, noGun = 0, noLeft = 0;
+    static ULONGLONG lastLog = 0;
+    ++frames, noGun += !t.gun, noLeft += !t.left;
+    if (GetTickCount64() - lastLog >= 1000) {
+        lastLog = GetTickCount64();
+        if (noGun || noLeft)
+            Log("Hands: of the last %d frames, %d without the right controller's aim or grip, %d without the left", frames,
+                noGun, noLeft);
+        frames = noGun = noLeft = 0;
+    }
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }
 
