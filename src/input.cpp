@@ -11,8 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include "ammo.h"
 #include "config.h"
 #include "log.h"
+#include "skin.h"
 
 namespace {
 
@@ -54,9 +56,18 @@ struct Mapping {
 Mapping g_buttons[] = {
     {&g_fire, true, Output::LeftMouse, 0, false},  {&g_ads, true, Output::RightMouse, 0, false},
     {&g_grenade, true, Output::Key, kScanG, false}, {&g_jump, false, Output::Key, kScanSpace, false},
-    {&g_crouch, false, Output::Key, kScanCtrl, false}, {&g_reload, false, Output::Key, kScanR, false},
-    {&g_use, false, Output::Key, kScanE, false},    {&g_sprint, false, Output::Key, kScanShift, false},
+    {&g_crouch, false, Output::Key, kScanCtrl, false}, {&g_use, false, Output::Key, kScanE, false},
+    {&g_sprint, false, Output::Key, kScanShift, false},
 };
+
+// X (g_reload): a tap ejects the magazine, which drops to the floor, or with it out puts a new
+// one in. Held for 0.6 s it's the game's own reload (R), as is a tap with a gun the mod doesn't
+// know the magazine of.
+constexpr ULONGLONG kHoldForReload = 600;
+bool g_xDown = false, g_xHeld = false;
+ULONGLONG g_xSince = 0;
+bool g_rDown = false;
+ULONGLONG g_rUntil = 0;  // a tapped R is let go then
 
 // Left stick to W/A/S/D, each pressed past half deflection.
 struct StickKey {
@@ -89,7 +100,7 @@ bool MakeAction(XrActionType type, const char* name, const char* label, XrAction
 }
 
 // A runtime may not know every profile; that profile is skipped and the others still apply.
-void Suggest(const char* profile, const std::vector<std::pair<XrAction, const char*>>& bindings) {
+bool Suggest(const char* profile, const std::vector<std::pair<XrAction, const char*>>& bindings) {
     std::vector<XrActionSuggestedBinding> suggested;
     for (const auto& b : bindings)
         suggested.push_back({b.first, Path(b.second)});
@@ -97,8 +108,10 @@ void Suggest(const char* profile, const std::vector<std::pair<XrAction, const ch
     info.interactionProfile = Path(profile);
     info.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
     info.suggestedBindings = suggested.data();
-    if (XR_FAILED(xrSuggestInteractionProfileBindings(g_instance, &info)))
-        Log("Controllers: no bindings for %s on this runtime", profile);
+    if (XR_SUCCEEDED(xrSuggestInteractionProfileBindings(g_instance, &info)))
+        return true;
+    Log("Controllers: no bindings for %s on this runtime", profile);
+    return false;
 }
 
 void SuggestBindings() {
@@ -128,6 +141,28 @@ void SuggestBindings() {
              {g_reload, "/user/hand/left/input/x/click"},
              {g_use, "/user/hand/left/input/y/click"},
              {g_sprint, "/user/hand/left/input/thumbstick/click"}});
+    // Steam Frame (when the runtime offers its extension): A/B/X/Y all on the right hand, a D-pad
+    // on the left. X is the magazine. Its grip's name isn't documented: squeeze, else grip.
+    std::vector<std::pair<XrAction, const char*>> frame = {
+        {g_aim, "/user/hand/right/input/aim/pose"},
+        {g_fire, "/user/hand/right/input/trigger/value"},
+        {g_ads, "/user/hand/left/input/trigger/value"},
+        {g_move, "/user/hand/left/input/thumbstick"},
+        {g_turn, "/user/hand/right/input/thumbstick"},
+        {g_jump, "/user/hand/right/input/a/click"},
+        {g_crouch, "/user/hand/right/input/b/click"},
+        {g_reload, "/user/hand/right/input/x/click"},
+        {g_use, "/user/hand/right/input/y/click"},
+        {g_sprint, "/user/hand/left/input/thumbstick/click"}};
+    const char* kFrame = "/interaction_profiles/valve/frame_controller";
+    auto withGrip = [&](const char* grip) {
+        auto b = frame;
+        b.push_back({g_grenade, grip});
+        return b;
+    };
+    if (!Suggest(kFrame, withGrip("/user/hand/right/input/squeeze/value")) &&
+        !Suggest(kFrame, withGrip("/user/hand/right/input/grip/value")))
+        Suggest(kFrame, frame);
     // Anything else: at least aim and fire.
     Suggest("/interaction_profiles/khr/simple_controller",
             {{g_aim, "/user/hand/right/input/aim/pose"}, {g_fire, "/user/hand/right/input/select/click"}});
@@ -171,6 +206,13 @@ bool GameHasFocus() {
     return pid == GetCurrentProcessId();
 }
 
+void PressR(bool down) {
+    if (down != g_rDown) {
+        SendKey(kScanR, down);
+        g_rDown = down;
+    }
+}
+
 void ReleaseAll() {
     for (Mapping& m : g_buttons)
         if (m.down)
@@ -178,6 +220,19 @@ void ReleaseAll() {
     for (StickKey& k : g_moveKeys)
         if (k.down)
             SendKey(k.scan, false), k.down = false;
+    PressR(false);
+    g_xDown = g_xHeld = false;
+}
+
+// The gun doesn't fire with its magazine out, nor its last round: run dry, the game would reload
+// by itself. (Guns loaded a round at a time, like the SMAW, aren't stopped.)
+bool FireBlocked() {
+    if (!skin::RifleInHand())
+        return false;
+    if (skin::MagazineOut())
+        return true;
+    int loaded = 0, spare = 0;
+    return ammo::MagazineSize() >= 5 && ammo::Get(loaded, spare) && loaded <= 1;
 }
 
 XrVector2f Stick(XrSession session, XrAction action) {
@@ -209,7 +264,8 @@ bool Init(XrInstance instance, XrSession session) {
               MakeAction(XR_ACTION_TYPE_VECTOR2F_INPUT, "turn", "Turn", g_turn) &&
               MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "jump", "Jump", g_jump) &&
               MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "crouch", "Crouch", g_crouch) &&
-              MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "reload", "Reload", g_reload) &&
+              MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "reload", "Magazine (tap: eject / insert, hold: reload)",
+                         g_reload) &&
               MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "use", "Use", g_use) &&
               MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "sprint", "Sprint", g_sprint);
     if (!ok)
@@ -245,6 +301,18 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         ReleaseAll();
         return;
     }
+    // Which controller profile the runtime picked (it decides what each button does).
+    static XrPath rightHand = Path("/user/hand/right"), profile = XR_NULL_PATH;
+    XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
+    if (XR_SUCCEEDED(xrGetCurrentInteractionProfile(session, rightHand, &state)) &&
+        state.interactionProfile != profile) {
+        profile = state.interactionProfile;
+        char name[XR_MAX_PATH_LENGTH] = "(none)";
+        uint32_t length = 0;
+        if (profile)
+            xrPathToString(g_instance, profile, sizeof(name), &length, name);
+        Log("Controllers: the right hand's profile is %s", name);
+    }
 
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     if (XR_SUCCEEDED(xrLocateSpace(g_aimSpace, space, time, &location)) &&
@@ -272,11 +340,38 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
             down = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &state)) && state.isActive &&
                    state.currentState;
         }
+        if (down && m.action == &g_fire && FireBlocked())
+            down = false;
         if (down != m.down) {
             Press(m, down);
             m.down = down;
         }
     }
+
+    XrActionStateGetInfo getX{XR_TYPE_ACTION_STATE_GET_INFO};
+    getX.action = g_reload;
+    XrActionStateBoolean xState{XR_TYPE_ACTION_STATE_BOOLEAN};
+    bool x = XR_SUCCEEDED(xrGetActionStateBoolean(session, &getX, &xState)) && xState.isActive &&
+             xState.currentState;
+    ULONGLONG now = GetTickCount64();
+    if (x && !g_xDown) {
+        g_xSince = now;
+        g_xHeld = false;
+    }
+    if (x && !g_xHeld && now - g_xSince >= kHoldForReload) {
+        g_xHeld = true;
+        PressR(true);            // until X is let go
+        skin::InsertMagazine();  // the game's reload puts one in
+    }
+    if (!x && g_xDown) {
+        if (g_xHeld)
+            PressR(false);
+        else
+            input::MagazineTap();
+    }
+    g_xDown = x;
+    if (g_rDown && !g_xHeld && now >= g_rUntil)
+        PressR(false);
 
     XrVector2f move = Stick(session, g_move);
     bool want[4] = {move.y > 0.5f, move.y < -0.5f, move.x < -0.5f, move.x > 0.5f};
@@ -303,6 +398,20 @@ bool AimPose(XrPosef& out) {
         return false;
     out = g_aimPose;
     return true;
+}
+
+void MagazineTap() {
+    if (!skin::RifleInHand()) {
+        PressR(true);
+        g_rUntil = GetTickCount64() + 150;  // the game reads the keys once a frame
+        return;
+    }
+    if (skin::MagazineOut()) {
+        ammo::Insert();
+        skin::InsertMagazine();
+    } else if (skin::EjectMagazine()) {
+        ammo::Eject();
+    }
 }
 
 }

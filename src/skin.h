@@ -38,4 +38,16 @@ void HuntAnswer(bool vanished);
 // Every frame: logs the found draw's bone data about once a second.
 void Probe();
 
+// The magazine of the gun the mod knows (the campaign's M16-type rifle): out of the gun, falling
+// to the floor and lying there a while (false if the gun hasn't been drawn yet, or it's already
+// out), or back in. Render thread.
+bool EjectMagazine();
+void InsertMagazine();
+bool MagazineOut();
+// Whether that gun is the one in hand (drawn in the last half second).
+bool RifleInHand();
+
+// Every frame on the render thread: moves the dropped magazine.
+void Update();
+
 }

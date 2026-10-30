@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "aim.h"
+#include "ammo.h"
 #include "camera.h"
 #include "config.h"
 #include "depth3d.h"
@@ -134,15 +135,34 @@ bool Check(XrResult result, const char* what) {
     return false;
 }
 
+// The Steam Frame's controllers have a profile of their own (X and Y on the right hand, a D-pad on
+// the left); without it SteamVR guesses from the Touch bindings and put crouch on X.
+bool RuntimeHasExtension(const char* name) {
+    uint32_t count = 0;
+    if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr)) || !count)
+        return false;
+    std::vector<XrExtensionProperties> props(count, {XR_TYPE_EXTENSION_PROPERTIES});
+    if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, count, &count, props.data())))
+        return false;
+    for (const XrExtensionProperties& p : props)
+        if (std::strcmp(p.extensionName, name) == 0)
+            return true;
+    return false;
+}
+
 bool CreateInstance() {
-    const char* extensions[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    std::vector<const char*> extensions = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    bool frame = RuntimeHasExtension(input::kFrameControllerExtension);
+    if (frame)
+        extensions.push_back(input::kFrameControllerExtension);
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     strcpy_s(ci.applicationInfo.applicationName, "BF3 VR");
     ci.applicationInfo.applicationVersion = 2;
     strcpy_s(ci.applicationInfo.engineName, "bf3vr");
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    ci.enabledExtensionCount = 1;
-    ci.enabledExtensionNames = extensions;
+    ci.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    ci.enabledExtensionNames = extensions.data();
+    Log("Controllers: Steam Frame controller profile %s", frame ? "available" : "not offered by this runtime");
     if (!Check(xrCreateInstance(&ci, &g_instance), "xrCreateInstance"))
         return false;
 
@@ -553,6 +573,9 @@ void PollHotkeys() {
     // End: god mode on/off.
     if (KeyPressed(VK_END))
         god::Toggle();
+    // F16 (sent by tools/drawhunt.ps1): the X button's magazine eject / insert.
+    if (KeyPressed(VK_F16))
+        input::MagazineTap();
     // Draw hunt, sent by tools/drawhunt.ps1 on keys no real keyboard has.
     if (KeyPressed(VK_F15))
         skin::HuntStart();
@@ -1126,6 +1149,8 @@ void OnPresent(IDXGISwapChain* swap) {
     fov::Apply();
     god::Apply();
     bodies::Apply();
+    ammo::Update();
+    skin::Update();
     skin::Probe();
     camera::Probe();
     aim::Probe();

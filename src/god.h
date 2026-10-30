@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace god {
 
 // Every frame: keeps the player's health and maximum health at [god] value in bf3vr.ini, in the
@@ -9,5 +11,9 @@ void Apply();
 
 // End: god mode on or off (saved).
 void Toggle();
+
+// The player's soldier in the game's own server, where the campaign's real state is (health,
+// ammo), or 0. Render thread.
+uintptr_t PlayerServerSoldier();
 
 }

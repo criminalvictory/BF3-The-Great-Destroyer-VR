@@ -145,4 +145,13 @@ void Toggle() {
     Beep(g.enabled ? 1200 : 440, 200);
 }
 
+uintptr_t PlayerServerSoldier() {
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const uintptr_t client = ClientSoldier(base);
+    const uintptr_t data = client ? ReadPointer(client + kSoldierData) : 0;
+    if (!data || ReadPointer(data) != base + kSoldierDataType)
+        return 0;
+    return ServerSoldier(base, data);
+}
+
 }

@@ -9,9 +9,11 @@
 # Only sends input while BF3's window is in front.
 #   -Action click -X x -Y y : left click at a point of the game window (full-size pixels)
 #   -Action enter     : Enter
+#   -Action fire -Seconds s : hold the left mouse button (fire) for s seconds
+#   -Action hold -Vk k -Seconds s : hold a game key (by scan code) for s seconds
 # A minimized game window is restored first.
 param(
-    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'pause', 'scroll', 'end', 'hold')] [string]$Action,
+    [Parameter(Mandatory)] [ValidateSet('start', 'vanished', 'visible', 'shot', 'flip', 'insert', 'delete', 'pageup', 'pagedown', 'f11', 'f8', 'click', 'enter', 'f16', 'pause', 'scroll', 'end', 'hold', 'fire')] [string]$Action,
     [string]$Name = 'hunt',
     [int]$X = 0,
     [int]$Y = 0,
@@ -40,6 +42,11 @@ public static void Click() {
     i[0].type = 0; i[0].mi.dwFlags = 0x0002;  // left down
     i[1].type = 0; i[1].mi.dwFlags = 0x0004;  // left up
     SendInput(2, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+}
+// The game polls the buttons once a frame: a press and release sent together is missed.
+public static void Button(bool down) {
+    var i = new INPUT[1]; i[0].type = 0; i[0].mi.dwFlags = down ? 0x0002u : 0x0004u;
+    SendInput(1, i, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
 }
 public static void Key(ushort vk, bool down) {
     var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = down ? 0u : 0x2u;
@@ -74,6 +81,10 @@ if ($keys.ContainsKey($Action)) {
 }
 if ($Action -eq 'hold') {
     [DrawHunt.U]::ScanKey([uint16]$Vk, $true); Start-Sleep -Milliseconds ([int]($Seconds * 1000)); [DrawHunt.U]::ScanKey([uint16]$Vk, $false)
+    Start-Sleep -Milliseconds 1200
+}
+if ($Action -eq 'fire') {
+    [DrawHunt.U]::Button($true); Start-Sleep -Milliseconds ([int]($Seconds * 1000)); [DrawHunt.U]::Button($false)
     Start-Sleep -Milliseconds 1200
 }
 if ($Action -eq 'click') {
