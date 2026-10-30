@@ -229,9 +229,8 @@ float4 PS(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
                 sum += colorTex.SampleLevel(linearSampler, float2(bx - dir * k * spread / size.x, uv.y + r * spread / size.y), 0).rgb;
         return float4(sum / 6, 1);
     }
-    if (found < 0 || found > 1)
-        return float4(0, 0, 0, 1);
-    return float4(colorTex.SampleLevel(linearSampler, float2(found, uv.y), 0).rgb, 1);
+    // Past the picture's edge (the shifted eye's outer strip): the edge itself, not black.
+    return float4(colorTex.SampleLevel(linearSampler, float2(saturate(found), uv.y), 0).rgb, 1);
 }
 )";
 
@@ -590,6 +589,72 @@ ID3D11RenderTargetView* TargetView(ID3D11Device* device, ID3D11Texture2D* target
     return view;
 }
 
+// How long the graphics card spends making both eyes, logged every few seconds. Read a few frames
+// late, never waiting for the card.
+struct GpuTimer {
+    static constexpr int kSlots = 4;
+    ID3D11Query* disjoint[kSlots] = {};
+    ID3D11Query* begin[kSlots] = {};
+    ID3D11Query* end[kSlots] = {};
+    bool pending[kSlots] = {};
+    bool tried = false, ok = false, running = false;
+    int next = 0;
+    double totalMs = 0.0;
+    int samples = 0;
+    ULONGLONG lastLog = 0;
+
+    bool Create(ID3D11Device* device) {
+        if (tried)
+            return ok;
+        tried = true;
+        D3D11_QUERY_DESC dd{D3D11_QUERY_TIMESTAMP_DISJOINT, 0}, td{D3D11_QUERY_TIMESTAMP, 0};
+        ok = true;
+        for (int i = 0; i < kSlots && ok; ++i)
+            ok = SUCCEEDED(device->CreateQuery(&dd, &disjoint[i])) && SUCCEEDED(device->CreateQuery(&td, &begin[i])) &&
+                 SUCCEEDED(device->CreateQuery(&td, &end[i]));
+        return ok;
+    }
+    void Begin(ID3D11DeviceContext* c) {
+        running = ok && !pending[next];
+        if (running) {
+            c->Begin(disjoint[next]);
+            c->End(begin[next]);
+        }
+    }
+    void End(ID3D11DeviceContext* c) {
+        if (!running)
+            return;
+        c->End(end[next]);
+        c->End(disjoint[next]);
+        pending[next] = true;
+        next = (next + 1) % kSlots;
+    }
+    void Collect(ID3D11DeviceContext* c) {
+        for (int i = 0; i < kSlots; ++i) {
+            if (!pending[i])
+                continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT d;
+            UINT64 t0 = 0, t1 = 0;
+            if (c->GetData(disjoint[i], &d, sizeof(d), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+                c->GetData(begin[i], &t0, sizeof(t0), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+                c->GetData(end[i], &t1, sizeof(t1), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+                continue;
+            pending[i] = false;
+            if (!d.Disjoint && d.Frequency && t1 > t0) {
+                totalMs += 1000.0 * static_cast<double>(t1 - t0) / static_cast<double>(d.Frequency);
+                ++samples;
+            }
+        }
+        ULONGLONG now = GetTickCount64();
+        if (now - lastLog >= 5000 && samples) {
+            Log("Depth 3D: making both eyes takes %.2f ms on the graphics card per frame", totalMs / samples);
+            totalMs = 0.0;
+            samples = 0;
+            lastLog = now;
+        }
+    }
+} g_timer;
+
 // The pipeline state Render changes, put back afterwards: this runs inside the game's Present.
 struct SavedState {
     ID3D11RenderTargetView* rtv = nullptr;
@@ -707,6 +772,9 @@ bool Render(ID3D11Device* device, ID3D11Texture2D* back, DXGI_FORMAT targetForma
               PrepareDepth(device, context, depth, depthDesc);
     g_res.held = ok && g_hold.load();
     if (ok) {
+        g_timer.Create(device);
+        g_timer.Collect(context);
+        g_timer.Begin(context);
         SavedState saved;
         saved.Save(context);
         D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(g_res.colorFor.Width),
@@ -744,6 +812,7 @@ bool Render(ID3D11Device* device, ID3D11Texture2D* back, DXGI_FORMAT targetForma
         ID3D11ShaderResourceView* none[3] = {};
         context->PSSetShaderResources(0, 3, none);
         saved.Restore(context);
+        g_timer.End(context);
         if (ok && g_saveRequest.load() != g_saved) {
             g_saved = g_saveRequest.load();
             bool written = SaveBmp(device, context, eyes[0].target, L"eye_left.bmp") &&

@@ -5,6 +5,7 @@
 #include <dxgi.h>
 #include <MinHook.h>
 
+#include "config.h"
 #include "depth3d.h"
 #include "log.h"
 #include "skin.h"
@@ -33,7 +34,10 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval,
         QueryPerformanceFrequency(&frequency);
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
-    HRESULT hr = g_origPresent(swap, syncInterval, flags);
+    // The game waits for the monitor's refresh (sync interval 1); a frame a little over one refresh
+    // then waits for the next, capping it near 48 fps. The headset paces the game in VR, so the
+    // desktop window needn't wait ([window] vsync=0).
+    HRESULT hr = g_origPresent(swap, config::Get().desktopVsync ? syncInterval : 0, flags);
     QueryPerformanceCounter(&t1);
     total += 1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(frequency.QuadPart);
     if (++calls == 60) {

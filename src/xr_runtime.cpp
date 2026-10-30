@@ -10,15 +10,18 @@
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "aim.h"
@@ -348,7 +351,10 @@ DXGI_FORMAT PickSwapchainFormat(DXGI_FORMAT source) {
     return DXGI_FORMAT_UNKNOWN;
 }
 
+void WaitHandover();
+
 void DestroySwapchains() {
+    WaitHandover();  // a frame still being handed over uses them
     for (Swapchain& sc : g_swapchains) {
         if (sc.handle)
             xrDestroySwapchain(sc.handle);
@@ -445,6 +451,7 @@ void HandleSessionState(XrSessionState state) {
         break;
     }
     case XR_SESSION_STATE_STOPPING:
+        WaitHandover();
         xrEndSession(g_session);
         g_running = false;
         break;
@@ -950,6 +957,82 @@ struct FrameTiming {
     }
 } g_timing;
 
+// Handing a frame to SteamVR (xrEndFrame) took about 7 ms of every frame, even with nothing to
+// show, while the game waited. With [stereo] async_handover=1 it happens on a thread of its own
+// as the game makes its next frame, which waits for it only before starting the next frame's
+// OpenXR calls. SteamVR then uses the game's graphics device from that thread too, so the device
+// is switched to guarding itself against two threads.
+struct Handover {
+    std::thread thread;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool started = false, pending = false, busy = false;
+    FrameLayers layers;
+    XrTime displayTime = 0;
+    double ms = 0.0;
+    int frames = 0;
+} g_handover;
+
+// The layers point into themselves: a copy must point into the copy.
+void CopyLayers(const FrameLayers& from, FrameLayers& to) {
+    to = from;
+    to.projection.views = to.views;
+    if (from.count && from.list[0] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&from.projection))
+        to.list[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&to.projection);
+    else if (from.count)
+        to.list[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&to.quad);
+}
+
+void HandoverThread() {
+    std::unique_lock lock(g_handover.mutex);
+    for (;;) {
+        g_handover.cv.wait(lock, [] { return g_handover.pending; });
+        g_handover.pending = false;
+        g_handover.busy = true;
+        XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
+        endInfo.displayTime = g_handover.displayTime;
+        endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        endInfo.layerCount = g_handover.layers.count;
+        endInfo.layers = g_handover.layers.list;
+        lock.unlock();
+        LARGE_INTEGER a, b;
+        QueryPerformanceCounter(&a);
+        Check(xrEndFrame(g_session, &endInfo), "xrEndFrame");
+        QueryPerformanceCounter(&b);
+        lock.lock();
+        g_handover.busy = false;
+        g_handover.ms += g_timing.Ms(a, b);
+        ++g_handover.frames;
+        g_handover.cv.notify_all();
+    }
+}
+
+void WaitHandover() {
+    if (!g_handover.started)
+        return;
+    std::unique_lock lock(g_handover.mutex);
+    g_handover.cv.wait(lock, [] { return !g_handover.pending && !g_handover.busy; });
+}
+
+void StartHandover(const FrameLayers& layers, XrTime displayTime) {
+    if (!g_handover.started) {
+        ID3D11Multithread* guard = nullptr;
+        if (SUCCEEDED(g_device->QueryInterface(IID_PPV_ARGS(&guard)))) {
+            guard->SetMultithreadProtected(TRUE);
+            guard->Release();
+        }
+        g_handover.thread = std::thread(HandoverThread);
+        g_handover.thread.detach();  // lives as long as the game
+        g_handover.started = true;
+        Log("Handover: xrEndFrame now runs on its own thread (async_handover=1)");
+    }
+    std::lock_guard lock(g_handover.mutex);
+    CopyLayers(layers, g_handover.layers);
+    g_handover.displayTime = displayTime;
+    g_handover.pending = true;
+    g_handover.cv.notify_all();
+}
+
 void RenderFrame(IDXGISwapChain* swap) {
     LARGE_INTEGER t0, t1, t2, t3;
     if (!g_timing.frequency.QuadPart)
@@ -971,6 +1054,9 @@ void RenderFrame(IDXGISwapChain* swap) {
         g_resizePending = false;
     }
 
+    // The last frame's handover (async_handover) must be done before this frame begins.
+    const bool async = config::Get().asyncHandover;
+    WaitHandover();
     // Blocks until the headset wants a new frame, so the game is paced to the display.
     XrFrameState frame{XR_TYPE_FRAME_STATE};
     XrFrameWaitInfo waitInfo{XR_TYPE_FRAME_WAIT_INFO};
@@ -998,12 +1084,16 @@ void RenderFrame(IDXGISwapChain* swap) {
     }
 
     QueryPerformanceCounter(&t2);
-    XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
-    endInfo.displayTime = frame.predictedDisplayTime;
-    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    endInfo.layerCount = layers.count;
-    endInfo.layers = layers.list;
-    Check(xrEndFrame(g_session, &endInfo), "xrEndFrame");
+    if (async) {
+        StartHandover(layers, frame.predictedDisplayTime);
+    } else {
+        XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
+        endInfo.displayTime = frame.predictedDisplayTime;
+        endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        endInfo.layerCount = layers.count;
+        endInfo.layers = layers.list;
+        Check(xrEndFrame(g_session, &endInfo), "xrEndFrame");
+    }
 
     back->Release();
     QueryPerformanceCounter(&t3);
@@ -1017,6 +1107,13 @@ void RenderFrame(IDXGISwapChain* swap) {
         Log("Frame timing (ms per frame): whole frame %.1f, of it waiting for the headset %.1f, our copy %.1f, "
             "handing over %.1f; %d frames",
             g_timing.frame / n, g_timing.wait / n, g_timing.build / n, g_timing.end / n, g_timing.frames);
+        if (async) {
+            std::lock_guard lock(g_handover.mutex);
+            if (g_handover.frames)
+                Log("Handover: xrEndFrame took %.1f ms on its own thread", g_handover.ms / g_handover.frames);
+            g_handover.ms = 0.0;
+            g_handover.frames = 0;
+        }
         g_timing = FrameTiming{g_timing.frequency, g_timing.lastFrame};
         g_timing.lastLog = now;
     }

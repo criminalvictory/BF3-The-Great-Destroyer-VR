@@ -48,9 +48,14 @@ struct Settings {
     int viewLag = 0;
     // Stereo: how many frames old the head pose each eye image is submitted with (F11, 0-3).
     int poseLag = 1;
+    // Hand frames to SteamVR on a thread of their own, so the game doesn't wait about 7 ms a
+    // frame for it ([stereo] async_handover).
+    bool asyncHandover = false;
 
     // Windowed mode: keep BF3's window this many pixels square (0 = leave it alone).
     int windowSize = 1600;
+    // The desktop window waits for the monitor's refresh, as the game asks ([window] vsync).
+    bool desktopVsync = false;
 
     // Campaign: seconds a dead soldier's body stays before the game removes it (0 = the game's own,
     // 15 s for most soldiers).

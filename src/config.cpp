@@ -44,6 +44,8 @@ const char kDefaultIni[] =
     "render_fov_last=90\n"
     "; 1 = the desktop window shows only the left eye instead of flickering between both.\n"
     "mirror_one_eye=1\n"
+    "; 1 = hand frames to SteamVR on a thread of their own (saves about 7 ms a frame; test first).\n"
+    "async_handover=0\n"
     "\n"
     "[head]\n"
     "; Stereo mode: head turns and tilts steer the game's view and aim; the mouse turns your body.\n"
@@ -84,6 +86,9 @@ const char kDefaultIni[] =
     "; top to bottom; bigger is sharper in the headset. It may be bigger than the monitor.\n"
     "; 0 = leave the window alone.\n"
     "size=1600\n"
+    "; 1 = the desktop window waits for the monitor's refresh as the game asks; 0 = it doesn't\n"
+    "; (the headset sets the pace in VR, and waiting capped the game near 48 fps).\n"
+    "vsync=0\n"
     "\n"
     "[god]\n"
     "; Campaign only. Keeps the player's health and maximum health at value; End toggles.\n"
@@ -202,6 +207,8 @@ void Load(HMODULE self) {
     s.viewLag = std::clamp(static_cast<int>(ReadFloat(L"controllers", L"view_lag", 0.0f)), 0, 2);
     s.poseLag = std::clamp(static_cast<int>(ReadFloat(L"stereo", L"pose_lag", 1.0f)), 0, 3);
     s.corpseSeconds = std::max(ReadFloat(L"world", L"corpse_seconds", 0.0f), 0.0f);
+    s.asyncHandover = ReadBool(L"stereo", L"async_handover", false);
+    s.desktopVsync = ReadBool(L"window", L"vsync", false);
     s.windowSize = static_cast<int>(ReadFloat(L"window", L"size", static_cast<float>(s.windowSize)));
 
     std::vector<CameraPointer> cameras;
