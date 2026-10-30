@@ -200,6 +200,7 @@ std::mutex g_selMutex;
 bool g_selectAll = true;
 bool g_selected[64] = {};
 std::vector<float> g_selValues;  // the selected gloves bones' latest matrices, 12 floats each
+float g_shift[3] = {0.0f, kHandShift, 0.0f};
 constexpr float kSameBone = 0.02f;
 
 bool MatchesSelected(const float* bone) {
@@ -234,6 +235,12 @@ void ReadSelection() {
     fread(text, 1, sizeof(text) - 1, f);
     fclose(f);
 
+    // "shift x y z" (metres, in the bones' own space) after the bone list sets the direction.
+    float shift[3] = {0.0f, kHandShift, 0.0f};
+    if (char* s = std::strstr(text, "shift")) {
+        sscanf_s(s + 5, "%f %f %f", &shift[0], &shift[1], &shift[2]);
+        *s = 0;
+    }
     bool all = std::strstr(text, "all") != nullptr;
     bool selected[64] = {};
     for (const char* p = text; *p;) {
@@ -255,8 +262,10 @@ void ReadSelection() {
     std::lock_guard lock(g_selMutex);
     g_selectAll = all;
     std::memcpy(g_selected, selected, sizeof(selected));
+    std::memcpy(g_shift, shift, sizeof(shift));
     g_selValues.clear();
-    Log("Hands: selection now: %s", all ? "all bones" : text);
+    Log("Hands: selection now: %s, shifted by (%.2f, %.2f, %.2f)", all ? "all bones" : text, shift[0], shift[1],
+        shift[2]);
 }
 thread_local ID3D11Buffer* t_shiftBuffer = nullptr;  // this thread's stand-in for BF3's buffer
 thread_local UINT t_shiftSize = 0;
@@ -626,7 +635,9 @@ bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
             continue;
         if (gloves && !g_selectAll)
             g_selValues.insert(g_selValues.end(), bone, bone + 12);
-        bone[7] += kHandShift;  // vertical translation (y is up in character space)
+        bone[3] += g_shift[0];  // translation (y is up in character space)
+        bone[7] += g_shift[1];
+        bone[11] += g_shift[2];
     }
     g_origUnmap[which](ctx, t_shiftBuffer, 0);
 
