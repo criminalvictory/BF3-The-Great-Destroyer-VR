@@ -4,7 +4,10 @@
 #include <d3dcompiler.h>
 #include <MinHook.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -98,6 +101,13 @@ DXGI_FORMAT DepthReadFormat(DXGI_FORMAT typeless) {
     default: return DXGI_FORMAT_UNKNOWN;
     }
 }
+DXGI_FORMAT StencilReadFormat(DXGI_FORMAT typeless) {
+    switch (typeless) {
+    case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+    case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+    default: return DXGI_FORMAT_UNKNOWN;
+    }
+}
 // A colour format's typeless family, so the copy can be read as sRGB like the headset image.
 DXGI_FORMAT TypelessColor(DXGI_FORMAT f) {
     switch (f) {
@@ -122,29 +132,52 @@ cbuffer Params : register(b0) {
     float2 size;
     float debugView;
     float fillMode;  // gaps: 0 the edge's background stretched, 1 mirrored, 2 mirrored and softer
+    float gunScale;  // the gun and arms are drawn squeezed towards the eye: their distances times this
+    float gunBelow;  // they are what is nearer than this...
+    float gunMask;   // ...or, when not 0, what has these stencil bits
+    float unused;
 };
 Texture2D<float4> colorTex : register(t0);
 #ifdef MULTISAMPLE
 // The nearest of the samples: an edge pixel, whose colour is part object and part background,
 // then moves with the object instead of staying behind as a fringe.
 Texture2DMS<float> depthTex : register(t1);
+Texture2DMS<uint2> stencilTex : register(t2);
 float DepthAt(float2 uv) {
     int2 p = int2(saturate(uv) * (size - 1));
     return min(min(depthTex.Load(p, 0), depthTex.Load(p, 1)), min(depthTex.Load(p, 2), depthTex.Load(p, 3)));
 }
+uint StencilAt(float2 uv) {
+    int2 p = int2(saturate(uv) * (size - 1));
+    return stencilTex.Load(p, 0).g | stencilTex.Load(p, 1).g | stencilTex.Load(p, 2).g | stencilTex.Load(p, 3).g;
+}
 #else
 Texture2D<float> depthTex : register(t1);
+Texture2D<uint2> stencilTex : register(t2);
 float DepthAt(float2 uv) { return depthTex.Load(int3(int2(saturate(uv) * (size - 1)), 0)); }
+uint StencilAt(float2 uv) { return stencilTex.Load(int3(int2(saturate(uv) * (size - 1)), 0)).g; }
 #endif
 SamplerState linearSampler : register(s0);
 float Distance(float2 uv) {
-    return max(nearPlane / max(depthScale - DepthAt(uv), 1e-7), minDistance);
+    float d = nearPlane / max(depthScale - DepthAt(uv), 1e-7);
+    bool firstPerson = gunMask > 0 ? (StencilAt(uv) & (uint)gunMask) != 0 : d < gunBelow;
+    return max(firstPerson ? d * gunScale : d, minDistance);
 }
 void VS(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0) {
     uv = float2((id << 1) & 2, id & 2);
     pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 float4 PS(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+    if (debugView > 2.5) {
+        // The stencil value as grey (0 to 255 over black to white), for reading back.
+        float s = StencilAt(uv) / 255.0;
+        return float4(s, s, s, 1);
+    }
+    if (debugView > 1.5) {
+        // Distance as grey, black at 0 and white at 2 m, for reading back from a saved eye.
+        float g = saturate(nearPlane / max(depthScale - DepthAt(uv), 1e-7) / 2);
+        return float4(g, g, g, 1);
+    }
     if (debugView > 0) {
         // Distance in bands: red under 0.3 m, yellow to 0.6, green to 1.5, cyan to 5, blue beyond;
         // brightness repeats every band so steps show.
@@ -205,16 +238,33 @@ float4 PS(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 struct Params {
     float shift, nearPlane, depthScale, minDistance;
     float width, height, debugView, fillMode;
+    float gunScale, gunBelow, gunMask, unused;
 };
 
 // Live tuning from depth3d.txt next to the DLL: "strength 1.0", "min 0.25", "debug 1",
 // "fill 1" (gaps: 0 stretched, 1 mirrored, 2 mirrored and softer), "show 1" (the desktop
 // window shows the right eye instead of the left).
-std::atomic<float> g_strength{1.0f}, g_minDistance{0.25f}, g_fillMode{1.0f};
-std::atomic<bool> g_debugView{false}, g_showRight{false};
+// "debug 1" colours distance in bands, "debug 2" shows it as grey (black 0, white 2 m).
+std::atomic<float> g_strength{1.0f}, g_minDistance{0.25f}, g_fillMode{1.0f}, g_debugView{0.0f};
+std::atomic<bool> g_showRight{false};
 // "hold 1": the picture and depth stop updating while the eyes keep being made from them, so
 // settings can be compared by screenshot on one and the same frame.
 std::atomic<bool> g_hold{false};
+// "bias": how the eye shift is shared. 0 evenly; -1 the left eye gets the game's own picture and
+// the right eye all the shift (so every filled gap is in one eye only), 1 the other way round.
+std::atomic<float> g_bias{0.0f};
+// "gun 2.4": the gun and arms' distances are multiplied by 2.4. BF3 draws them squeezed towards
+// the eye (the grip reads 0.13 m, the front of the gun 0.29 m), so without it they are a flat
+// cut-out at the nearest distance allowed. "gun 1" turns it off.
+// What counts as the gun and arms: "mask 32", what has these stencil bits (BF3 marks them with 32,
+// the world with 2; "debug 3" shows the values), or with "mask 0", what is nearer than "below 0.35"
+// (which also catches part of the arm, so the stencil is better).
+std::atomic<float> g_gunScale{2.4f}, g_gunBelow{0.35f};
+std::atomic<int> g_gunMask{32};
+// "save N": when N changes, both eyes are written to eye_left.bmp and eye_right.bmp next to the
+// DLL (a window screenshot of the game can mix two frames).
+std::atomic<int> g_saveRequest{0};
+int g_saved = 0;
 
 void ReadTuning() {
     static FILETIME lastWrite{};
@@ -236,10 +286,28 @@ void ReadTuning() {
     char text[256] = {};
     fread(text, 1, sizeof(text) - 1, f);
     fclose(f);
-    float strength = 1.0f, minDistance = 0.25f, debug = 0.0f, fill = 1.0f, show = 0.0f, hold = 0.0f;
+    float strength = 1.0f, minDistance = 0.25f, debug = 0.0f, fill = 1.0f, show = 0.0f, hold = 0.0f, bias = 0.0f;
+    int save = 0;
     if (const char* s = std::strstr(text, "hold"))
         sscanf_s(s + 4, "%f", &hold);
     g_hold = hold > 0.0f;
+    if (const char* s = std::strstr(text, "bias"))
+        sscanf_s(s + 4, "%f", &bias);
+    g_bias = std::clamp(bias, -1.0f, 1.0f);
+    if (const char* s = std::strstr(text, "save"))
+        sscanf_s(s + 4, "%d", &save);
+    g_saveRequest = save;
+    float gun = 2.4f, below = 0.35f;
+    if (const char* s = std::strstr(text, "gun"))
+        sscanf_s(s + 3, "%f", &gun);
+    if (const char* s = std::strstr(text, "below"))
+        sscanf_s(s + 5, "%f", &below);
+    g_gunScale = std::max(gun, 0.1f);
+    g_gunBelow = below;
+    int mask = 32;
+    if (const char* s = std::strstr(text, "mask"))
+        sscanf_s(s + 4, "%d", &mask);
+    g_gunMask = mask & 0xFF;
     if (const char* s = std::strstr(text, "strength"))
         sscanf_s(s + 8, "%f", &strength);
     if (const char* s = std::strstr(text, "min"))
@@ -252,12 +320,83 @@ void ReadTuning() {
         sscanf_s(s + 4, "%f", &show);
     g_strength = strength;
     g_minDistance = minDistance;
-    g_debugView = debug > 0.0f;
+    g_debugView = debug;
     g_fillMode = fill;
     g_showRight = show > 0.0f;
-    Log("Depth 3D: strength %.2f, nearest %.2f m, gaps %s, depth view %s, desktop shows the %s eye", strength,
-        minDistance, fill > 1.0f ? "mirrored and softer" : fill > 0.0f ? "mirrored" : "stretched",
-        debug > 0.0f ? "on" : "off", show > 0.0f ? "right" : "left");
+    Log("Depth 3D: strength %.2f, nearest %.2f m, gaps %s, depth view %.0f, desktop shows the %s eye, bias %.2f, "
+        "gun (%s) distances times %.2f",
+        strength, minDistance, fill > 1.0f ? "mirrored and softer" : fill > 0.0f ? "mirrored" : "stretched", debug,
+        show > 0.0f ? "right" : "left", g_bias.load(),
+        g_gunMask.load() ? "stencil bits" : "nearer than the cut-off", g_gunScale.load());
+}
+
+// Writes a 4-byte-per-pixel texture to a top-down 32-bit BMP (blue, green, red, alpha).
+bool SaveBmp(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture, const wchar_t* name) {
+    D3D11_TEXTURE2D_DESC desc;
+    texture->GetDesc(&desc);
+    bool rgba;
+    switch (desc.Format) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: rgba = true; break;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: rgba = false; break;
+    default: return false;
+    }
+    D3D11_TEXTURE2D_DESC sd = desc;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.BindFlags = 0;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    sd.MiscFlags = 0;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.SampleDesc = {1, 0};
+    ID3D11Texture2D* staging = nullptr;
+    if (desc.SampleDesc.Count > 1 || FAILED(device->CreateTexture2D(&sd, nullptr, &staging)))
+        return false;
+    context->CopySubresourceRegion(staging, 0, 0, 0, 0, texture, 0, nullptr);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    bool ok = false;
+    if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+        wchar_t path[MAX_PATH];
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&SaveBmp), &self);
+        GetModuleFileNameW(self, path, MAX_PATH);
+        if (wchar_t* slash = wcsrchr(path, L'\\'))
+            wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), name);
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path, L"wb") == 0 && f) {
+            const uint32_t rowBytes = desc.Width * 4, imageBytes = rowBytes * desc.Height;
+            BITMAPFILEHEADER fh{};
+            BITMAPINFOHEADER ih{};
+            fh.bfType = 0x4D42;
+            fh.bfOffBits = sizeof(fh) + sizeof(ih);
+            fh.bfSize = fh.bfOffBits + imageBytes;
+            ih.biSize = sizeof(ih);
+            ih.biWidth = static_cast<LONG>(desc.Width);
+            ih.biHeight = -static_cast<LONG>(desc.Height);
+            ih.biPlanes = 1;
+            ih.biBitCount = 32;
+            ih.biSizeImage = imageBytes;
+            fwrite(&fh, sizeof(fh), 1, f);
+            fwrite(&ih, sizeof(ih), 1, f);
+            std::vector<uint8_t> row(rowBytes);
+            for (UINT y = 0; y < desc.Height; ++y) {
+                std::memcpy(row.data(), static_cast<const uint8_t*>(mapped.pData) + y * mapped.RowPitch, rowBytes);
+                if (rgba)
+                    for (UINT x = 0; x < rowBytes; x += 4)
+                        std::swap(row[x], row[x + 2]);
+                fwrite(row.data(), 1, rowBytes, f);
+            }
+            fclose(f);
+            ok = true;
+        }
+        context->Unmap(staging, 0);
+    }
+    staging->Release();
+    return ok;
 }
 
 struct Resources {
@@ -278,6 +417,7 @@ struct Resources {
     ID3D11Texture2D* depthFor = nullptr;  // not referenced; compared only
     ID3D11Texture2D* depthCopy = nullptr;
     ID3D11ShaderResourceView* depthView = nullptr;
+    ID3D11ShaderResourceView* stencilView = nullptr;  // null when the depth has no stencil
     std::unordered_map<ID3D11Texture2D*, ID3D11RenderTargetView*> targets;
     bool held = false;  // the last frame was made from held copies
 } g_res;
@@ -396,6 +536,7 @@ bool PrepareDepth(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Text
         return true;  // held: keep the copy as it is
     if (depth != g_res.depthFor || (inPlace == (g_res.depthCopy != nullptr))) {
         SafeRelease(g_res.depthView);
+        SafeRelease(g_res.stencilView);
         SafeRelease(g_res.depthCopy);
         g_res.depthFor = nullptr;
         ID3D11Texture2D* source = depth;
@@ -422,9 +563,13 @@ bool PrepareDepth(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Text
             SafeRelease(g_res.depthCopy);
             return false;
         }
+        // The stencil too, where there is one: BF3 may mark what it draws in it.
+        vd.Format = StencilReadFormat(typeless);
+        if (vd.Format == DXGI_FORMAT_UNKNOWN || FAILED(device->CreateShaderResourceView(source, &vd, &g_res.stencilView)))
+            g_res.stencilView = nullptr;
         g_res.depthFor = depth;
-        Log("Depth 3D: reading depth %ux%u format %d, %u samples, %s", desc.Width, desc.Height, desc.Format,
-            desc.SampleDesc.Count, inPlace ? "in place" : "from a copy");
+        Log("Depth 3D: reading depth %ux%u format %d, %u samples, %s%s", desc.Width, desc.Height, desc.Format,
+            desc.SampleDesc.Count, inPlace ? "in place" : "from a copy", g_res.stencilView ? ", with stencil" : "");
     }
     if (g_res.depthCopy)
         context->CopyResource(g_res.depthCopy, depth);
@@ -456,7 +601,7 @@ struct SavedState {
     ID3D11GeometryShader* gs = nullptr;
     ID3D11InputLayout* layout = nullptr;
     D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-    ID3D11ShaderResourceView* srvs[2] = {};
+    ID3D11ShaderResourceView* srvs[3] = {};
     ID3D11SamplerState* sampler = nullptr;
     ID3D11Buffer* cb = nullptr;
     ID3D11BlendState* blend = nullptr;
@@ -474,7 +619,7 @@ struct SavedState {
         c->GSGetShader(&gs, nullptr, nullptr);
         c->IAGetInputLayout(&layout);
         c->IAGetPrimitiveTopology(&topology);
-        c->PSGetShaderResources(0, 2, srvs);
+        c->PSGetShaderResources(0, 3, srvs);
         c->PSGetSamplers(0, 1, &sampler);
         c->PSGetConstantBuffers(0, 1, &cb);
         c->OMGetBlendState(&blend, blendFactor, &sampleMask);
@@ -489,7 +634,7 @@ struct SavedState {
         c->GSSetShader(gs, nullptr, 0);
         c->IASetInputLayout(layout);
         c->IASetPrimitiveTopology(topology);
-        c->PSSetShaderResources(0, 2, srvs);
+        c->PSSetShaderResources(0, 3, srvs);
         c->PSSetSamplers(0, 1, &sampler);
         c->PSSetConstantBuffers(0, 1, &cb);
         c->OMSetBlendState(blend, blendFactor, sampleMask);
@@ -501,8 +646,8 @@ struct SavedState {
         SafeRelease(ps);
         SafeRelease(gs);
         SafeRelease(layout);
-        SafeRelease(srvs[0]);
-        SafeRelease(srvs[1]);
+        for (ID3D11ShaderResourceView*& v : srvs)
+            SafeRelease(v);
         SafeRelease(sampler);
         SafeRelease(cb);
         SafeRelease(blend);
@@ -562,35 +707,45 @@ bool Render(ID3D11Device* device, ID3D11Texture2D* back, DXGI_FORMAT targetForma
         saved.Save(context);
         D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(g_res.colorFor.Width),
                                 static_cast<float>(g_res.colorFor.Height), 0.0f, 1.0f};
-        ID3D11ShaderResourceView* views[2] = {g_res.colorView, g_res.depthView};
+        ID3D11ShaderResourceView* views[3] = {g_res.colorView, g_res.depthView, g_res.stencilView};
         context->RSSetViewports(1, &viewport);
         context->VSSetShader(g_res.vs, nullptr, 0);
         context->PSSetShader(g_res.ps[depthDesc.SampleDesc.Count > 1 ? 1 : 0], nullptr, 0);
         context->GSSetShader(nullptr, nullptr, 0);
         context->IASetInputLayout(nullptr);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->PSSetShaderResources(0, 2, views);
+        context->PSSetShaderResources(0, 3, views);
         context->PSSetSamplers(0, 1, &g_res.sampler);
         context->PSSetConstantBuffers(0, 1, &g_res.params);
         context->OMSetBlendState(g_res.blend, nullptr, 0xFFFFFFFF);
         context->OMSetDepthStencilState(g_res.noDepth, 0);
         context->RSSetState(g_res.raster);
-        for (const Eye& eye : eyes) {
+        for (int e = 0; e < 2; ++e) {
+            const Eye& eye = eyes[e];
             ID3D11RenderTargetView* target = TargetView(device, eye.target, targetFormat);
             if (!target) {
                 ok = false;
                 break;
             }
-            Params p{eye.shift * g_strength.load(), model.nearPlane, model.depthScale, g_minDistance.load(),
+            const float share = e == 0 ? 1.0f + g_bias.load() : 1.0f - g_bias.load();
+            Params p{eye.shift * share * g_strength.load(), model.nearPlane, model.depthScale, g_minDistance.load(),
                      static_cast<float>(depthDesc.Width), static_cast<float>(depthDesc.Height),
-                     g_debugView.load() ? 1.0f : 0.0f, g_fillMode.load()};
+                     g_debugView.load(), g_fillMode.load(), g_gunScale.load(), g_gunBelow.load(),
+                     static_cast<float>(g_gunMask.load())};
             context->UpdateSubresource(g_res.params, 0, nullptr, &p, 0, 0);
             context->OMSetRenderTargets(1, &target, nullptr);
             context->Draw(3, 0);
         }
-        ID3D11ShaderResourceView* none[2] = {};
-        context->PSSetShaderResources(0, 2, none);
+        ID3D11ShaderResourceView* none[3] = {};
+        context->PSSetShaderResources(0, 3, none);
         saved.Restore(context);
+        if (ok && g_saveRequest.load() != g_saved) {
+            g_saved = g_saveRequest.load();
+            bool written = SaveBmp(device, context, eyes[0].target, L"eye_left.bmp") &&
+                           SaveBmp(device, context, eyes[1].target, L"eye_right.bmp");
+            Log("Depth 3D: eyes %s (save %d)",
+                written ? "written to eye_left.bmp and eye_right.bmp" : "could not be written", g_saved);
+        }
     }
     context->Release();
     depth->Release();
