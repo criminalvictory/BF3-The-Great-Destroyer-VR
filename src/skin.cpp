@@ -162,6 +162,13 @@ bool g_finalSeen = false;
 // Draws to hide. Published whole and never freed (a handful per hunt), so draw threads can read
 // it without a lock.
 std::atomic<const DrawSet*> g_hidden{nullptr};
+// First-person draws: BF3 marks the gun and arms with stencil 32, set as the stencil reference of
+// the draws that make them. The gun's attachments (scope, magazine, foregrip) are rigid meshes, not
+// skinned, so a hunt for one of them ("hunt.txt" saying "first person") picks from these instead.
+constexpr UINT kFirstPersonStencil = 32;
+std::unordered_map<DrawKey, UINT, DrawKeyHash> g_firstPerson;  // seen while research is on
+std::atomic<bool> g_huntFirstPerson{false};
+int g_huntOnly = -1;  // hunt.txt "only N"
 
 // ---- Hand shift ----
 constexpr DrawKey kGloves{13755, 15051, 0};  // from the hunt
@@ -175,6 +182,24 @@ constexpr HandDraw kHandDraws[] = {{kGloves, 55}, {{7617, 49995, 0}, 60}};
 constexpr UINT kGloveUploadSize = 4096;
 constexpr float kHandShift = 0.20f;  // metres up
 std::atomic<bool> g_handShift{false};
+
+// The gun's own colour pass (the draw hunt found it: hidden, the gun turned black), 59 bones in a
+// 4096-byte upload like the gloves'. Its bones carry the parts its animations move, the magazine
+// among them. weapon.txt next to the DLL shifts chosen ones ("0-29 shift 0 -0.3 0"), to find them.
+// Other soldiers' copies of the same gun are drawn with the same draw, their bones far out in the
+// world; only the one whose bones sit near the origin (the player's, in the body's own space) moves.
+constexpr DrawKey kWeapon{12768, 0, 0};
+constexpr UINT kWeaponBones = 59;
+constexpr float kFirstPersonReach = 5.0f;  // metres from the origin
+std::atomic<bool> g_weaponShift{false};  // weapon.txt names bones
+bool g_weaponSelected[64] = {};
+float g_weaponOffset[3] = {};
+std::atomic<UINT> g_weaponShifted{0}, g_weaponFar{0};
+// Parts of the gun drawn by draws of their own right after its body, with the body's bones still
+// bound (the magazine moved with none of the body's bones): they get the same shifted bones.
+thread_local bool t_weaponBonesBound = false;  // this thread's latest upload is the gun's
+std::mutex g_followMutex;
+std::unordered_map<DrawKey, UINT, DrawKeyHash> g_weaponFollowers;  // their draws, counted since the last log
 
 // A copy of this thread's latest bone upload, kept only while hand shift is on and only for
 // blocks the size of the gloves'.
@@ -267,6 +292,58 @@ void ReadSelection() {
     Log("Hands: selection now: %s, shifted by (%.2f, %.2f, %.2f)", all ? "all bones" : text, shift[0], shift[1],
         shift[2]);
 }
+void ReadWeaponSelection() {
+    static FILETIME lastWrite{};
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadWeaponSelection), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"weapon.txt");
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &info) ||
+        CompareFileTime(&info.ftLastWriteTime, &lastWrite) == 0)
+        return;
+    lastWrite = info.ftLastWriteTime;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f)
+        return;
+    char text[512] = {};
+    fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    float shift[3] = {};
+    if (char* s = std::strstr(text, "shift")) {
+        sscanf_s(s + 5, "%f %f %f", &shift[0], &shift[1], &shift[2]);
+        *s = 0;
+    }
+    bool selected[64] = {};
+    bool any = false;
+    for (const char* p = text; *p;) {
+        if (*p < '0' || *p > '9') {
+            ++p;
+            continue;
+        }
+        char* end = nullptr;
+        long a = std::strtol(p, &end, 10), b = a;
+        p = end;
+        if (*p == '-') {
+            b = std::strtol(p + 1, &end, 10);
+            p = end;
+        }
+        for (long k = a; k <= b && k < 64; ++k)
+            if (k >= 0)
+                selected[k] = any = true;
+    }
+    {
+        std::lock_guard lock(g_selMutex);
+        std::memcpy(g_weaponSelected, selected, sizeof(selected));
+        std::memcpy(g_weaponOffset, shift, sizeof(shift));
+    }
+    g_weaponShift = any;
+    Log("Weapon: bones %s shifted by (%.2f, %.2f, %.2f)", any ? text : "none", shift[0], shift[1], shift[2]);
+}
+
 thread_local ID3D11Buffer* t_shiftBuffer = nullptr;  // this thread's stand-in for BF3's buffer
 thread_local UINT t_shiftSize = 0;
 
@@ -528,7 +605,9 @@ void HandleUpload(const PendingMap& p) {
                 Inspect(data, p.size, true);
             // Every upload the gloves' size, not only those whose bones all passed as matrices:
             // only a third did (scaled bones break the row).
-            if (g_handShift.load(std::memory_order_relaxed) && p.size == kGloveUploadSize) {
+            t_weaponBonesBound = false;  // a new upload: whatever follows isn't the gun's part
+            if ((g_handShift.load(std::memory_order_relaxed) || g_weaponShift.load(std::memory_order_relaxed)) &&
+                p.size == kGloveUploadSize) {
                 t_upload.resource = p.resource;
                 t_upload.bytes.assign(data, data + p.size);
                 t_upload.bones = t_drawsSinceBones == 0 ? t_bones : BoneInfo{};
@@ -577,13 +656,24 @@ void Unmap(int which, ID3D11DeviceContext* ctx, ID3D11Resource* resource, UINT s
     g_origUnmap[which](ctx, resource, sub);
 }
 
-// Draws the gloves with a shifted copy of their bones: the copy goes into this thread's own
-// constant buffer, bound in the slot where BF3's buffer is, then BF3's is put back.
-bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, UINT bones) {
+// Draws the gloves (or with weapon set, the gun) with a shifted copy of their bones: the copy goes
+// into this thread's own constant buffer, bound in the slot where BF3's buffer is, then BF3's is
+// put back.
+bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, UINT bones,
+                 bool weapon = false) {
     const Upload& u = t_upload;
     if (!u.resource || u.bytes.empty()) {
         ++g_noCopy;
         return false;
+    }
+    if (weapon) {
+        // Bone 0's translation: the player's own gun is in the body's space, others' in the world.
+        const auto* first = reinterpret_cast<const float*>(u.bytes.data());
+        if (std::fabs(first[3]) > kFirstPersonReach || std::fabs(first[7]) > kFirstPersonReach ||
+            std::fabs(first[11]) > kFirstPersonReach) {
+            ++g_weaponFar;
+            return false;
+        }
     }
     ID3D11Buffer* bound[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
     ctx->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, bound);
@@ -624,21 +714,25 @@ bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
     // Only the selected bones (hands.txt). The gloves' palette is numbered as the selection is; the
     // second pass has a palette of its own, so its bones are picked by matching the selected
     // gloves bones' values (the same bone has the same matrix in both).
-    bool gloves = bones == kHandDraws[0].bones;
+    bool gloves = !weapon && bones == kHandDraws[0].bones;
     std::lock_guard lock(g_selMutex);
     if (gloves)
         g_selValues.clear();
+    const float* shift = weapon ? g_weaponOffset : g_shift;
     for (UINT k = 0; k < bones && k * 12 + 12 <= size / 4; ++k) {
         float* bone = m + k * 12;
-        bool selected = g_selectAll || (gloves ? k < 64 && g_selected[k] : MatchesSelected(bone));
+        bool selected = weapon ? k < 64 && g_weaponSelected[k]
+                               : g_selectAll || (gloves ? k < 64 && g_selected[k] : MatchesSelected(bone));
         if (!selected)
             continue;
         if (gloves && !g_selectAll)
             g_selValues.insert(g_selValues.end(), bone, bone + 12);
-        bone[3] += g_shift[0];  // translation (y is up in character space)
-        bone[7] += g_shift[1];
-        bone[11] += g_shift[2];
+        bone[3] += shift[0];  // translation (y is up in character space)
+        bone[7] += shift[1];
+        bone[11] += shift[2];
     }
+    if (weapon)
+        ++g_weaponShifted;
     g_origUnmap[which](ctx, t_shiftBuffer, 0);
 
     ctx->VSSetConstantBuffers(slot, 1, &t_shiftBuffer);
@@ -651,18 +745,50 @@ bool DrawShifted(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
 
 void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
     if (!g_research.load(std::memory_order_relaxed)) {
-        // Only the hands' own draws matter: a couple of comparisons, no lock.
+        // Only the hands' and the gun's own draws matter: a couple of comparisons, no lock.
         if (g_handShift.load(std::memory_order_relaxed)) {
             DrawKey key{count, start, base};
             for (const HandDraw& h : kHandDraws)
                 if (h.key == key && DrawShifted(which, ctx, count, start, base, h.bones))
                     return;
         }
+        if (g_weaponShift.load(std::memory_order_relaxed)) {
+            DrawKey key{count, start, base};
+            if (key == kWeapon) {
+                if (DrawShifted(which, ctx, count, start, base, kWeaponBones, true)) {
+                    t_weaponBonesBound = true;
+                    return;
+                }
+            } else if (t_weaponBonesBound && DrawShifted(which, ctx, count, start, base, kWeaponBones, true)) {
+                std::lock_guard lock(g_followMutex);
+                ++g_weaponFollowers[key];
+                return;
+            }
+        }
         g_origDrawIndexed[which](ctx, count, start, base);
         return;
     }
     bool skinned = t_drawsSinceBones < kSkinnedWithin;
     ++t_drawsSinceBones;
+    if (g_huntFirstPerson.load(std::memory_order_relaxed)) {
+        ID3D11DepthStencilState* state = nullptr;
+        UINT ref = 0;
+        ctx->OMGetDepthStencilState(&state, &ref);
+        if (state)
+            state->Release();
+        if (ref & kFirstPersonStencil) {
+            DrawKey key{count, start, base};
+            {
+                std::lock_guard lock(g_drawMutex);
+                ++g_firstPerson[key];
+                if (g_haveFinal && key == g_final)
+                    g_finalSeen = true;
+            }
+            const DrawSet* hidden = g_hidden.load(std::memory_order_acquire);
+            if (hidden && hidden->count(key))
+                return;
+        }
+    }
     if (skinned) {
         DrawKey key{count, start, base};
         UINT handBones = 0;
@@ -682,6 +808,9 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
             return;
         if (handBones && g_handShift.load(std::memory_order_relaxed) &&
             DrawShifted(which, ctx, count, start, base, handBones))
+            return;
+        if (key == kWeapon && g_weaponShift.load(std::memory_order_relaxed) &&
+            DrawShifted(which, ctx, count, start, base, kWeaponBones, true))
             return;
     } else if (g_handShift.load(std::memory_order_relaxed) && DrawKey{count, start, base} == kGloves) {
         ++g_notSkinned;  // no bone upload just before it: this pass reuses an earlier one
@@ -773,6 +902,26 @@ bool InstallHooks(void* const (&map)[2], void* const (&unmap)[2], void* const (&
 }
 
 void HuntStart() {
+    // hunt.txt next to the DLL saying "first person": hunt among the first-person draws instead.
+    {
+        wchar_t path[MAX_PATH];
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&HuntStart), &self);
+        GetModuleFileNameW(self, path, MAX_PATH);
+        if (wchar_t* slash = wcsrchr(path, L'\\'))
+            wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"hunt.txt");
+        char text[64] = {};
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path, L"r") == 0 && f) {
+            fread(text, 1, sizeof(text) - 1, f);
+            fclose(f);
+        }
+        g_huntFirstPerson = std::strstr(text, "first person") != nullptr;
+        g_huntOnly = -1;
+        if (const char* s = std::strstr(text, "only"))
+            sscanf_s(s + 4, "%d", &g_huntOnly);
+    }
     // The hunt picks from the skinned draws counted while research is on.
     if (!g_research.exchange(true)) {
         Log("Draw hunt: research turned on to count skinned draws; press F15 again in a few seconds");
@@ -787,7 +936,8 @@ void HuntStart() {
         Log("Draw hunt: stopped; nothing hidden");
         return;
     }
-    std::vector<std::pair<DrawKey, UINT>> seen(g_skinned.begin(), g_skinned.end());
+    const auto& pool = g_huntFirstPerson.load() ? g_firstPerson : g_skinned;
+    std::vector<std::pair<DrawKey, UINT>> seen(pool.begin(), pool.end());
     std::sort(seen.begin(), seen.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
     g_huntRange.clear();
     for (const auto& [key, count] : seen)
@@ -799,9 +949,19 @@ void HuntStart() {
         Log("Draw hunt: no skinned draws seen yet");
         return;
     }
+    // hunt.txt "first person only N": hide just the N-th (from 0, most drawn first), to map each.
+    if (g_huntFirstPerson.load() && g_huntOnly >= 0) {
+        for (size_t i = 0; i < g_huntRange.size(); ++i)
+            Log("Draw hunt: first-person draw %zu: index count %u, start %u, base %d", i, g_huntRange[i].indexCount,
+                g_huntRange[i].startIndex, g_huntRange[i].baseVertex);
+        size_t n = std::min(static_cast<size_t>(g_huntOnly), g_huntRange.size() - 1);
+        PublishHidden(g_huntRange.begin() + n, g_huntRange.begin() + n + 1);
+        Log("Draw hunt: hiding only first-person draw %zu", n);
+        return;
+    }
     PublishHidden(g_huntRange.begin(), g_huntRange.begin() + (g_huntRange.size() + 1) / 2);
-    Log("Draw hunt: %zu skinned draw kinds; hiding the first %zu", g_huntRange.size(),
-        (g_huntRange.size() + 1) / 2);
+    Log("Draw hunt: %zu %s draw kinds; hiding the first %zu", g_huntRange.size(),
+        g_huntFirstPerson.load() ? "first-person" : "skinned", (g_huntRange.size() + 1) / 2);
 }
 
 void HuntAnswer(bool vanished) {
@@ -835,6 +995,7 @@ void Probe() {
     if (now - lastRead >= 300) {
         lastRead = now;
         ReadSelection();
+        ReadWeaponSelection();
     }
     // Every upload size is scanned for one frame (this call to the next) every two seconds.
     bool scanAll = now - lastFullScan >= 2000;
@@ -860,6 +1021,15 @@ void Probe() {
                                  b * 256 + 255, scanned, matched);
         }
         Log("First-person FOV: uploads by size:%s", sizes);
+    }
+    if (g_weaponShift.load()) {
+        Log("Weapon: last second's gun draws: %u shifted, %u left alone (another soldier's)",
+            g_weaponShifted.exchange(0), g_weaponFar.exchange(0));
+        std::lock_guard lock(g_followMutex);
+        for (const auto& [key, n] : g_weaponFollowers)
+            Log("Weapon:   with the gun's bones still bound: index count %u, start %u, base %d: %u draws",
+                key.indexCount, key.startIndex, key.baseVertex, n);
+        g_weaponFollowers.clear();
     }
     if (g_handShift.load())
         Log("Hands: last second's gloves draws: %u shifted, %u without a fresh copy, %u with the buffer not bound, "
