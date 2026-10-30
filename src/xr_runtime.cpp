@@ -33,6 +33,7 @@
 #include "fov.h"
 #include "bodies.h"
 #include "god.h"
+#include "hands.h"
 #include "input.h"
 #include "log.h"
 #include "skin.h"
@@ -569,7 +570,10 @@ void PollHotkeys() {
     }
     float wideFov = config::Get().renderFovDeg * kPi / 180.0f;
     camera::SetRenderFov(wideFov);
-    skin::SetProjectionFix(wideFov > 0.0f ? camera::SourceFov() : 0.0f, wideFov);
+    // The gun and arms are rescaled only while the world really is drawn wide; with the render
+    // camera lost the game draws its own FOV, and the gun has to match it.
+    bool wide = wideFov > 0.0f && std::fabs(camera::RenderedFov() - wideFov) < 0.035f;
+    skin::SetProjectionFix(wide ? camera::SourceFov() : 0.0f, wideFov);
     // End: god mode on/off.
     if (KeyPressed(VK_END))
         god::Toggle();
@@ -587,9 +591,9 @@ void PollHotkeys() {
         finder::StartAngles();
     if (KeyPressed(VK_F12))
         finder::StartSkeleton();
-    // Insert: draw the gloves 20 cm higher, the first test of moving the hands.
+    // Insert: free hands (the gun in the right hand, the left hand on its own) or the game's own.
     if (KeyPressed(VK_INSERT))
-        skin::ToggleHandShift();
+        hands::Toggle();
     // Pause: the skinning research hooks on/off (off by default: they cost frame rate).
     if (KeyPressed(VK_PAUSE))
         skin::ToggleResearch();
@@ -764,9 +768,17 @@ XrSwapchainSubImage FullImage(const Swapchain& sc) {
 
 // The game renders a symmetric frustum from its own FOV setting, not the headset's.
 // Telling the compositor exactly what was rendered lets it place the image correctly.
+// With the wider view on, that's the angle the game really drew the last frame with: when the
+// render camera was lost (2026-10-30, after the opening ride) the game drew its own 55 degrees,
+// and showing that over the wide angle magnified everything 1.8x (blurry, gun and arms big).
 XrFovf GameFov() {
     const config::Settings& s = config::Get();
-    float halfV = (s.renderFovDeg > 0.0f ? s.renderFovDeg : s.gameVerticalFovDeg) * 0.5f * kPi / 180.0f;
+    float fullV = s.gameVerticalFovDeg * kPi / 180.0f;
+    if (s.renderFovDeg > 0.0f) {
+        float rendered = camera::RenderedFov();
+        fullV = rendered > 0.0f ? rendered : s.renderFovDeg * kPi / 180.0f;
+    }
+    float halfV = fullV * 0.5f;
     float halfH = std::atan(std::tan(halfV) * g_scWidth / g_scHeight);
     return {-halfH, halfH, halfV, -halfV};
 }
@@ -878,6 +890,30 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     const XrVector3f& a = views[kLeftEye].pose.position;
     const XrVector3f& b = views[kRightEye].pose.position;
     float ipd = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+    {
+        XrPosef head = views[kLeftEye].pose;
+        head.position = {(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2};
+        hands::Update(head);
+    }
+    // weapon.txt "watch": where the head and hands are, for lining the game's arms up with them.
+    if (skin::Watching()) {
+        static ULONGLONG lastPoses = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - lastPoses >= 1000) {
+            lastPoses = now;
+            const XrQuaternionf& h = views[kLeftEye].pose.orientation;
+            char hands[2][128] = {"untracked", "untracked"};
+            for (int i = 0; i < 2; ++i) {
+                XrPosef p;
+                if (input::HandPose(i, p))
+                    snprintf(hands[i], sizeof(hands[i]), "(%.3f %.3f %.3f) q (%.3f %.3f %.3f %.3f)", p.position.x,
+                             p.position.y, p.position.z, p.orientation.x, p.orientation.y, p.orientation.z,
+                             p.orientation.w);
+            }
+            Log("Poses: head (%.3f %.3f %.3f) q (%.3f %.3f %.3f %.3f); left hand %s; right hand %s",
+                (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2, h.x, h.y, h.z, h.w, hands[0], hands[1]);
+        }
+    }
     int eye = g_nextEye;
     bool mono = g_stereoTest == kTestMono;
     bool fromDepth = g_stereoTest == kTestDepth;

@@ -62,6 +62,11 @@ void SetRenderFov(float radians);
 // The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
 float SourceFov();
 
+// The FOV (radians) the game really drew the last frame with: the wider one while the render view
+// is watched and widened, the game's own while it isn't (BF3 moves the render camera in memory,
+// and after the opening ride the saved pointer chain stopped finding it). 0 if unknown.
+float RenderedFov();
+
 // How many times the game built its main render camera since the last call.
 uint32_t TakeCameraBuilds();
 

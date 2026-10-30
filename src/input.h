@@ -18,6 +18,9 @@ void Sync(XrSession session, XrSpace space, XrTime time);
 // The right controller's aim pose from the last Sync, if it's being tracked.
 bool AimPose(XrPosef& out);
 
+// A hand's grip pose (0 left, 1 right) from the last Sync, in the same space, if it's tracked.
+bool HandPose(int hand, XrPosef& out);
+
 // X tapped (F16 from tools/drawhunt.ps1 does the same): the magazine out, dropping to the floor,
 // or with it out a new one in. With a gun the mod doesn't know the magazine of, the game's reload.
 void MagazineTap();

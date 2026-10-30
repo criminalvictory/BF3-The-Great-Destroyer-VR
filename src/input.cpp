@@ -32,6 +32,12 @@ XrAction g_reload = XR_NULL_HANDLE;
 XrAction g_use = XR_NULL_HANDLE;
 XrAction g_sprint = XR_NULL_HANDLE;
 XrSpace g_aimSpace = XR_NULL_HANDLE;
+// Both hands' grip poses (left 0, right 1), for drawing the hands where the controllers are.
+XrAction g_hand = XR_NULL_HANDLE;
+XrPath g_handPaths[2] = {};
+XrSpace g_handSpaces[2] = {};
+XrPosef g_handPoses[2] = {};
+bool g_handTracked[2] = {};
 
 bool g_ready = false;
 bool g_aimTracked = false;
@@ -99,11 +105,14 @@ bool MakeAction(XrActionType type, const char* name, const char* label, XrAction
     return Check(xrCreateAction(g_set, &ci, &out), name);
 }
 
-// A runtime may not know every profile; that profile is skipped and the others still apply.
+// A runtime may not know every profile; that profile is skipped and the others still apply. Every
+// profile also gets both hands' grip poses.
 bool Suggest(const char* profile, const std::vector<std::pair<XrAction, const char*>>& bindings) {
     std::vector<XrActionSuggestedBinding> suggested;
     for (const auto& b : bindings)
         suggested.push_back({b.first, Path(b.second)});
+    suggested.push_back({g_hand, Path("/user/hand/left/input/grip/pose")});
+    suggested.push_back({g_hand, Path("/user/hand/right/input/grip/pose")});
     XrInteractionProfileSuggestedBinding info{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     info.interactionProfile = Path(profile);
     info.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
@@ -256,6 +265,16 @@ bool Init(XrInstance instance, XrSession session) {
     if (!Check(xrCreateActionSet(instance, &si, &g_set), "xrCreateActionSet"))
         return false;
 
+    g_handPaths[0] = Path("/user/hand/left");
+    g_handPaths[1] = Path("/user/hand/right");
+    XrActionCreateInfo hand{XR_TYPE_ACTION_CREATE_INFO};
+    hand.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    strcpy_s(hand.actionName, "hand");
+    strcpy_s(hand.localizedActionName, "Hands");
+    hand.countSubactionPaths = 2;
+    hand.subactionPaths = g_handPaths;
+    if (!Check(xrCreateAction(g_set, &hand, &g_hand), "hand"))
+        return false;
     bool ok = MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim", "Aim (right hand)", g_aim) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "fire", "Fire", g_fire) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "aim_down_sights", "Aim down sights", g_ads) &&
@@ -283,6 +302,14 @@ bool Init(XrInstance instance, XrSession session) {
     space.poseInActionSpace.orientation.w = 1.0f;
     if (!Check(xrCreateActionSpace(session, &space, &g_aimSpace), "xrCreateActionSpace"))
         return false;
+    for (int i = 0; i < 2; ++i) {
+        XrActionSpaceCreateInfo hs{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        hs.action = g_hand;
+        hs.subactionPath = g_handPaths[i];
+        hs.poseInActionSpace.orientation.w = 1.0f;
+        if (!Check(xrCreateActionSpace(session, &hs, &g_handSpaces[i]), "xrCreateActionSpace (hand)"))
+            return false;
+    }
 
     g_ready = true;
     Log("Controllers: ready");
@@ -319,6 +346,14 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT)) {
         g_aimPose = location.pose;
         g_aimTracked = true;
+    }
+    for (int i = 0; i < 2; ++i) {
+        XrSpaceLocation hand{XR_TYPE_SPACE_LOCATION};
+        g_handTracked[i] = XR_SUCCEEDED(xrLocateSpace(g_handSpaces[i], space, time, &hand)) &&
+                           (hand.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+                           (hand.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
+        if (g_handTracked[i])
+            g_handPoses[i] = hand.pose;
     }
 
     if (!GameHasFocus()) {
@@ -397,6 +432,13 @@ bool AimPose(XrPosef& out) {
     if (!g_aimTracked)
         return false;
     out = g_aimPose;
+    return true;
+}
+
+bool HandPose(int hand, XrPosef& out) {
+    if (hand < 0 || hand > 1 || !g_handTracked[hand])
+        return false;
+    out = g_handPoses[hand];
     return true;
 }
 

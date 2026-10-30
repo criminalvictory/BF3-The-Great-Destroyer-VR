@@ -50,4 +50,29 @@ bool RifleInHand();
 // Every frame on the render thread: moves the dropped magazine.
 void Update();
 
+// weapon.txt says "watch": research logs are wanted (bones, the gun's matrices, poses).
+bool Watching();
+
+// The first-person view-projection BF3 uploaded last (rows as uploaded, before the wide-view
+// rescale): in the space the arms and gun are drawn in, and in the world. Both carry the eye's
+// position and the view's axes; their difference is where that space sits in the world.
+bool FirstPersonViews(float (&arms)[16], float (&world)[16]);
+
+// Free hands (hands.cpp): where to draw the gun and the left hand this frame. Matrices are three
+// rows, rotation | translation, from the gun's model space / the gloves' bind space into the
+// arms' space.
+struct HandTargets {
+    bool gun = false, left = false;  // which of these is tracked
+    float gunPose[12] = {};
+    float leftPose[12] = {};
+    float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point, in the arms' space
+    float origin[3] = {};  // the arms' space's origin in the world (it moves in whole metres)
+    float floor = 0.0f;    // the ground's height in the arms' space
+};
+void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
+
+// Where the game's own right hand holds the gun, in the gun's model space (from the hand's and the
+// gun's bones as the game animates them). False until both have been drawn.
+bool GunGrip(float* point);
+
 }

@@ -397,9 +397,16 @@ DWORD WINAPI WatchThread(LPVOID) {
         // A camera block often fails validation for a moment while BF3 rewrites it. Keep the
         // breakpoint on it for up to a second rather than re-arming every thread each flicker;
         // the handler checks the block again before every write anyway.
+        // The render and cull cameras' chain goes through memory BF3 reuses every frame: it
+        // resolves to something else about one read in eight (sampled 2026-10-30), and once,
+        // after the opening ride, for good, which lost the wide view (the game drew 55 degrees).
+        // The cameras themselves stay put for minutes, so those keep their breakpoint for as long
+        // as the block still holds a camera transform.
         for (int i = 0; i < kSlots; ++i) {
             if (desired[i] || !current[i]) {
                 missing[i] = 0;
+            } else if (i != kWeaponSlot && LooksValid(current[i])) {
+                desired[i] = current[i];
             } else if (++missing[i] < 20) {
                 desired[i] = current[i];
             }
@@ -577,6 +584,17 @@ bool ProjectionDepth(float& nearPlane, float& depthScale) {
 float SourceFov() {
     float fov = 0.0f;
     return g_fovSource && SafeRead(g_fovSource, &fov, sizeof(fov)) && LooksLikeFov(fov) ? fov : 0.0f;
+}
+
+float RenderedFov() {
+    // The render view's projection says what the last frame was drawn with. With the render view
+    // not watched, nothing widens it: the game draws its own FOV.
+    if (uintptr_t render = g_slots[0].load()) {
+        float scale = 0.0f;
+        if (SafeRead(render + kProjectionFromTransform, &scale, sizeof(scale)) && scale > 0.05f && scale < 20.0f)
+            return 2.0f * std::atan(1.0f / scale);
+    }
+    return SourceFov();
 }
 
 void SetTestCopies(const std::vector<uintptr_t>& copies) {
