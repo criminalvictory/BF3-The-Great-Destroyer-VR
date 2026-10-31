@@ -762,6 +762,7 @@ void ReadWeaponSelection() {
     //   "hudskip 10-19 40"   those HUD draws of each frame left out (overlay.cpp), to tell which is which
     //   "hudskiptex 64x32"   the HUD draws with a texture that size left out
     //   "orangemarkers 1"    the enemies' orange markers left on (taken off by default: overlay.cpp)
+    //   "crosshair 1"        the game's own crosshair left on (taken off by default: overlay.cpp)
     //   "lensflare 1"        the sun's lens flare ghost left on (taken off by default: shaders.cpp);
     //                        "flareps 1a2b..." more of its pixel shaders by checksum (as "tail" logs them)
     //   "fingertest 1"       the glove's trigger finger drawn as if the trigger were pulled (nothing fires)
@@ -785,6 +786,7 @@ void ReadWeaponSelection() {
     uint32_t hudSkipTex[4] = {};
     int keepOrange = 0;
     int keepFlare = 0;
+    int keepCrosshair = 0;
     uint64_t flarePs[8] = {};
     int flarePsCount = 0;
     float steerCone[2] = {35.0f, 65.0f};
@@ -828,6 +830,12 @@ void ReadWeaponSelection() {
         if (const char* om = std::strstr(line, "orangemarkers")) {
             keepOrange = 1;
             sscanf_s(om + 13, "%d", &keepOrange);
+            line = next;
+            continue;
+        }
+        if (const char* ch = std::strstr(line, "crosshair")) {
+            keepCrosshair = 1;
+            sscanf_s(ch + 9, "%d", &keepCrosshair);
             line = next;
             continue;
         }
@@ -1116,6 +1124,7 @@ void ReadWeaponSelection() {
     overlay::SetHudSkipTextures(hudSkipTex);
     overlay::SetKeepOrange(keepOrange != 0);
     shaders::SetLensFlare(keepFlare != 0, flarePs, flarePsCount);
+    overlay::SetKeepCrosshair(keepCrosshair != 0);
     hands::SetSteerCone(steerCone[0], steerCone[1]);
     input::SetTriggerTest(std::clamp(fingerTest, 0.0f, 1.0f));
     effects::SetCasings(casings != 0, casingReach[0], casingReach[1]);

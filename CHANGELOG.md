@@ -36,6 +36,17 @@ the ring gone and the lens blobs kept; a relaxed left hand not grabbing or stick
 - **The camera following the right controller**: a stray F4 had flipped the aim's direction (saved).
   F2, F3, F4 and Scroll Lock now need Ctrl, and the log warns if the direction is flipped.
 
+- **The game's own crosshair is gone** (the user: "I still see the crosshairs when I take damage"):
+  four faint ticks round the middle of the view, hard to see in the mirror, caught in the headset's
+  own pictures while being shot at. They are four HUD quads on a 128x64 compressed sheet nothing else
+  in the HUD uses, now skipped (weapon.txt `crosshair 1` keeps them). Confirmed gone in the headset.
+- **The left hand on the charging handle** refitted: the index and middle fingers open in a V round
+  the handle's shaft, nothing through anything (checked independently). Confirmed in the headset
+  ("came out perfect"), as was the right trigger finger.
+- **The magazine in the left hand** refitted at the user's palm width: the thumb lies along its side
+  instead of 11 mm inside it, the fingers round its front edge, the little finger under the base
+  plate, and the hand closes on it the frame it's taken. Not yet seen in the headset.
+
 ### Notes
 - The orange markers the user saw in a recording are only in recordings: OBS takes each frame before
   the mod takes them off. The headset's picture doesn't have them.

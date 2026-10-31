@@ -24,6 +24,8 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
 void FinishFrame(IDXGISwapChain* swap);
 // weapon.txt "orangemarkers 1": the enemies' orange markers left on.
 void SetKeepOrange(bool keep);
+// weapon.txt "crosshair 1": the game's own crosshair (four ticks round the view's middle) left on.
+void SetKeepCrosshair(bool keep);
 
 // From the Present hook: a new frame's pictures follow.
 void NewFrame();

@@ -77,13 +77,15 @@ float g_crossedWhere[3] = {}, g_crossedSize = 0.0f;  // the open squeeze's cross
 
 // The magazine in the left glove, from the gun's model space with it seated into the gloves' bind
 // space: its thin side against the palm, its top out above the thumb, its front along the fingers.
-// Fitted against the mesh dumps by the design's judge (holdfit2.cpp): no glove vertex more than
-// 2 mm into the magazine; the palm, thumb and the index, middle and ring fingertips on it; the glove
-// 19 mm or more clear of the gun all the way up the well; the hand's middle at (0.045 -0.140 0.425) in
-// the gun's space with it seated.
-float g_hold[12] = {0.639f, -0.633f, 0.437f, 0.2336f,  //
-                    0.748f, 0.380f,  -0.544f, 1.3486f,  //
-                    0.179f, 0.675f,  0.716f,  -0.0098f};
+// Refitted 2026-10-31 on the meshes with the glove posed as the game poses it (palm width 1.15, the
+// fingers and thumb as hands.cpp sets them on a magazine): the thumb and the ball of the thumb along
+// its left side, the index, middle and ring round its front edge, the little finger under the base
+// plate; no glove point more than 0.8 mm into it (the judge's earlier fit had the thumb 11 mm in);
+// the glove 17 mm or more clear of the gun all the way up the well; the hand's middle at
+// (0.047 -0.139 0.430) in the gun's space with it seated.
+float g_hold[12] = {0.48852f, -0.73548f, 0.46948f, 0.20951f,  //
+                    0.84399f, 0.26178f,  -0.46813f, 1.29586f,  //
+                    0.22140f, 0.62493f,  0.74862f,  -0.03828f};
 
 enum class State { kNone, kHand, kLine };
 State g_state = State::kNone;

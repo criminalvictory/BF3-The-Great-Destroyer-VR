@@ -27,6 +27,7 @@ namespace {
 // was. Blue markers, white text and red damage marks are left. weapon.txt "orangemarkers 1": keep
 // them.
 std::atomic<bool> g_keepOrange{false};
+std::atomic<bool> g_keepCrosshair{false};  // weapon.txt "crosshair 1": the game's crosshair left on (Draw)
 
 // Two passes: where the HUD made a pixel more orange (a mask, its mips made by the hardware), then
 // everything the HUD drew near that put back as it was: the markers' white rim and dark shadow
@@ -340,7 +341,9 @@ std::atomic<int> g_hudIndex{0};
 std::atomic<uint32_t> g_hudSkipTex[4] = {};  // width << 16 | height, 0 unused
 
 // The size of the pixel shader's first texture (width << 16 | height), 0 none.
-uint32_t FirstTextureSize(ID3D11DeviceContext* ctx) {
+uint32_t FirstTextureSize(ID3D11DeviceContext* ctx, DXGI_FORMAT* format = nullptr) {
+    if (format)
+        *format = DXGI_FORMAT_UNKNOWN;
     ID3D11ShaderResourceView* view = nullptr;
     ctx->PSGetShaderResources(0, 1, &view);
     if (!view)
@@ -353,6 +356,8 @@ uint32_t FirstTextureSize(ID3D11DeviceContext* ctx) {
         D3D11_TEXTURE2D_DESC td;
         texture->GetDesc(&td);
         size = td.Width << 16 | (td.Height & 0xFFFF);
+        if (format)
+            *format = td.Format;
         texture->Release();
     }
     if (resource)
@@ -816,6 +821,11 @@ void SetKeepOrange(bool keep) {
         Log("Overlay: the enemies' orange markers %s", keep ? "shown (orangemarkers 1)" : "taken off");
 }
 
+void SetKeepCrosshair(bool keep) {
+    if (g_keepCrosshair.exchange(keep) != keep)
+        Log("Overlay: the game's crosshair %s", keep ? "shown (crosshair 1)" : "taken off");
+}
+
 void NewFrame() {
     g_eyePictures.store(0, std::memory_order_relaxed);
     g_hudIndex.store(0, std::memory_order_relaxed);
@@ -926,6 +936,15 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
         for (const auto& skip : g_hudSkipTex)
             if (size && skip.load(std::memory_order_relaxed) == size)
                 return true;
+    }
+    // The game's own crosshair: four ticks round the middle of the view, each a 6-index quad on its
+    // 128x64 compressed sheet (found 2026-10-31 in the headset's own pictures while the user was shot
+    // at: faint against the sky, so hard to see in the mirror; the user's "crosshair when I take
+    // damage"). In 30 frames nothing else of the HUD drew with a texture that size and kind.
+    if (count == 6 && !g_keepCrosshair.load(std::memory_order_relaxed)) {
+        DXGI_FORMAT format;
+        if (FirstTextureSize(ctx, &format) == (128u << 16 | 64u) && format == DXGI_FORMAT_BC3_UNORM)
+            return true;
     }
     if (!eyeEffect)
         TakeBefore(ctx);  // the picture before the HUD, once a frame (the orange markers)

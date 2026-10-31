@@ -501,16 +501,23 @@ float FromGuard(const float* p, float* r = nullptr) {
 }
 
 // The left hand on the charging handle (the user: the index and middle fingers wrapped round the
-// handle's T bar, touching it, not near it). The hand's place on the gun was fitted from the mesh
-// dumps (tools/leverfit.cpp: the glove posed as below, palm down, fingers forward over the bar):
-// the bar sits inside the curled index and middle fingers, which touch its top, front, bottom and
-// back, either side of the shaft; the rest of the hand on the receiver's rear. While the handle is
-// held the glove is there, sliding back with it; it blends in from the tracked hand and back out.
-// The pull itself is measured from the hand (reload.cpp).
-constexpr float kOnLever[12] = {0.63300f, -0.38000f, -0.67500f, 0.24232f,  0.63900f, 0.74800f,
-                                0.17900f, -1.10752f, 0.43700f,  -0.54400f, 0.71600f, 0.43907f};
-constexpr float kLeverCurl[4] = {0.62f, 0.62f, 0.85f, 0.85f};  // index, middle (round the bar), ring, little
-constexpr float kLeverThumb = 0.35f, kLeverSpread = 0.4f;
+// handle's T bar, touching it, not near it; its shaft between them with room, through neither,
+// 2026-10-31). Fitted on the mesh dumps' surfaces (0.5 mm samples of both, the glove posed as below
+// at grip.txt's palm width 1.15): the index and middle fingers open in a V (kLeverApart, handpose's
+// apart: the index turned towards the thumb, the middle, ring and little away), each over its wing
+// of the T bar and down its front, its pad on the face that pulls (the middle's on the latch); the
+// body and latch between them 1.5 and 1.9 mm clear, the fingers 22.8 mm apart there. Neither the
+// handle into the glove nor the glove into it more than 0.2 mm, nor the receiver at any pull (checked
+// again independently). The wings sit 5-7 mm over the receiver: too little for the fingertips to curl
+// under them, so it's a shallow hook. While the handle is held the glove is there, sliding back with
+// it; it blends in from the tracked hand and back out. The pull itself is measured from the hand
+// (reload.cpp).
+constexpr float kOnLever[12] = {0.445276f, -0.368412f, -0.816090f, 0.358794f,  0.623634f, 0.781615f,
+                                -0.012581f, -1.056041f, 0.642503f,  -0.503339f, 0.577788f, 0.317216f};
+// Index, middle (to the touch on their wings: 0.01 more or less is 0.9 mm in or off), ring, little.
+constexpr float kLeverCurl[4] = {0.292f, 0.288f, 0.90f, 0.90f};
+constexpr float kLeverApart[4] = {16.4f, -15.6f, -14.4f, -16.8f};  // degrees towards the thumb (the V)
+constexpr float kLeverThumb = 0.30f, kLeverSpread = 0.4f;
 float g_lever = 0.0f;  // 0 the tracked hand, 1 on the handle
 
 // a and b (rotation | translation rows of the gloves' bind space into another) blended about a point p
@@ -564,8 +571,10 @@ void OnTheLever(skin::HandTargets& t, handpose::Fingers& fingers) {
     BlendAbout(t.leftPose, onHandle, g_lever, g_leftAnchor, blended);
     std::memcpy(t.leftPose, blended, sizeof(blended));
     Transform(t.leftPose, g_leftAnchor, t.leftWrist);
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 4; ++i) {
         fingers.curl[i] += (kLeverCurl[i] - fingers.curl[i]) * g_lever;
+        fingers.apart[i] += (kLeverApart[i] - fingers.apart[i]) * g_lever;
+    }
     fingers.thumb += (kLeverThumb - fingers.thumb) * g_lever;
     fingers.spread += (kLeverSpread - fingers.spread) * g_lever;
 }
@@ -1230,10 +1239,14 @@ void Update(const XrPosef& head) {
     const bool busy = holding || GetTickCount64() - g_seatedAt < 300;
     reload::Update(t.gun ? t.gunPose : nullptr, trackedLeft && !busy ? palm : nullptr, input::LeftTrigger(),
                    touching ? touch : nullptr);
-    // Round the magazine (the judge's fit: no finger into it), easing in and out like the handle's.
+    // Round the magazine (refitted 2026-10-31 on the meshes at the user's palm width 1.15: the thumb
+    // had gone 11 mm into it), easing out like the handle's; on the magazine at once the frame it's
+    // taken (eased in, the squeezed fist went through it for 4 frames).
+    if (magazine.took)
+        g_magFingers = 1.0f;
     g_magFingers += ((holding ? 1.0f : 0.0f) - g_magFingers) * 0.35f;
     if (t.left && g_magFingers > 0.001f) {
-        constexpr float kOnMag[4] = {0.50f, 0.35f, 0.35f, 0.35f}, kOnMagThumb = 0.30f, kOnMagSpread = 0.15f;
+        constexpr float kOnMag[4] = {0.46f, 0.36f, 0.36f, 0.58f}, kOnMagThumb = 0.40f, kOnMagSpread = 0.15f;
         for (int i = 0; i < 4; ++i)
             fingers.curl[i] += (kOnMag[i] - fingers.curl[i]) * g_magFingers;
         fingers.thumb += (kOnMagThumb - fingers.thumb) * g_magFingers;
@@ -1242,6 +1255,13 @@ void Update(const XrPosef& head) {
     if (t.left) {
         OnTheLever(t, fingers);
         handpose::Pose(fingers, g_leftWidth, t.leftFingers);
+        if (g_magFingers > 0.001f) {
+            // The thumb laid along the magazine's side: handpose's relaxed thumb sits about a
+            // centimetre in front of the palm, which held the palm off the magazine (or put the thumb
+            // through it). Opened 30 degrees it lies on it; eased in and out with the other fingers.
+            const float open[5] = {-30.0f * g_magFingers, 0.0f, 0.0f, 0.0f, 0.0f};
+            handpose::BendFurther(t.leftFingers, open);
+        }
         if (g_gripBlend > 0.0f && haveGame) {
             // The game's grip, its fingers moving a little with the controller's (less stiff: user,
             // 2026-10-30), relative to its palm bone; blended from the controller's own fingers.
