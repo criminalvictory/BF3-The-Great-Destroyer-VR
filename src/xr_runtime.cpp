@@ -1322,7 +1322,8 @@ void RenderFrame(IDXGISwapChain* swap) {
 namespace vr {
 
 void OnPresent(IDXGISwapChain* swap) {
-    overlay::NewFrame();  // the next frame's eye pictures follow
+    overlay::FinishFrame(swap);  // the HUD's done: the enemies' orange markers come off it
+    overlay::NewFrame();         // the next frame's eye pictures follow
     // Hotkeys and the camera tools work without a headset.
     PollHotkeys();
     {

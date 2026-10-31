@@ -23,10 +23,29 @@ self-test and the mod's own pictures, not yet in the headset.
 - **Stand-in hand** (weapon.txt `standin 1`): holds the rifle out in front while the right
   controller sleeps, so the gun, aim and effects can be tested with nobody in the headset; with the
   headset off the frame's work goes on headless. `standin 1 45` looks 45 degrees up (test shots into
-  the sky only), more numbers turn the aim and move the hold.
+  the sky only), more numbers turn the aim and move the hold. While the left controller sleeps too,
+  a stand-in left hand rests under the handguard, palm up, to see the left glove and forearm.
+- weapon.txt `hudskip 10-19 40`: those HUD draws of each frame left out, to tell which is which;
+  `hudskiptex 64x32` those with a texture that size. `tail` now also logs each HUD draw's
+  constants, textures and vertices.
+- **The right glove's trigger finger pulls with the trigger**: the game's own grip curls the index
+  further, up to 22 degrees with the trigger all the way in, in the gloves' colour pass and both
+  depth passes. The right hand's finger bones were mapped from the game's meshes (`handpose`:
+  `BendRightIndex`, checked offline with `handview hand=r`). weapon.txt `fingertest 1` shows it
+  without firing. Not yet seen in the headset.
+- **The enemies' orange markers are gone** (the user: they were the "crosshairs"; there is no centre
+  crosshair in the game). Their draws can't be told from the blue squad and objective markers (one
+  icon sheet, coloured inside the game's shader), so the picture is copied before the HUD is drawn,
+  and at the end of the frame everything the HUD drew within about 40 pixels of a pixel it made more
+  orange is put back as it was. The blue markers stay. It costs no measurable frame time (13.9 ms a
+  frame with it and without). weapon.txt `orangemarkers 1` keeps them.
 - `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
+- **The ACOG's reticle and red cable stand out more**: they're see-through, so they're drawn again on
+  themselves (the reticle five more times, the cable three), the strongest of three levels the user
+  compared in the headset. weapon.txt `scopeboost 12 2 129 1` tries other levels.
 - weapon.txt `scopetrace`: three frames of the scope's draws logged, each with the bones it was
-  drawn with and whether it moved with the gun. `zoom 1` holds the game's zoom (to test the
+  drawn with, whether it moved with the gun, and once per part how it's drawn (blending, its pixel
+  shader's constants and textures). `zoom 1` holds the game's zoom (to test the
   Stinger's lock-on, which only locks zoomed).
 - Research notes in `docs\research\`: FrostbiteVR and BC2VR (what works there, what applies to BF3),
   Overlord's lessons (ideas only), the mission's weapons, a 6DoF head plan, ten ranked next steps.
@@ -48,8 +67,20 @@ self-test and the mod's own pictures, not yet in the headset.
 - **The ACOG's dark lens circle, red cable and red dot floated in the sky**, moving with the gun
   (the user's video): they're drawn later in the frame than the rest of the gun, where the mod
   never learned where they sit on it, so they stayed where the game holds its own gun. They now
-  take the scope body's place. When their placement isn't the latest upload, it's found in the
-  buffer bound to them. Confirmed in the headset by the user ("it seems to work just fine now").
+  take the scope body's place. Confirmed in the headset by the user ("it seems to work just fine
+  now"). Two earlier attempts at it were taken out again: one moved world-space scope parts near
+  the gun, which could have taken a squadmate's scope onto the player's gun; one kept a copy of
+  every bone upload, which the scope never needed.
+- **The hands slid about on the gun while sprinting**, and the gun could flip between two holds
+  twice a second (the user's videos): the mod copied how the game's hands hold its gun every frame,
+  sprint animation and all. Now it copies that only from the game's normal hold: not while
+  sprinting (nor for a second after), and not while the game's hands are more than 3-4 cm off
+  their usual grip (its other moves), unless they stay put elsewhere for 5 s.
+- **Black spikes on the left forearm** below the watch (the user's picture): the bare forearm's far
+  end was folded into the palm with an all-zero matrix, which made its stretched triangles black,
+  and the depth passes' differently cut copy of them left more. The bare forearms now move whole
+  with their hands, and the arms' hidden parts fold into the middle of the forearm, inside it.
+  Checked with the stand-in's left hand; not yet seen in the headset.
 - **Squeezing the right grip threw a grenade** (it was bound to the game's G): the right grip is for
   holding the gun; the grenade is unbound until it gets its own gesture.
 - **The game could crash right after a load**: the look-angle search tried 24 of 163 matching
@@ -61,9 +92,11 @@ self-test and the mod's own pictures, not yet in the headset.
 ### Known
 - In the car ride at the mission's start the game turns the look itself (the seat's limits, the
   vehicle turning) and the mod writes its own back each frame: the picture follows the head, but
-  the body doesn't turn with the vehicle yet. Needs a test in the headset before changing.
-- The ACOG's reticle and red cable look faint (the user would like them brighter).
+  the body doesn't turn with the vehicle yet, and turning the head turned the view the wrong way
+  (the user). Needs a test in the headset before changing.
 - The ammo counter reads one more than the gun holds.
+- To come (the user's list): the muzzle flash at the gun, casings out of the ejection port every
+  shot, magazines taken from the hip and pushed in by hand, wrist movement for the gloves.
 
 ## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
 

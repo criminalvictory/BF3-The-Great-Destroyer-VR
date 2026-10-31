@@ -326,6 +326,8 @@ void SendKey(WORD scan, bool down) {
 // pointer on BF3's window (window.cpp): on the taskbar's "Show desktop" corner, every shot
 // minimised the game (2026-10-30). A release always goes, so a button never sticks down.
 std::atomic<bool> g_holdZoom{false};  // weapon.txt "zoom 1": the game's zoom (right mouse) held
+std::atomic<ULONGLONG> g_sprintAt{0};  // when sprint (the left stick's click) was last held
+std::atomic<float> g_rightTrigger{0.0f};  // how far the right trigger is pulled (0-1)
 bool g_mouseDown[2] = {};  // left, right: as the game was last sent them
 
 void SendMouseButton(bool left, bool down) {
@@ -646,8 +648,11 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         if (m.analog) {
             // A little hysteresis so a trigger resting near the threshold doesn't chatter.
             XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};
-            if (XR_SUCCEEDED(xrGetActionStateFloat(session, &get, &state)) && state.isActive)
+            const bool active = XR_SUCCEEDED(xrGetActionStateFloat(session, &get, &state)) && state.isActive;
+            if (active)
                 down = state.currentState > (m.down ? 0.4f : 0.6f);
+            if (m.action == &g_fire)  // the glove's trigger finger follows it (skin.cpp)
+                g_rightTrigger.store(active ? state.currentState : 0.0f, std::memory_order_relaxed);
         } else {
             XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
             down = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &state)) && state.isActive &&
@@ -674,6 +679,8 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         // raising the tube to the eye does it, 2026-10-31).
         if (m.action == &g_ads && g_holdZoom.load(std::memory_order_relaxed))
             down = true;
+        if (m.action == &g_sprint && down)
+            g_sprintAt = GetTickCount64();
         if (down != m.down) {
             Press(m, down);
             m.down = down;
@@ -851,6 +858,22 @@ void SetStandIn(bool on, float pitchDegrees, float yawDegrees, const float* shif
         Log("Stand-in hand: aiming %.0f degrees right of the head", yawDegrees);
 }
 
+std::atomic<float> g_triggerTest{0.0f};  // weapon.txt "fingertest 1": the finger as if pulled, not firing
+
+float RightTrigger() {
+    return std::max(g_rightTrigger.load(std::memory_order_relaxed), g_triggerTest.load(std::memory_order_relaxed));
+}
+
+void SetTriggerTest(float pull) {
+    if (g_triggerTest.exchange(pull) != pull && pull > 0.0f)
+        Log("Input: the glove's trigger finger drawn %.0f%% pulled (weapon.txt fingertest)", pull * 100.0f);
+}
+
+bool Sprinting() {
+    // A second after letting go too: the game's sprint takes that long to blend back.
+    return GetTickCount64() - g_sprintAt.load(std::memory_order_relaxed) < 1000;
+}
+
 void SetZoomHold(bool on) {
     if (g_holdZoom.exchange(on) != on)
         Log("Input: the game's zoom %s (weapon.txt zoom)", on ? "held" : "let go");
@@ -896,6 +919,16 @@ void StandIn(const XrPosef& head) {
     g_handPoses[1].position = {g_aimPose.position.x + grip.x, g_aimPose.position.y + grip.y,
                                g_aimPose.position.z + grip.z};
     g_handTracked[1] = true;
+    // A left hand too while that controller sleeps: under the handguard, palm up (a quarter turn
+    // about the forward axis), to see the left glove and forearm with nobody in the headset.
+    if (!g_handTracked[0]) {
+        const XrVector3f under = Rotate(level, {-0.04f, -0.07f, -0.30f});
+        const float half = -0.7853982f;
+        g_handPoses[0].orientation = Mul(level, XrQuaternionf{0.0f, 0.0f, std::sin(half), std::cos(half)});
+        g_handPoses[0].position = {g_aimPose.position.x + under.x, g_aimPose.position.y + under.y,
+                                   g_aimPose.position.z + under.z};
+        g_handTracked[0] = true;
+    }
     if (!g_standingIn) {
         static ULONGLONG told = 0;
         if (GetTickCount64() - told > 10000) {

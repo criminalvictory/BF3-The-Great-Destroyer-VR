@@ -32,6 +32,13 @@ void SetStandIn(bool on, float pitchDegrees = 0.0f, float yawDegrees = 0.0f, con
 float StandInPitch();  // radians
 // weapon.txt "zoom 1": the game's zoom (right mouse) held while it's set.
 void SetZoomHold(bool on);
+// Sprint is held (the left stick's click), or was let go of less than a second ago: the game's
+// hands hold its gun differently then (skin.cpp doesn't copy them).
+bool Sprinting();
+// How far the right trigger is pulled (0-1): the glove's trigger finger follows it.
+float RightTrigger();
+// weapon.txt "fingertest 1": the trigger finger drawn as if pulled that far (nothing fires).
+void SetTriggerTest(float pull);
 void StandIn(const XrPosef& head);
 bool StandingIn();
 // The stand-in is switched on (weapon.txt "standin 1"), whether or not it holds the gun now.
