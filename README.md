@@ -103,6 +103,26 @@ If the picture looks wrong:
   doesn't fire with the magazine out or one round left (run dry, the game would reload by
   itself). With any other gun, a tap is the game's reload. The ammo is the count in the game's own
   server, which decides firing.
+- **Magazines from the pelvis** (the rifle): with the magazine out, or the bolt locked back on an
+  empty one, squeeze the left grip with the hand in front of the lower belly (below the belly
+  button, above the groin; nothing is drawn there). The gun's own magazine appears in the left
+  glove. Bring it up under the magazine well, top first: it's caught below the well's mouth,
+  straightened as you push, slides only along the well, and seats when pushed home. Only then do
+  its rounds go in. Let go of it on the way and it falls; let go of it at the pelvis and it goes back.
+  With any other gun, squeezing there is the game's own reload. `build\pouch.txt` moves and sizes
+  the pouch (`zone`), turns it off (`pouch off`), stops X from putting a magazine in (`xinsert 0`)
+  or other guns from reloading there (`anygun 0`), and runs a scripted hand for pictures (`test 1`,
+  `test 2 -0.05`).
+- **No orange enemy markers**: the HUD's orange markers over enemies and targets are taken off at
+  the end of each frame (they can't be told from the blue squad markers by their draws, so the
+  picture under the HUD is kept and put back wherever the HUD made it more orange); the blue
+  markers stay. `build\weapon.txt` `orangemarkers 1` keeps them.
+- **The right glove's trigger finger** pulls with the trigger; **the ACOG's reticle and red cable**
+  are drawn brighter (`scopeboost`).
+- **Spent casings** come out of the drawn gun's ejection port on every shot: each casing's world
+  placement is moved on the graphics card with the gun near the port, less as it flies, not at all
+  once it's 0.8 m out, so the ones on the ground stay where they fell (`build\weapon.txt`
+  `casings 0` leaves them where the game throws them).
 - **Reloading by hand** (the rifle): run dry, the bolt locks back and the gun won't fire. With a
   full magazine in, either slap the bolt release on the left of the receiver, behind the magazine
   well, with the left hand (the flat-screen game's empty reload), or put the left hand on the
@@ -131,18 +151,16 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
   other eye would see behind them is filled from the background beside it, which can look like a
   soft halo. `bias -1` / `bias 1` in `depth3d.txt` keeps one eye exactly as the game drew it and
   puts all the filling in the other; hybrid mode (Scroll Lock) alternates which eye is drawn.
-- The crosshair stays in the centre of the view (its settings are known: each weapon's HudData,
-  CrosshairOpacityMin/Max; reaching them in memory is not done yet).
 - With the wide view, the sleeve near the shoulder can look stretched: that part of BF3's arm
   model is normally off screen.
 - Free hands: only the campaign's M16-type rifle is known (other guns get the game's own arms);
   bullets still leave from where the game holds its gun, not the drawn muzzle; two-handed aiming
   isn't done. A short piece of bare forearm shows under the left glove's cuff.
-- The muzzle flash, its smoke and the spent casings are drawn where the game holds its own gun
-  (at the chest), not at the drawn gun.
+- The muzzle flash and its smoke are drawn where the game holds its own gun (at the chest), not at
+  the drawn gun.
 - A dark layer shows around the arms, glove and gun, plainest against bright light (being looked
   into: one pass of the arms placed for the wrong eye is the suspect).
-- The ACOG's reticle and lens tint sometimes vanish from the scope and float in the distance.
+- Looking along a forearm into its open elbow end shows a black disc.
 - The charging handle has no sound of its own yet (the M16's reloads never use it); letting it
   go plays the bolt going home.
 
@@ -180,11 +198,11 @@ runtime path, which a 32-bit game can't load.
 | Right stick | Turn |
 | A / B | Jump / crouch |
 | X | Magazine: tap to eject / insert, hold to reload |
-| Left grip | Curl the left hand's middle, ring and little fingers |
+| Left grip | Curl the left hand's middle, ring and little fingers; near the handguard, hold it; at the pelvis, take a magazine |
 | Left thumb on the stick | Fold the left thumb in |
 | View (left, Steam Frame) | Line up the left glove with your hand |
 | Y | Use |
-| Right grip | Grenade |
+| Right grip | Holds the gun (nothing in the game; the grenade has no gesture yet) |
 
 On the Steam Frame, A, B, X and Y are all on the right controller; the mod uses SteamVR's own
 Frame controller profile (`XR_VALVE_frame_controller_interaction`). On Touch-style controllers X
