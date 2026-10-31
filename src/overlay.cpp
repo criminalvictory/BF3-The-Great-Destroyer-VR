@@ -40,6 +40,9 @@ std::atomic<int> g_logged{0};
 // eye's copy drawn without the depth-stencil view.
 std::atomic<int> g_logFrame{0};
 std::atomic<int> g_hudFix{0};
+// HUD draws after the right eye's picture, and the right eye's copies of them, counted for a log
+// line once a second (tools/selftest.ps1 checks they match: the HUD in both eyes).
+std::atomic<uint32_t> g_hudDraws{0}, g_hudCopies{0};
 
 // The draw with no depth-stencil view bound (no depth or stencil test).
 void DrawWithoutDepth(ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
@@ -259,6 +262,12 @@ namespace overlay {
 
 void NewFrame() {
     g_eyePictures.store(0, std::memory_order_relaxed);
+    static ULONGLONG lastLog = 0;
+    if (const ULONGLONG now = GetTickCount64(); now - lastLog >= 1000) {
+        lastLog = now;
+        if (const uint32_t draws = g_hudDraws.exchange(0), copies = g_hudCopies.exchange(0); draws || copies)
+            Log("Overlay: last second %u HUD draws in the left eye, %u copied into the right", draws, copies);
+    }
     if (int asked = 1; !g_logFrame.compare_exchange_strong(asked, 2))
         g_logFrame.store(0);
     std::lock_guard lock(g_shadersMutex);
@@ -341,6 +350,10 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
     const bool intoHalf = fix != 3 && (eyeEffect || reads) && IntoRightHalf(ctx, draw);
     if (!intoHalf && fix != 3)
         DrawMovedRight(ctx, draw, viewport);
+    if (fix != 2)
+        ++g_hudDraws;
+    if (fix != 3)
+        ++g_hudCopies;
     if (g_logFrame.load(std::memory_order_relaxed) == 2)
         Log("Overlay: %u, %s viewport, %s%s, right eye's copy %s", count, window ? "window" : "eye",
             eyeEffect ? "the eye effect" : "HUD", reads ? " reading the scene" : "",

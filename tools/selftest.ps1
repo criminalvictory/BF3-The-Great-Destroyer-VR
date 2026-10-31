@@ -187,7 +187,16 @@ else {
                 $ok = [Math]::Abs($l - $r) -lt [Math]::Max(60, 0.4 * [Math]::Max($l, $r))
             }
         }
-        Result $corner[0] $(if ($ok) { 'PASS' } else { 'FAIL' }) "blue HUD pixels: left eye $l, right eye $r"
+        # A warning only: the HUD is see-through, and something dark close behind it in one eye (the
+        # gun, with the eyes' parallax) darkens it there (2026-10-31). The HUD check that counts is
+        # the overlay's own (below).
+        Result $corner[0] $(if ($ok) { 'PASS' } else { 'WARN' }) "blue HUD pixels: left eye $l, right eye $r"
+    }
+    $hud = $all | Select-String 'Overlay: last second (\d+) HUD draws in the left eye, (\d+) copied into the right' | Select-Object -Last 1
+    if (-not $hud) { Result 'HUD in both eyes' 'SKIP' 'no overlay count in the log (an older build?)' }
+    else {
+        $d = [int]$hud.Matches[0].Groups[1].Value; $c = [int]$hud.Matches[0].Groups[2].Value
+        Result 'HUD in both eyes' $(if ($d -gt 0 -and $d -eq $c) { 'PASS' } else { 'FAIL' }) "last second: $d HUD draws in the left eye, $c copied into the right"
     }
     $sl = Streaks $img 0 $w; $sr = Streaks $img $w $w
     $ok = $sl -gt 0.45 -and $sr -gt 0.45

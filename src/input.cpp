@@ -74,8 +74,10 @@ bool g_standingIn = false;  // holding the gun this frame
 XrPosef g_aimToGrip{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};  // the grip in the aim pose's frame
 bool g_haveAimToGrip = false;
 ULONGLONG g_aimToGripSavedAt = 0;
-// Where it aims from in the head's frame (x right, y up, z back; metres): a rifle shouldered.
-constexpr XrVector3f kStandInAim{0.08f, -0.10f, -0.30f};
+// Where it aims from in the head's frame (x right, y up, z back; metres): low and out, the rifle at
+// the hip. (Shouldered, 10 cm down and 30 cm out, its stock came a few cm in front of the right eye,
+// which then saw it end-on while the left saw it from the side: it looked like a per-eye bug.)
+constexpr XrVector3f kStandInAim{0.08f, -0.25f, -0.45f};
 // "standin 1 45 0 -0.25 -0.15 0": the hold moved that far (right, up, back; metres), so the drawn
 // gun is clearly apart from where the game holds its own (to tell what follows which).
 std::atomic<float> g_standInShift[3] = {0.0f, 0.0f, 0.0f};

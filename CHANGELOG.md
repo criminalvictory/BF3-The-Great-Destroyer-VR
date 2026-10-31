@@ -4,6 +4,56 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, overnight: a self-test, the flap with the handle, a smooth glove, no crash in the aim search (stage: pre-alpha, experimental)
+
+Since the last upload. Worked on overnight with nobody in the headset: a stand-in hand holds the
+rifle while the controllers sleep, and a self-test checks what broke before after every build. The
+flap was tested in the headset by the user before bed ("the flaps are great"); the rest by the
+self-test and the mod's own pictures, not yet in the headset.
+
+### New
+- **Self-test** (`tools\selftest.ps1`), run after every build: the mod's parts came up, the look
+  angles were found and held, the frame rate, the view staying still while the gun turns 20
+  degrees, the game aiming where the gun points (its weapon camera against the yaw written), the
+  stick turning the way the user confirmed, both eyes' HUD corners alike, no streaks, errors in the
+  log, and the glove collision test. PASS/FAIL per line.
+- **Glove collision test without the game** (`collidetest.exe`): 25 scripted hand paths at 72 Hz
+  (resting, soft and hard slaps, sliding, turning the wrist, through the gun, tracking jumps)
+  against the rifle's shape, checking penetration, passing through, jerks and felt slaps.
+- **Stand-in hand** (weapon.txt `standin 1`): holds the rifle out in front while the right
+  controller sleeps, so the gun, aim and effects can be tested with nobody in the headset; with the
+  headset off the frame's work goes on headless. `standin 1 45` looks 45 degrees up (test shots into
+  the sky only), more numbers turn the aim and move the hold.
+- `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
+- Research notes in `docs\research\`: FrostbiteVR and BC2VR (what works there, what applies to BF3),
+  Overlord's lessons (ideas only), the mission's weapons, a 6DoF head plan, ten ranked next steps.
+
+### Changed
+- **The ejection port's flap follows the charging handle**: pulled slowly it opens slowly, fully
+  open 4 cm back, and it shuts with the handle as the spring takes it home.
+- **The free left glove no longer jerks against the gun**: it was kept from a point 1.2 m from the
+  hand, so small turns of the wrist threw it by centimetres, and its slide flipped direction on the
+  bolt catch's edges. Now it's kept by the hand's middle, pushed out by all the spheres in the gun at
+  once, and slides smoothly (turning the wrist while touching: 35 mm jerks before, about 1 mm now).
+  A hard slap can't pass through the gun (its path is swept, stopping at the first touch).
+- **The muzzle flash is drawn with its own placement moved with the gun** (its sprites are placed by
+  a matrix in their own block, not by the view as was tried before). Not yet seen in the headset.
+
+### Fixed
+- **The game could crash right after a load**: the look-angle search tried 24 of 163 matching
+  places in memory when the game's yaw happened to be near zero. It now never tries when that many
+  match, and turns the view a little to look again.
+- The stand-in hand and the self-test: controllers aren't taken as tracked while input isn't
+  focused (their old poses stayed).
+
+### Known
+- In the car ride at the mission's start the game turns the look itself (the seat's limits, the
+  vehicle turning) and the mod writes its own back each frame: the picture follows the head, but
+  the body doesn't turn with the vehicle yet. Needs a test in the headset before changing.
+- The ACOG's lens tint and reticle still float where the game holds its gun: their draws weren't
+  identified (the "12 indices from 0" draw left unmoved turned out to be the world's plants).
+- The ammo counter reads one more than the gun holds.
+
 ## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
 
 Since the last upload. The game aims where the gun points and the view stays put however the gun
