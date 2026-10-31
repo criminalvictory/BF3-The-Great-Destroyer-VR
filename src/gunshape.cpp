@@ -22,15 +22,8 @@ Field g_field;
 bool g_loaded = false;
 std::once_flag g_load;
 
-void Load() {
-    wchar_t path[MAX_PATH];
-    HMODULE self = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&Load), &self);
-    GetModuleFileNameW(self, path, MAX_PATH);
-    if (wchar_t* slash = wcsrchr(path, L'\\'))
-        *(slash + 1) = 0;
-    wcscat_s(path, L"guns\\m416.bin");
+// The field from the file at path (g_loaded when it read).
+void LoadFile(const wchar_t* path) {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path, L"rb") || !f) {
         Log("Gun shape: guns\\m416.bin isn't there (tools/gunshape.exe makes it); the hand goes through the gun");
@@ -58,6 +51,19 @@ void Load() {
     g_loaded = true;
     Log("Gun shape: the rifle's shape loaded, %d x %d x %d cells of %.0f mm", g_field.n[0], g_field.n[1], g_field.n[2],
         g_field.cell * 1000.0f);
+}
+
+// guns\m416.bin next to the module (the mod's DLL).
+void LoadBesideModule() {
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&LoadBesideModule), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        *(slash + 1) = 0;
+    wcscat_s(path, L"guns\\m416.bin");
+    LoadFile(path);
 }
 
 // The field at p by trilinear interpolation (metres); false off the grid.
@@ -89,8 +95,18 @@ bool Sample(const float* p, float& out) {
 
 namespace gunshape {
 
+bool Load(const wchar_t* path) {
+    std::call_once(g_load, [path] { LoadFile(path); });
+    return g_loaded;
+}
+
+bool Distance(const float* p, float& distance) {
+    std::call_once(g_load, LoadBesideModule);
+    return g_loaded && Sample(p, distance);
+}
+
 bool Distance(const float* p, float& distance, float* normal) {
-    std::call_once(g_load, Load);
+    std::call_once(g_load, LoadBesideModule);
     if (!g_loaded || !Sample(p, distance))
         return false;
     // The way out: the field's slope over half a cell each way.

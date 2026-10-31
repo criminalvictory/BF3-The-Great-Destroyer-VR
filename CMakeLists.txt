@@ -58,6 +58,7 @@ add_library(bf3vr SHARED
     src/sounds.cpp
     src/pad.cpp
     src/gunshape.cpp
+    src/collide.cpp
     src/overlay.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -83,6 +84,11 @@ target_compile_definitions(gripfit PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 # The rifle's collision shape (a distance field) for the mod, from the gun's mesh dump.
 add_executable(gunshape tools/gunshape.cpp src/handpose.cpp)
 target_compile_definitions(gunshape PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The free left glove kept out of the rifle (src/collide.cpp) on scripted hand paths at 72 Hz, from
+# the rifle's collision shape: penetration, passing through, jerks, jitter, slaps felt, time a frame.
+add_executable(collidetest tools/collidetest.cpp src/collide.cpp src/gunshape.cpp src/handpose.cpp src/log.cpp)
+target_compile_definitions(collidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)
