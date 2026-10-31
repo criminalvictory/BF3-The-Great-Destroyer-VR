@@ -12,12 +12,20 @@ struct Fingers {
     float curl[4] = {};   // index, middle, ring, little: 0 relaxed (a little bent), 1 rolled into a fist
     float thumb = 0.0f;   // 0 relaxed at the side, 1 folded across the fingers
     float spread = 0.0f;  // 0 side by side, 1 wide apart (less as they curl)
+    float apart[4] = {};  // more degrees each turns towards the thumb at its knuckle (the lever's V)
 };
 
 // Each bone's move in the gloves' bind space (3x4, rows: rotation | translation), the palm widened
 // by width (1: as the mesh is) with the fingers moved apart on it. The glove is drawn with its
 // placement composed with these.
 void Pose(const Fingers& fingers, float width, float out[kBones][12]);
+
+// Bends each finger of an already posed hand further (degrees; negative opens it): bend[0] the
+// thumb ... bend[4] the little finger, spread over its three joints (the middle one most), about
+// where those joints are in that pose. bones: from the gloves' bind space into anything, as the
+// glove is drawn with them; changed in place. (The game's own grip on the gun, its fingers moved a
+// little with the controller's: hands.cpp.)
+void BendFurther(float bones[kBones][12], const float bend[5]);
 
 // For tools/handview.cpp's checks: each finger's joints in the bind space, from the palm out (the
 // thumb's base, knuckle and last joint; the others' knuckle, middle and last joint), then its tip.

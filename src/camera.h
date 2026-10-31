@@ -71,6 +71,9 @@ void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
 // unchanged) while no view turn is set.
 bool TurnToHead(float* transform);
+// weapon.txt "viewlog N": for N seconds, log each frame's view turn (hand, written look, game
+// camera's yaw and place, head, shown).
+void LogTurns(int seconds);
 
 // The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
 float SourceFov();
@@ -79,6 +82,11 @@ float SourceFov();
 // is watched and widened, the game's own while it isn't (BF3 moves the render camera in memory,
 // and after the opening ride the saved pointer chain stopped finding it). 0 if unknown.
 float RenderedFov();
+
+// The look angles the weapon camera ([aim] game_camera) was last written with by the game, before the
+// mod turns it, as the player's look angles store them: yaw atan2 of its back row's x and -z, pitch
+// -asin of its y (radians). False if it hasn't been written in the last 200 ms. Any thread.
+bool GameWeaponAngles(float& yaw, float& pitch);
 
 // How many times the game built its main render camera since the last call.
 uint32_t TakeCameraBuilds();

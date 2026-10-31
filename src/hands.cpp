@@ -18,7 +18,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
+#include "gunshape.h"
 #include "handpose.h"
 #include "input.h"
 #include "log.h"
@@ -180,6 +182,389 @@ void ReadTuning() {
         g_leftTurn[1], g_leftTurn[2], g_spread, g_leftWidth);
 }
 
+// The free left glove can't go into the gun (the user: the hand went through the gun when it
+// slapped the bolt release). The glove as spheres on its bones (tools/gunshape.cpp measured them
+// from the gloves' mesh dump: bone, centre in the glove's bind space, radius), posed with the
+// fingers, in the gun's model space; the gun's shape (gunshape.cpp) pushes the deepest one out
+// along its way out, a few times over. The glove is drawn there; the reloads still go by the hand.
+struct Sphere {
+    int bone;
+    int finger;  // -1 the palm, 0 the thumb, 1 the index finger .. 4 the little finger
+    float centre[3];
+    float radius;
+};
+constexpr Sphere kHandSpheres[] = {
+    {2, 0, {0.4796f, 1.0925f, 0.2857f}, 0.0129f},   // the thumb
+    {17, 0, {0.4846f, 1.1074f, 0.2477f}, 0.0151f},  //
+    {18, 0, {0.4810f, 1.0975f, 0.2051f}, 0.0120f},  //
+    {8, 1, {0.5293f, 1.1138f, 0.2400f}, 0.0162f},   // the index finger
+    {9, 1, {0.5485f, 1.0843f, 0.2631f}, 0.0160f},   //
+    {15, 1, {0.5801f, 1.0441f, 0.3061f}, 0.0098f},  //
+    {19, 1, {0.5641f, 1.0664f, 0.2833f}, 0.0136f},  //
+    {6, 2, {0.5594f, 1.1058f, 0.2176f}, 0.0075f},   // the middle finger
+    {7, 2, {0.5616f, 1.0711f, 0.2509f}, 0.0157f},   //
+    {21, 2, {0.5792f, 1.0552f, 0.2750f}, 0.0125f},  //
+    {22, 2, {0.5944f, 1.0301f, 0.2984f}, 0.0111f},  //
+    {10, 3, {0.6002f, 1.0224f, 0.2762f}, 0.0109f},  // the ring finger
+    {11, 3, {0.5717f, 1.0643f, 0.2288f}, 0.0135f},  //
+    {12, 3, {0.5618f, 1.0978f, 0.1915f}, 0.0087f},  //
+    {20, 3, {0.5847f, 1.0447f, 0.2514f}, 0.0132f},  //
+    {3, 4, {0.5960f, 1.0322f, 0.2407f}, 0.0087f},   // the little finger
+    {13, 4, {0.5747f, 1.0642f, 0.2069f}, 0.0131f},  //
+    {14, 4, {0.5589f, 1.0779f, 0.1713f}, 0.0088f},  //
+    {16, 4, {0.5868f, 1.0504f, 0.2225f}, 0.0117f},  //
+    {0, -1, {0.4686f, 1.1414f, 0.1480f}, 0.0150f},  // the palm, 3 x 3 along and across it
+    {0, -1, {0.4826f, 1.1329f, 0.1330f}, 0.0150f},
+    {0, -1, {0.4967f, 1.1245f, 0.1181f}, 0.0150f},
+    {0, -1, {0.4773f, 1.1306f, 0.1623f}, 0.0150f},
+    {0, -1, {0.4913f, 1.1221f, 0.1473f}, 0.0150f},
+    {0, -1, {0.5054f, 1.1137f, 0.1323f}, 0.0150f},
+    {0, -1, {0.4860f, 1.1197f, 0.1765f}, 0.0150f},
+    {0, -1, {0.5000f, 1.1113f, 0.1615f}, 0.0150f},
+    {0, -1, {0.5141f, 1.1029f, 0.1465f}, 0.0150f},
+};
+constexpr float kTouching = 0.004f;  // a sphere this near the gun touches it
+constexpr int kAllSpheres = 5;       // Deepest's finger for every sphere
+
+// How far the spheres of a finger (kHandSpheres' numbering, or kAllSpheres) are in the gun at most
+// (metres; negative, the nearest is that far off), the glove placed by toGun (its bind space to the
+// gun's model space) with these bones and moved by shift (the gun's model space). False without
+// the gun's shape there.
+bool Deepest(const float (*bones)[12], const float* toGun, const float* shift, int finger, float& deepest) {
+    deepest = -1.0f;
+    bool any = false;
+    for (const Sphere& s : kHandSpheres) {
+        if (finger != kAllSpheres && s.finger != finger)
+            continue;
+        float posed[3], p[3], distance, way[3];
+        Transform(bones[s.bone], s.centre, posed);
+        Transform(toGun, posed, p);
+        for (int k = 0; k < 3; ++k)
+            p[k] += shift[k];
+        if (!gunshape::Distance(p, distance, way))
+            continue;
+        any = true;
+        deepest = std::max(deepest, s.radius - distance);
+    }
+    return any;
+}
+
+// The way out of the gun for the glove placed by toGun with these bones: shift (the gun's model
+// space) gets the move; touch, where it touches the gun's surface, if it does. True when it touches.
+bool PushOut(const float (*bones)[12], const float* toGun, float* shift, float* touch) {
+    float centres[std::size(kHandSpheres)][3];
+    for (size_t i = 0; i < std::size(kHandSpheres); ++i) {
+        float posed[3];
+        Transform(bones[kHandSpheres[i].bone], kHandSpheres[i].centre, posed);
+        Transform(toGun, posed, centres[i]);
+    }
+    shift[0] = shift[1] = shift[2] = 0.0f;
+    bool touched = false;
+    for (int round = 0; round < 4; ++round) {
+        float deepest = -kTouching, push[3] = {}, surface[3] = {};
+        for (size_t i = 0; i < std::size(kHandSpheres); ++i) {
+            const float p[3] = {centres[i][0] + shift[0], centres[i][1] + shift[1], centres[i][2] + shift[2]};
+            float distance, way[3];
+            if (!gunshape::Distance(p, distance, way))
+                continue;
+            const float in = kHandSpheres[i].radius - distance;
+            if (in <= deepest)
+                continue;
+            deepest = in;
+            for (int k = 0; k < 3; ++k)
+                push[k] = way[k] * std::max(in, 0.0f), surface[k] = p[k] - way[k] * distance;
+        }
+        if (deepest <= -kTouching)
+            break;
+        if (round == 0) {
+            touched = true;
+            std::memcpy(touch, surface, sizeof(surface));
+        }
+        if (deepest <= 0.0f)
+            break;
+        for (int k = 0; k < 3; ++k)
+            shift[k] += push[k];
+    }
+    return touched;
+}
+
+// Where the free glove is from the tracked hand, in the gun's model space, kept from frame to frame
+// (the user: the hand jittered in and out of the gun, 2026-10-30, when each frame pushed it out
+// afresh from wherever the hand was, by whichever sphere was deepest).
+float g_freeShift[3] = {};
+
+// Keeps the glove out of the gun: it stays where it was against the gun, pushed out only as far as
+// the gun moved into it, and comes back to the hand as far as the gun lets it, so it rests on the
+// surface instead of jumping. touch (the gun's model space) gets where it touches the gun's
+// surface, if it does. True when it touches.
+bool KeepOutOfGun(skin::HandTargets& t, const handpose::Fingers& fingers, float* touch) {
+    float bones[handpose::kBones][12], inverse[12], toGun[12], shift[3], push[3], deepest;
+    handpose::Pose(fingers, g_leftWidth, bones);
+    InvertRigid(t.gunPose, inverse);
+    Compose(inverse, t.leftPose, toGun);
+    std::memcpy(shift, g_freeShift, sizeof(shift));
+    // Out of the gun from where it was (the gun moved into it).
+    float from[12];
+    std::memcpy(from, toGun, sizeof(from));
+    for (int k = 0; k < 3; ++k)
+        from[k * 4 + 3] += shift[k];
+    PushOut(bones, from, push, touch);
+    for (int k = 0; k < 3; ++k)
+        shift[k] += push[k];
+    // Back towards the hand as far as it goes without going in.
+    if (shift[0] || shift[1] || shift[2]) {
+        float low = 0.0f, high = 1.0f;
+        for (int step = 0; step < 8; ++step) {
+            const float mid = (low + high) / 2;
+            const float back[3] = {shift[0] * (1 - mid), shift[1] * (1 - mid), shift[2] * (1 - mid)};
+            (Deepest(bones, toGun, back, kAllSpheres, deepest) && deepest > 0.0f ? high : low) = mid;
+        }
+        for (float& s : shift)
+            s *= 1.0f - low;
+        if (shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2] < 0.0005f * 0.0005f)
+            shift[0] = shift[1] = shift[2] = 0.0f;
+    }
+    // Still held off by the gun: along its surface with the hand (the way to the hand less its part
+    // into the gun), as far as that goes without going in, so it slides rather than sticks.
+    if (shift[0] || shift[1] || shift[2]) {
+        float at[12], surface[3], unused[3], distance, normal[3];
+        std::memcpy(at, toGun, sizeof(at));
+        for (int k = 0; k < 3; ++k)
+            at[k * 4 + 3] += shift[k];
+        if (PushOut(bones, at, unused, surface) && gunshape::Distance(surface, distance, normal)) {
+            const float into = -(shift[0] * normal[0] + shift[1] * normal[1] + shift[2] * normal[2]);
+            float along[3];
+            for (int k = 0; k < 3; ++k)
+                along[k] = -shift[k] - into * normal[k];
+            if (into < 0.0f) {
+                float low = 0.0f, high = 1.0f;
+                for (int step = 0; step < 8; ++step) {
+                    const float mid = (low + high) / 2;
+                    const float slid[3] = {shift[0] + along[0] * mid, shift[1] + along[1] * mid, shift[2] + along[2] * mid};
+                    (Deepest(bones, toGun, slid, kAllSpheres, deepest) && deepest > 0.0f ? high : low) = mid;
+                }
+                for (int k = 0; k < 3; ++k)
+                    shift[k] += along[k] * low;
+            }
+        }
+    }
+    std::memcpy(g_freeShift, shift, sizeof(shift));
+    // Where it touches the gun now, if it does.
+    for (int k = 0; k < 3; ++k)
+        from[k * 4 + 3] = toGun[k * 4 + 3] + shift[k];
+    const bool touched = PushOut(bones, from, push, touch);
+    if (shift[0] || shift[1] || shift[2]) {
+        // Into the view's space with the gun's turn, onto the glove and its wrist.
+        for (int r = 0; r < 3; ++r) {
+            const float v = t.gunPose[r * 4] * shift[0] + t.gunPose[r * 4 + 1] * shift[1] + t.gunPose[r * 4 + 2] * shift[2];
+            t.leftPose[r * 4 + 3] += v;
+            t.leftWrist[r] += v;
+        }
+    }
+    return touched;
+}
+
+// The left hand on the handguard (the user: time the left hand works as a grip for the gun): the
+// left grip squeezed with the palm near the handguard takes hold. The gun then points from the
+// right hand towards the left, by the smallest turn from where the right hand alone points it
+// (the right hand keeps the roll), and the glove stays on the handguard where it took hold. The
+// game aims and fires along it too (AimOrientation). It holds until the grip is let go: it had
+// let go whenever the hand strayed from where the right hand alone points the gun, which any
+// sway did, and it took hold only within 13 cm, where the user's wrist sits on the handguard
+// (100 to 128 mm in the log, 2026-10-30). Holding, the glove is the game's own left hand as its
+// animation holds this gun (skin::GameLeftGrip: made for it, launcher and all, so it doesn't clip),
+// on the free gun, its fingers moving a little with the controller's (BendWithController). A grip
+// fitted to the gun's collision shape went through the grenade launcher, which isn't in the shape;
+// the user wanted only the game's (2026-10-30).
+// The handguard's middle line in the gun's model space: round the bore, its cross-section 57 mm
+// across and 73 mm high from z 0.46 to 0.68 (tools/gripfit.cpp, from the gun's mesh dump).
+constexpr float kGuardFrom[3] = {0.0f, 0.045f, 0.46f}, kGuardTo[3] = {0.0f, 0.045f, 0.68f};
+constexpr float kGuardReach = 0.25f;   // the palm (the wrist's fold) within this of it takes hold
+constexpr float kHandsTogether = 0.10f;  // the left hand back by the right: off to the receiver
+bool g_supporting = false;
+bool g_freshSqueeze = true;  // the grip squeezed since the hand last let go (or never let go)
+float g_supportPoint[3] = {};   // the palm when it took hold, in the gun's model space
+float g_gripBlend = 0.0f;  // 0 the glove where the hand is, 1 on the handguard
+constexpr float kGripBlendStep = 0.2f;  // a frame: on or off the handguard in 5 frames (70 ms)
+float g_fingerBend[5] = {};  // the controller's extra bend of the held fingers, degrees (smoothed)
+bool g_aimTurned = false;
+XrQuaternionf g_aimTurn{0, 0, 0, 1};  // the right controller's aim, turned to point the gun
+
+float Length(const float* v) {
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+// The smallest turn taking unit vector a onto unit vector b (row-major 3x3).
+void Arc(const float* a, const float* b, float* m) {
+    const float v[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    const float c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const float k = c > -0.999f ? 1.0f / (1.0f + c) : 0.0f;
+    const float x[9] = {0, -v[2], v[1], v[2], 0, -v[0], -v[1], v[0], 0};
+    float xx[9];
+    Mul3(x, x, xx);
+    for (int i = 0; i < 9; ++i)
+        m[i] = (i % 4 == 0 ? 1.0f : 0.0f) + x[i] + xx[i] * k;
+}
+
+XrQuaternionf MatrixToQuat(const float* m) {
+    XrQuaternionf q;
+    const float trace = m[0] + m[4] + m[8];
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q = {(m[7] - m[5]) / s, (m[2] - m[6]) / s, (m[3] - m[1]) / s, 0.25f * s};
+    } else if (m[0] > m[4] && m[0] > m[8]) {
+        const float s = std::sqrt(1.0f + m[0] - m[4] - m[8]) * 2.0f;
+        q = {0.25f * s, (m[1] + m[3]) / s, (m[2] + m[6]) / s, (m[7] - m[5]) / s};
+    } else if (m[4] > m[8]) {
+        const float s = std::sqrt(1.0f + m[4] - m[0] - m[8]) * 2.0f;
+        q = {(m[1] + m[3]) / s, 0.25f * s, (m[5] + m[7]) / s, (m[2] - m[6]) / s};
+    } else {
+        const float s = std::sqrt(1.0f + m[8] - m[0] - m[4]) * 2.0f;
+        q = {(m[2] + m[6]) / s, (m[5] + m[7]) / s, 0.25f * s, (m[3] - m[1]) / s};
+    }
+    return q;
+}
+
+XrQuaternionf QuatMul(const XrQuaternionf& a, const XrQuaternionf& b) {
+    return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
+// The palm's offset from the nearest point of the handguard's line (r) and its length, in the
+// gun's model space.
+float FromGuard(const float* p, float* r = nullptr) {
+    const float d[3] = {kGuardTo[0] - kGuardFrom[0], kGuardTo[1] - kGuardFrom[1], kGuardTo[2] - kGuardFrom[2]};
+    const float e[3] = {p[0] - kGuardFrom[0], p[1] - kGuardFrom[1], p[2] - kGuardFrom[2]};
+    float s = (d[0] * e[0] + d[1] * e[1] + d[2] * e[2]) / (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    s = std::fmin(std::fmax(s, 0.0f), 1.0f);
+    float offset[3] = {e[0] - d[0] * s, e[1] - d[1] * s, e[2] - d[2] * s};
+    if (r)
+        std::memcpy(r, offset, sizeof(offset));
+    return Length(offset);
+}
+
+// The left hand on the charging handle (the user: the index and middle fingers wrapped round the
+// handle's T bar, touching it, not near it). The hand's place on the gun was fitted from the mesh
+// dumps (tools/leverfit.cpp: the glove posed as below, palm down, fingers forward over the bar):
+// the bar sits inside the curled index and middle fingers, which touch its top, front, bottom and
+// back, either side of the shaft; the rest of the hand on the receiver's rear. While the handle is
+// held the glove is there, sliding back with it; it blends in from the tracked hand and back out.
+// The pull itself is measured from the hand (reload.cpp).
+constexpr float kOnLever[12] = {0.63300f, -0.38000f, -0.67500f, 0.24232f,  0.63900f, 0.74800f,
+                                0.17900f, -1.10752f, 0.43700f,  -0.54400f, 0.71600f, 0.43907f};
+constexpr float kLeverCurl[4] = {0.62f, 0.62f, 0.85f, 0.85f};  // index, middle (round the bar), ring, little
+constexpr float kLeverThumb = 0.35f, kLeverSpread = 0.4f;
+float g_lever = 0.0f;  // 0 the tracked hand, 1 on the handle
+
+// a and b (rotation | translation rows) blended: s 0 is a, 1 is b.
+void Blend(const float* a, const float* b, float s, float* out) {
+    float ra[9], rb[9];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            ra[i * 3 + j] = a[i * 4 + j], rb[i * 3 + j] = b[i * 4 + j];
+    XrQuaternionf qa = MatrixToQuat(ra), qb = MatrixToQuat(rb);
+    if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0)
+        qb = {-qb.x, -qb.y, -qb.z, -qb.w};
+    XrQuaternionf q{qa.x + (qb.x - qa.x) * s, qa.y + (qb.y - qa.y) * s, qa.z + (qb.z - qa.z) * s, qa.w + (qb.w - qa.w) * s};
+    const float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    q = {q.x / n, q.y / n, q.z / n, q.w / n};
+    float m[9];
+    QuatToMatrix(q, m);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j)
+            out[i * 4 + j] = m[i * 3 + j];
+        out[i * 4 + 3] = a[i * 4 + 3] + (b[i * 4 + 3] - a[i * 4 + 3]) * s;
+    }
+}
+
+void OnTheLever(skin::HandTargets& t, handpose::Fingers& fingers) {
+    const bool held = t.gun && reload::HandleHeld();
+    g_lever += ((held ? 1.0f : 0.0f) - g_lever) * 0.35f;
+    if (g_lever < 0.001f || !t.gun)
+        return;
+    // On the handle, slid back with it (along the gun's -z).
+    const float back[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -reload::HandleBack()};
+    float slid[12], onHandle[12], blended[12];
+    Compose(t.gunPose, back, slid);
+    Compose(slid, kOnLever, onHandle);
+    Blend(t.leftPose, onHandle, g_lever, blended);
+    std::memcpy(t.leftPose, blended, sizeof(blended));
+    Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+    for (int i = 0; i < 4; ++i)
+        fingers.curl[i] += (kLeverCurl[i] - fingers.curl[i]) * g_lever;
+    fingers.thumb += (kLeverThumb - fingers.thumb) * g_lever;
+    fingers.spread += (kLeverSpread - fingers.spread) * g_lever;
+}
+
+// The game's grip a little alive: each held finger bent or opened a few degrees with the
+// controller's (the index with the trigger, the others with the grip, the thumb with the thumb on
+// the stick), about the game's own pose (the user found its fingers stiff, 2026-10-30).
+void BendWithController(float (*game)[12]) {
+    const float squeeze = std::fmin(std::fmax((input::LeftSqueeze() - 0.4f) / 0.6f, 0.0f), 1.0f);
+    const float target[5] = {input::LeftThumbOnStick() ? 5.0f : -6.0f, -12.0f + 18.0f * input::LeftTrigger(),
+                             -8.0f + 14.0f * squeeze, -8.0f + 14.0f * squeeze, -8.0f + 14.0f * squeeze};
+    for (int f = 0; f < 5; ++f)
+        g_fingerBend[f] += (target[f] - g_fingerBend[f]) * 0.3f;
+    handpose::BendFurther(game, g_fingerBend);
+}
+
+// With both hands tracked: takes hold, holds or lets go, and when holding points the gun from
+// the right hand to the left (the glove goes onto the handguard in Update). gunTurn: the gun's turn
+// as the right hand alone points it (view space, model -> view); anchor: the right hand's place on
+// the gun (model space); headTurn: the view's axes in the recentered space; aim: the right
+// controller's aim orientation there.
+void Support(skin::HandTargets& t, const float* gunTurn, const float* anchor, const float* headTurn,
+             const XrQuaternionf& aim) {
+    const float squeeze = input::LeftSqueeze();
+    if (squeeze < 0.4f)
+        g_freshSqueeze = true;
+    float inverse[12], palm[3];
+    InvertRigid(t.gunPose, inverse);
+    Transform(inverse, t.leftWrist, palm);
+    const float apart[3] = {t.leftWrist[0] - t.rightWrist[0], t.leftWrist[1] - t.rightWrist[1],
+                            t.leftWrist[2] - t.rightWrist[2]};
+    const float between = Length(apart);
+    const float distance = FromGuard(palm);
+    // Squeezed near the handguard, or squeezed and then brought to it.
+    if (!g_supporting && squeeze > 0.6f && g_freshSqueeze && !reload::HandleHeld() && distance < kGuardReach &&
+        between > kHandsTogether) {
+        g_supporting = true;
+        std::memcpy(g_supportPoint, palm, sizeof(palm));
+        Log("Hands: the left hand took hold of the handguard (%.0f mm from its line)", distance * 1000.0f);
+    } else if (g_supporting && squeeze < 0.4f) {
+        // Only the grip let go lets go (the user: it dropped the gun when swung far right or left,
+        // the hands coming within 10 cm; "locked no matter what until I let go", 2026-10-30).
+        g_supporting = false;
+        g_freshSqueeze = false;
+        Log("Hands: the left hand let go of the handguard");
+    }
+    g_aimTurned = false;
+    if (!g_supporting)
+        return;
+    // The gun's line from the right hand to where the left took hold, as the right hand points it,
+    // turned onto the line between the hands; with the hands too close for that line to be steady,
+    // the right hand alone points it.
+    float model[3] = {g_supportPoint[0] - anchor[0], g_supportPoint[1] - anchor[1], g_supportPoint[2] - anchor[2]};
+    const float lm = Length(model), la = Length(apart);
+    if (!(lm > 0.05f) || !(la > kHandsTogether))
+        return;
+    float from[3], to[3], turn[9], turned[9];
+    for (int i = 0; i < 3; ++i)
+        model[i] /= lm, to[i] = apart[i] / la;
+    for (int i = 0; i < 3; ++i)
+        from[i] = gunTurn[i * 3] * model[0] + gunTurn[i * 3 + 1] * model[1] + gunTurn[i * 3 + 2] * model[2];
+    Arc(from, to, turn);
+    Mul3(turn, gunTurn, turned);
+    PlaceAt(turned, anchor, t.rightWrist, t.gunPose);
+    // The same turn in the recentered space, for the game's aim: headTurn turn headTurn^T.
+    float headT[9], a[9], inRoom[9];
+    Transpose3(headTurn, headT);
+    Mul3(headTurn, turn, a);
+    Mul3(a, headT, inRoom);
+    g_aimTurn = QuatMul(MatrixToQuat(inRoom), aim);
+    g_aimTurned = true;
+}
+
 // The left glove's line-up, kept in grip.txt (rewritten whole).
 void SaveLeftOffset() {
     wchar_t path[MAX_PATH];
@@ -236,19 +621,20 @@ void Update(const XrPosef& head) {
     };
 
     skin::HandTargets t;
+    handpose::Fingers fingers;  // the left glove's, as the controller says
     XrPosef aim, grip;
+    float gunTurn[9], anchor[3];  // the gun as the right hand alone holds it (view space), its grip
     if (input::AimPose(aim) && input::HandPose(1, grip)) {
         // The gun model's axes are x left, y up, z forward (its muzzle; the first try took z for
         // back and the gun pointed at the player), the aim pose's x right, y up, z back: half a
         // turn about y between them.
         const float flip[9] = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
-        float aimTurn[9], turn[9], gunTurn[9];
+        float aimTurn[9], turn[9];
         QuatToMatrix(aim.orientation, aimTurn);
         Mul3(toView, aimTurn, turn);
         Mul3(turn, flip, gunTurn);
         toViewPoint(grip.position, t.rightWrist);
         // Where the game's own right hand holds the gun, unless grip.txt says otherwise.
-        float anchor[3];
         if (g_gunGripTuned || !skin::GunGrip(anchor)) {
             std::memcpy(anchor, g_gunGrip, sizeof(anchor));
         } else {
@@ -305,14 +691,12 @@ void Update(const XrPosef& head) {
         g_index += ((g_lining ? 0.0f : index) - g_index) * 0.35f;
         g_grip += ((g_lining ? 0.0f : grip) - g_grip) * 0.35f;
         g_thumb += ((g_lining ? 0.0f : thumb) - g_thumb) * 0.35f;
-        handpose::Fingers fingers;
         fingers.curl[0] = g_index;
         fingers.curl[1] = fingers.curl[2] = fingers.curl[3] = g_grip;
         // Folded part way on its own; with the grip held, down onto the curled middle finger (also
         // when the index finger points: hovering over it looked wrong, user 2026-10-30).
         fingers.thumb = g_thumb * (0.6f + 0.4f * g_grip);
         fingers.spread = g_spread;
-        handpose::Pose(fingers, g_leftWidth, t.leftFingers);
         t.left = true;
     }
     // Once a second: frames where a controller wasn't tracked (the game's own gun or hand is drawn
@@ -327,13 +711,82 @@ void Update(const XrPosef& head) {
                 noGun, noLeft);
         frames = noGun = noLeft = 0;
     }
+    // The reloads go by where the left hand really is, wherever the glove is drawn.
+    float palm[3];
+    std::memcpy(palm, t.leftWrist, sizeof(palm));
+    // The glove as the controller holds it, to blend from onto the handguard and back.
+    float tracked[12];
+    std::memcpy(tracked, t.leftPose, sizeof(tracked));
+    const bool trackedLeft = t.left;
+    // Both hands on the gun: it points from the right hand to the left, the glove on the handguard.
+    if (t.gun && t.left && !g_lining) {
+        Support(t, gunTurn, anchor, headTurn, aim.orientation);
+    } else {
+        // Without the left controller's place the hold stays (the gun goes by the right hand, the
+        // glove on the handguard); its grip button still lets go. Without the gun, nothing to hold.
+        g_aimTurned = false;
+        if (g_supporting && (!t.gun || g_lining)) {
+            Log("Hands: the left hand let go of the handguard (no gun)");
+            g_supporting = false;
+        } else if (g_supporting && input::LeftSqueeze() < 0.4f) {
+            Log("Hands: the left hand let go of the handguard");
+            g_supporting = false;
+            g_freshSqueeze = false;
+        }
+    }
+    // Onto the handguard and off it over a few frames, not in one jump: the glove between where the
+    // hand is and the game's own grip on the gun (its bones learned against the game's gun: game[0]
+    // places the glove, the rest bend relative to it in BendWithController below).
+    float game[handpose::kBones][12];
+    const bool haveGame = t.gun && skin::GameLeftGrip(game);
+    g_gripBlend = g_supporting && haveGame ? std::fmin(g_gripBlend + kGripBlendStep, 1.0f)
+                                           : std::fmax(g_gripBlend - kGripBlendStep, 0.0f);
+    if (g_gripBlend > 0.0f && haveGame) {
+        float hold[12], blended[12];
+        Compose(t.gunPose, game[0], hold);
+        if (trackedLeft)
+            Blend(tracked, hold, g_gripBlend, blended);
+        else
+            std::memcpy(blended, hold, sizeof(blended));  // the left controller not tracked: held as it is
+        std::memcpy(t.leftPose, blended, sizeof(blended));
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+        t.left = true;
+    }
+    // The free glove stays out of the gun, and where it touches the gun is felt (the bolt release).
+    float touch[3];
+    const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld();
+    if (!free)
+        g_freeShift[0] = g_freeShift[1] = g_freeShift[2] = 0.0f;
+    const bool touching = free && KeepOutOfGun(t, fingers, touch);
     // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's space.
-    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? t.leftWrist : nullptr, input::LeftTrigger());
+    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? palm : nullptr, input::LeftTrigger(), touching ? touch : nullptr);
+    if (t.left) {
+        OnTheLever(t, fingers);
+        handpose::Pose(fingers, g_leftWidth, t.leftFingers);
+        if (g_gripBlend > 0.0f && haveGame) {
+            // The game's grip, its fingers moving a little with the controller's (less stiff: user,
+            // 2026-10-30), relative to its palm bone; blended from the controller's own fingers.
+            BendWithController(game);
+            float root[12], held[12];
+            InvertRigid(game[0], root);
+            for (int b = 0; b < handpose::kBones; ++b) {
+                Compose(root, game[b], held);
+                Blend(t.leftFingers[b], held, g_gripBlend, t.leftFingers[b]);
+            }
+        }
+    }
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }
 
 bool On() {
     return g_on;
+}
+
+bool AimOrientation(XrQuaternionf& out) {
+    if (!g_on || !g_aimTurned)
+        return false;
+    out = g_aimTurn;
+    return true;
 }
 
 void Toggle() {

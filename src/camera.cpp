@@ -42,6 +42,10 @@ std::atomic<uintptr_t> g_slotOffsets[kSlots];
 std::atomic<float> g_eyeOffset{0.0f};
 std::atomic<bool> g_viewsMode{false};  // views.cpp makes the render and cull cameras itself
 std::atomic<uintptr_t> g_weaponAddress{0};
+// The weapon camera's yaw as the game last wrote it (atan2 of its back row's x and -z, the way the
+// look angles store theirs), before the mod turns it, and when (GetTickCount64).
+std::atomic<float> g_weaponYaw{0.0f}, g_weaponPitch{0.0f};  // pitch: -asin of the back row's y, as stored
+std::atomic<ULONGLONG> g_weaponYawAt{0};
 std::atomic<bool> g_gunFlip{false};
 // weapon.txt "wcam x y z" (SetWeaponTest): the camera the gun is placed from moved along its own
 // axes, to see what follows it: the gun, its muzzle flash, the casings, the eye.
@@ -107,6 +111,7 @@ struct ViewTurnState {
 };
 ViewTurnState g_view[2] = {};
 std::atomic<int> g_viewIndex{0};
+std::atomic<ULONGLONG> g_turnLogUntil{0};  // weapon.txt "viewlog N" (TurnToHead)
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -310,6 +315,10 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
         if (view.active)
             ViewTurnLocal(m, view.turn, local);
         if (watched == g_weaponAddress.load(std::memory_order_relaxed)) {
+            // As the game wrote it, built from the real look angles (aim.cpp tells them by it).
+            g_weaponYaw.store(std::atan2(m[8], -m[10]), std::memory_order_relaxed);
+            g_weaponPitch.store(-std::asin(std::clamp(m[9], -1.0f, 1.0f)), std::memory_order_relaxed);
+            g_weaponYawAt.store(GetTickCount64(), std::memory_order_relaxed);
             // BF3 places the gun from the weapon camera relative to the picture's camera, so
             // turning the weapon camera the opposite way keeps the gun with the hand. Which way
             // is "opposite" is confirmed in game (F1 flips it).
@@ -623,10 +632,41 @@ bool TurnToHead(float* transform) {
     const ViewTurnState& view = g_view[g_viewIndex.load(std::memory_order_acquire)];
     if (!view.active || !IsCamera(transform))
         return false;
+    float before[16];
+    std::memcpy(before, transform, sizeof(before));
     float local[4];
     ViewTurnLocal(transform, view.turn, local);
     TurnLocal(transform, local);
+    // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
+    // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
+    // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
+    // whether it turns or the game's camera slides.
+    static ULONGLONG lastLog = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_turnLogUntil.load(std::memory_order_relaxed) && now - lastLog >= 10) {
+        lastLog = now;
+        const float* q = view.turn.head;
+        const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
+                                  -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
+        const float deg = 57.29578f;
+        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f", view.turn.currentYaw * deg,
+            view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12], before[13], before[14],
+            std::atan2(-forward[0], -forward[2]) * deg, std::atan2(transform[8], -transform[10]) * deg);
+    }
     return true;
+}
+
+void LogTurns(int seconds) {
+    g_turnLogUntil.store(GetTickCount64() + 1000ull * seconds, std::memory_order_relaxed);
+    Log("View: logging the view's turn each frame for %d s", seconds);
+}
+
+bool GameWeaponAngles(float& yaw, float& pitch) {
+    if (GetTickCount64() - g_weaponYawAt.load(std::memory_order_relaxed) > 200)
+        return false;
+    yaw = g_weaponYaw.load(std::memory_order_relaxed);
+    pitch = g_weaponPitch.load(std::memory_order_relaxed);
+    return std::isfinite(yaw) && std::isfinite(pitch);
 }
 
 uint32_t TakeCameraBuilds() {

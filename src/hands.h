@@ -18,4 +18,9 @@ void Toggle();
 // Free hands are on (the left trigger then works the charging handle instead of zooming).
 bool On();
 
+// With the left hand holding the handguard: the right controller's aim orientation turned to
+// where the gun points (from the right hand to the left), for the game to aim and fire along, in
+// the recentered space. False when the left hand isn't holding it. After Update, same thread.
+bool AimOrientation(XrQuaternionf& out);
+
 }

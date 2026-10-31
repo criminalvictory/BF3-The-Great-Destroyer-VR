@@ -3,7 +3,7 @@
 // way the mod reads the angles (yaw = atan2(x, -z), pitch = -asin(y)). With "test", each pair's yaw
 // is nudged and the pair kept only if the camera turns with it; the nudge is undone either way.
 // Look a little up or down first: level, the pitch is 0 and matches every zero.
-//   anglescan [gap=12] [test]
+//   anglescan [gap=12] [test|scan] [yaw tolerance=0.002] [pitch tolerance=0.002]
 //   anglescan refs <hex address> [hex max offset=400]   what points at or a little before it
 //   anglescan path player|soldier <hex lo> <hex hi> [depth=2]   pointer paths into [lo, hi]
 //   anglescan ao                                  objects shaped like the level's AO settings
@@ -249,14 +249,23 @@ int main(int argc, char** argv) {
                     argc > 5 ? std::atoi(argv[5]) : 2);
     const int gap = argc > 1 ? std::atoi(argv[1]) : 12;
     const bool test = argc > 2 && !std::strcmp(argv[2], "test");
+    const float yawTolerance = argc > 3 ? static_cast<float>(std::atof(argv[3])) : 0.002f;
+    const float pitchTolerance = argc > 4 ? static_cast<float>(std::atof(argv[4])) : 0.002f;
     float yaw = 0.0f, pitch = 0.0f;
     if (!g_game || !CameraAngles(yaw, pitch)) {
         std::printf("can't read the game camera\n");
         return 1;
     }
     std::printf("camera: yaw %.4f, pitch %.4f\n", yaw, pitch);
-    if (std::fabs(pitch) < 0.05f)
+    if (std::fabs(pitch) < 0.05f) {
         std::printf("(nearly level: look up or down a little for fewer false pairs)\n");
+        if (test) {
+            // A level pitch matches every zero: hundreds of pairs in random memory, and nudging
+            // them crashed the game (2026-10-30).
+            std::printf("not testing while level\n");
+            return 1;
+        }
+    }
 
     std::vector<uintptr_t> pairs;
     std::vector<uint8_t> chunk;
@@ -275,10 +284,10 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i + gap + 4 <= size; i += 4) {
                 float y, p;
                 std::memcpy(&y, &chunk[i], 4);
-                if (!(std::fabs(y) < 1000.0f) || YawError(y, yaw) > 0.002f)
+                if (!(std::fabs(y) < 1000.0f) || YawError(y, yaw) > yawTolerance)
                     continue;
                 std::memcpy(&p, &chunk[i + gap], 4);
-                if (std::fabs(p - pitch) < 0.002f)
+                if (std::fabs(p - pitch) < pitchTolerance)
                     pairs.push_back(base + offset + i);
             }
         }

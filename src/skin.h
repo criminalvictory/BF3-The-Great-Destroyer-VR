@@ -120,4 +120,10 @@ void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arm
 // gun's bones as the game animates them). False until both have been drawn.
 bool GunGrip(float* point);
 
+// The game's own left glove as its animation last held the gun: each of its bones (handpose.cpp's
+// 0-22) from the gloves' bind space into the gun's model space. Made by the game's animators for
+// this gun, launcher and all, so it doesn't clip; hands.cpp puts it on the free gun while the left
+// hand holds the handguard. False until learned once.
+bool GameLeftGrip(float (*bones)[12]);
+
 }

@@ -26,4 +26,12 @@ float EyeOffset(int eye);
 // The vertical field of view (radians) the eyes were last built with; 0 when not active.
 float RenderedFov();
 
+// Whether the right eye's view is drawn at the window's left edge (like the left eye's), its picture
+// to be moved into the right half as it goes onto the window (overlay.cpp).
+bool RightEyeAtLeft();
+
+// weapon.txt "viewdiff N": for N seconds, log where the two views' descriptions differ outside
+// their cameras, whenever that changes (to find the screen effects only the right eye gets).
+void WatchDifferences(int seconds);
+
 }

@@ -14,6 +14,11 @@ bool Update(float headYaw, float headPitch, float turn = 0.0f);
 // Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.
 void Reset();
 
+// weapon.txt "aimtest 20": for 2 s from 1 s after, TestTurn() is that many degrees (radians), added
+// to the hand's yaw, to check the view's turn without moving the controllers.
+void StartTest(float degrees);
+float TestTurn();
+
 // The player's look yaw as BF3 stores it (radians, atan2(x, -z) of the camera's backwards row),
 // and which way it moves for a controller turn to the left (+1 or -1). False if unreadable.
 bool LookYaw(float& radians, float& sign);

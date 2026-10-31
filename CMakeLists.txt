@@ -56,6 +56,9 @@ add_library(bf3vr SHARED
     src/effects.cpp
     src/reload.cpp
     src/sounds.cpp
+    src/pad.cpp
+    src/gunshape.cpp
+    src/overlay.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler xaudio2 ole32)
@@ -68,6 +71,18 @@ target_link_libraries(xrtest PRIVATE openxr_loader)
 # The left glove's finger poses drawn from a mesh dump, to shape them without the game.
 add_executable(handview tools/handview.cpp src/handpose.cpp)
 target_compile_definitions(handview PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The left glove fitted onto the rifle's charging handle from the mesh dumps, for hands.cpp.
+add_executable(leverfit tools/leverfit.cpp src/handpose.cpp)
+target_compile_definitions(leverfit PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The left glove fitted round the rifle's handguard from the mesh dumps, for hands.cpp.
+add_executable(gripfit tools/gripfit.cpp src/handpose.cpp)
+target_compile_definitions(gripfit PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The rifle's collision shape (a distance field) for the mod, from the gun's mesh dump.
+add_executable(gunshape tools/gunshape.cpp src/handpose.cpp)
+target_compile_definitions(gunshape PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)

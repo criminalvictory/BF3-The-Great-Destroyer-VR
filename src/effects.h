@@ -46,12 +46,19 @@ void SetLift(float metres);
 
 // Milliseconds since the last shot (the rounds in the gun going down by one), for animations.
 ULONGLONG MsSinceShot();
+
+// When the last shot was seen (GetTickCount64), 0 before the first: a new value is a new shot.
+ULONGLONG LastShot();
 // weapon.txt "movefx 36": indexed instanced draws with these index counts (up to four) are drawn
 // where the gun in the right hand is, not at the game's own gun (free hands).
 void SetMoved(const UINT* counts, int n);
 // weapon.txt "dumpfx 234": the next three indexed instanced draws with that index count log the
 // start of the 4096-byte block they're drawn with.
 void DumpNext(UINT count);
+
+// weapon.txt "tail": the next frame's draws to window-sized targets logged in order, with their
+// shaders, blending and viewport (to find the HUD's, drawn into one eye's half only).
+void LogFrameTail();
 
 // F18 (tools/drawhunt.ps1): a census of every draw for 6 s. The first 2 s are the baseline; fire
 // during the rest, and the shaders drawn then that weren't in the baseline, or in more of the

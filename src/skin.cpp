@@ -58,10 +58,12 @@
 #include <unordered_set>
 #include <vector>
 
+#include "aim.h"
 #include "ammo.h"
 #include "camera.h"
 #include "effects.h"
 #include "log.h"
+#include "overlay.h"
 #include "reload.h"
 #include "sounds.h"
 #include "views.h"
@@ -687,6 +689,8 @@ void ReadWeaponSelection() {
     //   "flashmats 2"        which view constants moved draws change (effects.cpp)
     //   "flashlift 1"        what's moved with the gun lifted this far too (to see it plainly)
     //   "refill"             300 spare rounds for the gun in hand
+    //   "tail"               log the next frame's draws to window-sized targets (effects.cpp)
+    //   "viewdiff 60"        for 60 s, log where the two eye views' descriptions differ (views.cpp)
     //   "empty"              no rounds left in it: the game's reload (R) is then its empty one
     //   "dumpview"           log BF3's per-view constants once
     //   "eyetrace"           log the next 40 first-person view uploads and the eye each is given
@@ -715,6 +719,32 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "refill")) {
             ammo::Refill();
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "tail")) {
+            effects::LogFrameTail();
+            line = next;
+            continue;
+        }
+        if (const char* at = std::strstr(line, "aimtest")) {
+            float degrees = 20.0f;
+            sscanf_s(at + 7, "%f", &degrees);
+            aim::StartTest(degrees);
+            line = next;
+            continue;
+        }
+        if (const char* vl = std::strstr(line, "viewlog")) {
+            int seconds = 10;
+            sscanf_s(vl + 7, "%d", &seconds);
+            camera::LogTurns(seconds);
+            line = next;
+            continue;
+        }
+        if (const char* vd = std::strstr(line, "viewdiff")) {
+            int seconds = 60;
+            sscanf_s(vd + 8, "%d", &seconds);
+            views::WatchDifferences(seconds);
             line = next;
             continue;
         }
@@ -1454,6 +1484,11 @@ struct Learned {
     bool have[kPaletteBones] = {};
 };
 std::unordered_map<DrawKey, Learned, DrawKeyHash> g_learned;  // under g_handsMutex
+// The game's own left glove bones (handpose.cpp's 0-22) in its gun's model space, as its animation
+// last held the gun (under g_handsMutex). Kept, not timed out: with a half-second limit the grip
+// fell back to another between learnings and the two flickered (user, 2026-10-30).
+float g_gameLeft[handpose::kBones][12] = {};
+bool g_haveGameLeft = false;
 // Which frame the gun's body was drawn in (the count of view uploads then: a frame's start uploads
 // its views, its draws follow). An offset is only learned from a reference of the same frame:
 // across frames the arms' space moves a frame's walk, or a whole metre when its origin jumps, and
@@ -1858,6 +1893,13 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             float* bone = bones + k * 12;
             switch (draw.roles[k]) {
             case 'L':
+                // The game's own left hand as its animation holds the gun, learned against the
+                // game's gun (hands.cpp draws it on the free gun while the hand holds the handguard).
+                if (&draw == &kArmDraws[0] && k < handpose::kBones && gunRef) {
+                    Compose(gunInverse, bone, g_gameLeft[k]);
+                    if (k + 1 == handpose::kBones)
+                        g_haveGameLeft = true;
+                }
                 // The whole hand placed as one, each bone bent as its finger is held. (Blending the
                 // matrices towards the game's own grip and past it folded the hand flat: user,
                 // 2026-10-30.)
@@ -2057,6 +2099,8 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
             if (const ArmDraw* arms = FindArmDraw(key); arms && DrawArms(which, ctx, count, start, base, *arms))
                 return;
         }
+        if (overlay::Draw(ctx, count, [&] { g_origDrawIndexed[which](ctx, count, start, base); }))
+            return;
         g_origDrawIndexed[which](ctx, count, start, base);
         return;
     }
@@ -2724,6 +2768,14 @@ bool GunGrip(float* point) {
     if (!g_haveGrip)
         return false;
     std::memcpy(point, g_gripModel, sizeof(g_gripModel));
+    return true;
+}
+
+bool GameLeftGrip(float (*bones)[12]) {
+    std::lock_guard lock(g_handsMutex);
+    if (!g_haveGameLeft)
+        return false;
+    std::memcpy(bones, g_gameLeft, sizeof(g_gameLeft));
     return true;
 }
 

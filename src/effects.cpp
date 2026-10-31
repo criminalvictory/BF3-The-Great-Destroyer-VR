@@ -16,6 +16,7 @@
 
 #include "ammo.h"
 #include "log.h"
+#include "overlay.h"
 #include "skin.h"
 
 namespace {
@@ -406,9 +407,176 @@ void Describe(ID3D11DeviceContext* ctx, ID3D11DepthStencilState* depth, Tally& t
     }
 }
 
+// ---- Frame tail ----
+// weapon.txt "tail": one frame's draws to targets the window's size, in order, with their shaders,
+// blending and viewport. The HUD (and with it the screen's blood and suppression) is drawn into the
+// right eye's half only (2026-10-30); this tells its draws from the rest.
+std::atomic<int> g_tailState{0};  // 0 off, 1 from the next frame, 2 recording this one
+struct TailDraw {
+    DrawType type;
+    UINT count, instances;
+    const void *ctx, *vs, *ps, *target;
+    UINT width, height, format, stencil;
+    D3D11_VIEWPORT viewport;
+    bool blend;
+    D3D11_BLEND src, dst;
+};
+std::mutex g_tailMutex;
+std::vector<TailDraw> g_tail;
+UINT g_tailAll = 0;  // every draw of the frame
+
+// An eye's picture going onto the window (unblended, a target twice as wide as high): its pixel
+// shader's constants (the first four buffers, 64 floats each at most), read back through a staging
+// copy, logged with the tail. The suppression blur stayed in the right eye (2026-10-30): if it is
+// a constant of this pass, the two eyes' values differ while suppressed.
+void LogPassConstants(ID3D11DeviceContext* ctx, size_t index) {
+    ID3D11Buffer* buffers[4] = {};
+    ctx->PSGetConstantBuffers(0, 4, buffers);
+    for (int slot = 0; slot < 4; ++slot) {
+        ID3D11Buffer* buffer = buffers[slot];
+        if (!buffer)
+            continue;
+        D3D11_BUFFER_DESC desc;
+        buffer->GetDesc(&desc);
+        ID3D11Device* device = nullptr;
+        buffer->GetDevice(&device);
+        D3D11_BUFFER_DESC staging = desc;
+        staging.Usage = D3D11_USAGE_STAGING;
+        staging.BindFlags = 0;
+        staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        staging.MiscFlags = 0;
+        ID3D11Buffer* copy = nullptr;
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (device && SUCCEEDED(device->CreateBuffer(&staging, nullptr, &copy))) {
+            ctx->CopyResource(copy, buffer);
+            if (SUCCEEDED(ctx->Map(copy, 0, D3D11_MAP_READ, 0, &mapped))) {
+                const auto* f = static_cast<const float*>(mapped.pData);
+                const UINT count = std::min<UINT>(desc.ByteWidth / 4, 64);
+                char line[1400];
+                int used = 0;
+                for (UINT i = 0; i < count && used < 1360; ++i)
+                    used += snprintf(line + used, sizeof(line) - used, " %g", f[i]);
+                Log("Tail %zu: PS constants %d (%u bytes):%s", index, slot, desc.ByteWidth, line);
+                ctx->Unmap(copy, 0);
+            }
+            copy->Release();
+        }
+        if (device)
+            device->Release();
+        buffer->Release();
+    }
+}
+
+void Tail(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
+    TailDraw d{type, count, instances, ctx};
+    ID3D11RenderTargetView* rtv = nullptr;
+    ctx->OMGetRenderTargets(1, &rtv, nullptr);
+    if (rtv) {
+        ID3D11Resource* resource = nullptr;
+        rtv->GetResource(&resource);
+        if (resource) {
+            d.target = resource;
+            ID3D11Texture2D* texture = nullptr;
+            if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+                D3D11_TEXTURE2D_DESC desc;
+                texture->GetDesc(&desc);
+                d.width = desc.Width, d.height = desc.Height, d.format = desc.Format;
+                texture->Release();
+            }
+            resource->Release();
+        }
+        rtv->Release();
+    }
+    {
+        std::lock_guard lock(g_tailMutex);
+        ++g_tailAll;
+    }
+    if (d.width < 1000 || g_tail.size() >= 20000)
+        return;
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
+    ID3D11DepthStencilState* depth = nullptr;
+    ctx->VSGetShader(&vs, nullptr, nullptr);
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    ctx->OMGetDepthStencilState(&depth, &d.stencil);
+    d.vs = vs, d.ps = ps;
+    if (vs)
+        vs->Release();
+    if (ps)
+        ps->Release();
+    if (depth)
+        depth->Release();
+    UINT viewports = 1;
+    ctx->RSGetViewports(&viewports, &d.viewport);
+    if (!viewports)
+        d.viewport = {};
+    ID3D11BlendState* blend = nullptr;
+    FLOAT factor[4];
+    UINT mask = 0;
+    ctx->OMGetBlendState(&blend, factor, &mask);
+    d.src = D3D11_BLEND_ONE, d.dst = D3D11_BLEND_ZERO;
+    if (blend) {
+        D3D11_BLEND_DESC desc;
+        blend->GetDesc(&desc);
+        d.blend = desc.RenderTarget[0].BlendEnable != FALSE;
+        d.src = desc.RenderTarget[0].SrcBlend, d.dst = desc.RenderTarget[0].DestBlend;
+        blend->Release();
+    }
+    size_t index;
+    {
+        std::lock_guard lock(g_tailMutex);
+        index = g_tail.size();
+        g_tail.push_back(d);
+    }
+    if (!d.blend && d.width == 2 * d.height)
+        LogPassConstants(ctx, index);
+}
+
+const char* BlendName(D3D11_BLEND b);
+
+void LogTail() {
+    std::lock_guard lock(g_tailMutex);
+    Log("Tail: %u draws in the frame, %zu of them to targets 1000 or more wide; in runs to one target:", g_tailAll,
+        g_tail.size());
+    // Runs: the same target, viewport and blending in a row, with their first pixel shaders.
+    for (size_t i = 0; i < g_tail.size();) {
+        const TailDraw& a = g_tail[i];
+        size_t j = i + 1;
+        while (j < g_tail.size() && g_tail[j].target == a.target && g_tail[j].blend == a.blend &&
+               g_tail[j].viewport.TopLeftX == a.viewport.TopLeftX && g_tail[j].viewport.Width == a.viewport.Width)
+            ++j;
+        char shaders[200] = "";
+        int used = 0;
+        for (size_t k = i; k < j && used < 180; ++k) {
+            bool seen = false;
+            for (size_t m = i; m < k && !seen; ++m)
+                seen = g_tail[m].ps == g_tail[k].ps;
+            if (!seen)
+                used += snprintf(shaders + used, sizeof(shaders) - used, "%p ", g_tail[k].ps);
+        }
+        Log("Tail run %zu-%zu (%zu): target %p %ux%u format %u, viewport %.0f,%.0f %.0fx%.0f, blend %s; PS %s", i, j - 1,
+            j - i, a.target, a.width, a.height, a.format, a.viewport.TopLeftX, a.viewport.TopLeftY, a.viewport.Width,
+            a.viewport.Height, a.blend ? "on" : "off", shaders);
+        i = j;
+    }
+    // The last of them one by one.
+    for (size_t i = g_tail.size() > 150 ? g_tail.size() - 150 : 0; i < g_tail.size(); ++i) {
+        const TailDraw& d = g_tail[i];
+        Log("Tail %zu: %s %u x%u, context %p, VS %p PS %p, target %p %ux%u format %u, viewport %.0f,%.0f %.0fx%.0f, "
+            "blend %s (%s, %s), stencil %u",
+            i, kTypeNames[d.type], d.count, d.instances, d.ctx, d.vs, d.ps, d.target, d.width, d.height, d.format,
+            d.viewport.TopLeftX, d.viewport.TopLeftY, d.viewport.Width, d.viewport.Height, d.blend ? "on" : "off",
+            BlendName(d.src), BlendName(d.dst), d.stencil);
+    }
+    g_tail.clear();
+}
+
 void ProbeDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances);
+thread_local UINT t_start = 0;  // the indexed draw being noted: its first index (the probe logs it)
 
 void NoteDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
+    if (g_tailState.load(std::memory_order_relaxed) == 2)
+        Tail(ctx, type, count, instances);
     ProbeDraw(ctx, type, count, instances);
     if (!g_census.load(std::memory_order_relaxed))
         return;
@@ -683,13 +851,16 @@ void ProbeDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instanc
         std::find(g_probeLogged.begin(), g_probeLogged.end(), kind) != g_probeLogged.end())
         return;
     g_probeLogged.push_back(kind);
-    Log("Muzzle probe: %s count %u, %u instances, stride %u, stencil %u, VS %p PS %p:%s", kTypeNames[type], count,
-        instances, stride, ref, kind.vs, kind.ps, found);
+    Log("Muzzle probe: %s count %u (from index %u), %u instances, stride %u, stencil %u, VS %p PS %p:%s",
+        kTypeNames[type], count, type == kIndexed || type == kIndexedInstanced ? t_start : 0u, instances, stride, ref,
+        kind.vs, kind.ps, found);
 }
 
 void STDMETHODCALLTYPE Draw0(ID3D11DeviceContext* c, UINT count, UINT start) {
     NoteDraw(c, kPlain, count, 1);
     if (HiddenPs(c))
+        return;
+    if (overlay::Draw(c, count, [&] { g_origDraw[0](c, count, start); }))
         return;
     if (FlashSprite(c, count)) {
         DumpFx(count);
@@ -701,6 +872,8 @@ void STDMETHODCALLTYPE Draw0(ID3D11DeviceContext* c, UINT count, UINT start) {
 void STDMETHODCALLTYPE Draw1(ID3D11DeviceContext* c, UINT count, UINT start) {
     NoteDraw(c, kPlain, count, 1);
     if (HiddenPs(c))
+        return;
+    if (overlay::Draw(c, count, [&] { g_origDraw[1](c, count, start); }))
         return;
     if (FlashSprite(c, count)) {
         DumpFx(count);
@@ -723,6 +896,7 @@ void STDMETHODCALLTYPE DrawInstanced1(ID3D11DeviceContext* c, UINT count, UINT i
 }
 void STDMETHODCALLTYPE DrawIndexedInstanced0(ID3D11DeviceContext* c, UINT count, UINT instances, UINT start, INT base,
                                              UINT first) {
+    t_start = start;
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
     if (Hidden(count) || HiddenPs(c))
@@ -736,6 +910,7 @@ void STDMETHODCALLTYPE DrawIndexedInstanced0(ID3D11DeviceContext* c, UINT count,
 }
 void STDMETHODCALLTYPE DrawIndexedInstanced1(ID3D11DeviceContext* c, UINT count, UINT instances, UINT start, INT base,
                                              UINT first) {
+    t_start = start;
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
     if (Hidden(count) || HiddenPs(c))
@@ -796,7 +971,8 @@ bool DrawWithGun(int which, ID3D11DeviceContext* ctx, const std::function<void()
     return DrawMoved(which, ctx, draw);
 }
 
-int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT, INT) {
+int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT start, INT) {
+    t_start = start;
     NoteDraw(ctx, kIndexed, count, 1);
     if (Hidden(count) || HiddenPs(ctx))
         return kHide;
@@ -812,6 +988,10 @@ void SetLift(float metres) {
 
 ULONGLONG MsSinceShot() {
     return GetTickCount64() - g_lastShot.load(std::memory_order_relaxed);
+}
+
+ULONGLONG LastShot() {
+    return g_lastShot.load(std::memory_order_relaxed);
 }
 
 void SetMoveMatrices(int which) {
@@ -861,6 +1041,10 @@ void StartFlashProbe() {
         g_probeLogged.clear();
     }
     Log("Muzzle probe: the next 10 s (fire, with weapon.txt \"watch\")");
+}
+
+void LogFrameTail() {
+    g_tailState = 1;
 }
 
 void StartCensus() {
@@ -914,6 +1098,15 @@ void Update() {
                 g_gunArms[r] = g_gunWorld[r] - (world[r] - arms[r]);
             }
         g_haveGun = have;
+    }
+    if (const int tail = g_tailState.load(std::memory_order_relaxed); tail == 1) {
+        std::lock_guard lock(g_tailMutex);
+        g_tail.clear();
+        g_tailAll = 0;
+        g_tailState = 2;
+    } else if (tail == 2) {
+        g_tailState = 0;
+        LogTail();
     }
     if (!g_census.load(std::memory_order_relaxed))
         return;

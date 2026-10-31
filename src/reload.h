@@ -10,11 +10,15 @@ namespace reload {
 //
 // Once a frame on the render thread, with free hands (hands.cpp): the gun's pose (rows: rotation |
 // translation, its model space to the view's) and the left palm in the view's space (nullptr when
-// not tracked), and how far the left trigger is pulled (0-1).
-void Update(const float* gunPose, const float* leftPalm, float trigger);
+// not tracked), how far the left trigger is pulled (0-1), and where the left glove touches the
+// gun's surface, in its model space (nullptr when it doesn't: gunshape.cpp).
+void Update(const float* gunPose, const float* leftPalm, float trigger, const float* touch);
 
 // The bolt is back: the gun mustn't fire.
 bool BoltBack();
+
+// The left hand has hold of the charging handle (the glove is drawn on it, hooking it).
+bool HandleHeld();
 
 // The game's own reload (X held), or a new life: a round in the chamber.
 void ReleaseBolt();
@@ -24,8 +28,5 @@ float HandleBack();
 
 // How far the ejection port's cover has swung open on its hinge, in radians (0 = shut).
 float CoverAngle();
-
-// Where the gun is for its sounds: -1 left to 1 right of the head.
-float GunPan();
 
 }

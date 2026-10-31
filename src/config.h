@@ -41,6 +41,9 @@ struct Settings {
     // with the game's mouse sensitivity on the test setup.
     float turnDegrees = 266.0f;
     float turnSpeed = 15.0f;
+    // Walking by the left stick as an Xbox controller's (any direction, any speed), where the head
+    // faces; 0 = W/A/S/D (eight directions, one speed).
+    bool analogMove = true;
     // Which way the gun model is swung to follow the hand (F1 flips it).
     bool gunFlip = false;
     // How far the controller's aim may stray from where the head looks, in degrees. BF3 only
@@ -82,7 +85,7 @@ struct Aim {
     bool yawDegrees = false;
     bool pitchDegrees = false;
     // Which way a head turn moves each angle; F4 / F2 flip them in game.
-    bool invertYaw = false;
+    bool invertYaw = false;  // false: the hand's yaw goes in negated, BF3's way (aim.cpp)
     bool invertPitch = false;
 };
 

@@ -59,6 +59,9 @@ const char kDefaultIni[] =
     "turn_degrees=266\n"
     "; The same in theater mode, where the stick moves the mouse (counts per 72nd of a second).\n"
     "turn_speed=15\n"
+    "; 1 = the left stick walks as a controller's does, in any direction and as fast as it's pushed,\n"
+    "; where the head faces; 0 = it presses W/A/S/D.\n"
+    "analog_move=1\n"
     "; 1 = swing the gun model the other way (F1 in game) if it moves away from your hand.\n"
     "gun_flip=0\n"
     "; How far (degrees) the aim may stray from where you look. BF3 only draws what's in front\n"
@@ -205,6 +208,7 @@ void Load(HMODULE self) {
     s.mirrorOneEye = ReadBool(L"stereo", L"mirror_one_eye", true);
     s.controllerAim = ReadBool(L"controllers", L"aim", true);
     s.turnDegrees = ReadFloat(L"controllers", L"turn_degrees", s.turnDegrees);
+    s.analogMove = ReadFloat(L"controllers", L"analog_move", s.analogMove ? 1.0f : 0.0f) != 0.0f;
     s.turnSpeed = ReadFloat(L"controllers", L"turn_speed", s.turnSpeed);
     s.gunFlip = ReadBool(L"controllers", L"gun_flip", false);
     s.maxAimOffsetDeg = ReadFloat(L"controllers", L"max_aim_offset", s.maxAimOffsetDeg);

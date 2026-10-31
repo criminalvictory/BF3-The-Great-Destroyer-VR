@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -19,28 +20,41 @@ namespace {
 constexpr float kPi = 3.14159265f;
 constexpr float kRadToDeg = 57.2957795f;
 
-// The look angles' own object (found 2026-10-30): vtable bf3.exe+0x1C793A8, the yaw at +0x10C and
-// the pitch at +0x118, in radians. The player's soldier reaches it within three pointers. Another
-// object of the kind holds a copy the game rebuilds from it every frame, and the pointers in
-// bf3vr.ini ([aim] yaw and pitch, from F3) can lead to either, or elsewhere after a load: at a new
-// checkpoint they led into a block of pointers, and the pitch was being written over one of them.
-// So nothing is written but to an object of the kind, and of those only to the one that keeps a
-// small nudge (a copy loses it within a frame).
-constexpr uintptr_t kAnglesType = 0x1C793A8;
-constexpr uintptr_t kYawField = 0x10C;
-constexpr uintptr_t kPitchField = 0x118;
-constexpr float kNudge = 0.03f;            // radians, undone straight after
-constexpr ULONGLONG kSearchAgain = 5000;   // ms between searches while none is found
+// The player's look angles: a float yaw and, 12 bytes on, the pitch (radians), somewhere within
+// 0x200 bytes after an object the client soldier reaches by its fields. Neither the object's kind
+// nor the way there stays the same from one load to the next (seen 2026-10-30: two pointers away,
+// then three; the block bf3vr.ini's old F3 pointer led to went elsewhere at a checkpoint, the pitch
+// was written over a pointer and the player walked backwards). What does: they're exactly the
+// angles the game builds the weapon camera from, before the mod turns it (camera.cpp), and they
+// keep a nudge and turn that camera with it, where the copies the game rebuilds each frame don't.
+// So: the soldier's pointers three deep, the pairs just after each that match the camera, each
+// nudged; nothing is written until one passes. Kept while it goes on matching the camera.
+constexpr float kNudge = 0.03f;           // radians, undone straight after
+constexpr ULONGLONG kSearchAgain = 3000;  // ms between searches while none is found
+constexpr uint32_t kWindow = 0x200;       // bytes looked through after each pointer
 
+// The look yaw is set outright each frame: where the game's aim was when the angles were found
+// (less the hand's yaw then), plus the hand's yaw and the stick's turns since. Adding each frame's
+// change instead let anything the game did to the angle pile up, and the picture, which takes the
+// hand's yaw back out of it, turned with the gun again (user, 2026-10-30).
 bool g_havePrevious = false;
-float g_previousYaw = 0.0f;
-float g_previousPitch = 0.0f;
+float g_base = 0.0f;     // the look yaw with the hand's yaw at 0 and no stick turn
+float g_turned = 0.0f;   // the stick's turns since then (radians, the hand's sense)
+float g_target = 0.0f;   // the look yaw written this frame
+bool g_haveTarget = false;
 int g_writes = 0;  // head moves written since the last Probe log
+int g_gameMoves = 0;      // frames the game had moved the look yaw away from the last one written
+float g_gameMoveMost = 0.0f;
+// How far up and down the game lets the look pitch go, as learned (radians), and the last written.
+constexpr float kSteep = 0.9f;  // about 52 degrees: only writes past this teach the limits
+float g_pitchMax = 1.5f, g_pitchMin = -1.5f, g_pitchWritten = 0.0f;
+bool g_havePitch = false;
 
-std::atomic<uintptr_t> g_yawAddress{0};  // the real yaw, or 0 (the pitch is 0xC on)
-std::atomic<uintptr_t> g_foundFor{0};    // the client soldier it was looked for from
+std::atomic<uintptr_t> g_yawAddress{0};  // the angles found, or 0 (the pitch is 0xC on)
+std::atomic<uintptr_t> g_foundFor{0};    // the client soldier they were looked for from
 std::atomic<bool> g_searching{false};
 ULONGLONG g_searchedAt = 0;              // render thread
+ULONGLONG g_mismatchSince = 0;           // render thread: when they stopped matching the camera
 
 bool SafeWrite(uintptr_t address, float value) {
     __try {
@@ -61,24 +75,6 @@ bool LooksLikeAngle(float v, bool pitch) {
     return (size == 0.0f || size >= 1e-6f) && size <= (pitch ? 1.6f : 1000.0f);
 }
 
-bool OfTheKind(uintptr_t object) {
-    uint32_t type = 0;
-    return camera::SafeRead(object, &type, sizeof(type)) &&
-           type == reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kAnglesType;
-}
-
-// The yaw the game camera ([aim] game_camera) is built from, as these angles store it (atan2 of its
-// forward row's x and -z); false if it can't be read. In stereo the mod turns that camera by the
-// hand's offset from the head, so it only roughly matches.
-bool CameraYaw(float& yaw) {
-    uintptr_t address = 0;
-    camera::Transform t;
-    if (!camera::Resolve(config::GetAim().gameCamera, address) || !camera::SafeRead(address, &t, sizeof(t)))
-        return false;
-    yaw = std::atan2(t.forward[0], -t.forward[2]);
-    return std::isfinite(yaw);
-}
-
 float YawApart(float a, float b) {
     float d = std::fmod(a - b, 2.0f * kPi);
     if (d > kPi)
@@ -88,21 +84,14 @@ float YawApart(float a, float b) {
     return std::fabs(d);
 }
 
-// Background thread: the objects of the kind the soldier reaches (and the one bf3vr.ini's pointer
-// leads to), each nudged in turn until one keeps it. One facing well away from the game camera is
-// someone else's.
-void Search(uintptr_t soldier, uintptr_t chainYaw) {
-    std::vector<uintptr_t> objects;
-    auto consider = [&](uintptr_t v) {
-        for (uintptr_t start : {v, v - 0x40})  // the object, or its part the old pointers led to
-            if (OfTheKind(start) && std::find(objects.begin(), objects.end(), start) == objects.end())
-                objects.push_back(start);
-    };
-    if (chainYaw)
-        consider(chainYaw - kYawField);
+// Every yaw-and-pitch pair within kWindow after a pointer the soldier's fields lead to, three
+// deep, that matches the camera's angles.
+std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPitch) {
+    std::vector<uintptr_t> pairs;
     std::vector<uintptr_t> level{soldier}, next;
     std::unordered_set<uintptr_t> seen{soldier};
-    for (int depth = 0; depth < 3 && objects.size() < 16; ++depth) {
+    uint32_t window[kWindow / 4 + 3];
+    for (int depth = 0; depth < 3; ++depth) {
         for (uintptr_t node : level) {
             uint32_t fields[0x100];
             if (!camera::SafeRead(node, fields, sizeof(fields)))
@@ -110,67 +99,174 @@ void Search(uintptr_t soldier, uintptr_t chainYaw) {
             for (uint32_t v : fields) {
                 if (v < 0x10000 || v >= 0xFFFF0000u || (v & 3) || !seen.insert(v).second)
                     continue;
-                consider(v);
                 if (depth < 2 && seen.size() < 200000)
                     next.push_back(v);
+                if (!camera::SafeRead(v, window, sizeof(window)))
+                    continue;
+                for (uint32_t i = 0; i < kWindow / 4; ++i) {
+                    float yaw, pitch;
+                    std::memcpy(&yaw, &window[i], 4);
+                    std::memcpy(&pitch, &window[i + 3], 4);
+                    if (LooksLikeAngle(yaw, false) && YawApart(yaw, cameraYaw) < 0.01f &&
+                        std::fabs(pitch - cameraPitch) < 0.01f &&
+                        std::find(pairs.begin(), pairs.end(), v + i * 4) == pairs.end())
+                        pairs.push_back(v + i * 4);
+                }
             }
         }
         level.swap(next);
         next.clear();
     }
+    return pairs;
+}
+
+// A load leaves the pitch exactly level until it's written, and level, nothing is nudged (below):
+// the game's view is tilted a few degrees by the mouse, the game's own input, so the next search
+// can go ahead. Only with the game's window in front (the mouse would move the desktop's otherwise).
+void TiltView() {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    if (pid != GetCurrentProcessId())
+        return;
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dy = 24;  // about 6 degrees down at the test setup's mouse speed
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+}
+
+// Whether a yaw/pitch pair is the player's look: with the camera still (not turning, not firing),
+// its yaw nudged one way and its pitch the other, the pair keeps them and the camera's yaw and pitch
+// both follow, each its own way; put back, the camera comes back. A yaw nudge alone, checked only
+// for the camera moving about as much, took two wrong pairs in one evening: recoil and the smooth
+// turn moved the camera during the test, and the mod then wrote where the game wasn't looking (the
+// user's shots at the floor went elsewhere, 2026-10-30).
+enum class Proof { kNo, kKept, kYes, kBusy };
+
+Proof Proves(uintptr_t at) {
+    float yaw = 0.0f, pitch = 0.0f, still[2][2] = {};
+    if (!camera::SafeRead(at, &yaw, sizeof(yaw)) || !camera::SafeRead(at + 0xC, &pitch, sizeof(pitch)) ||
+        !camera::GameWeaponAngles(still[0][0], still[0][1]) || YawApart(yaw, still[0][0]) > 0.02f)
+        return Proof::kNo;
+    Sleep(120);
+    if (!camera::GameWeaponAngles(still[1][0], still[1][1]) || YawApart(still[1][0], still[0][0]) > 0.002f ||
+        std::fabs(still[1][1] - still[0][1]) > 0.002f)
+        return Proof::kBusy;
+    // The pitch towards level, so the nudge never goes past the game's limits.
+    const float pitchNudge = pitch > 0.0f ? -kNudge : kNudge;
+    if (!SafeWrite(at, yaw + kNudge) || !SafeWrite(at + 0xC, pitch + pitchNudge))
+        return Proof::kNo;
+    Sleep(150);
+    float keptYaw = 0.0f, keptPitch = 0.0f, nudged[2] = {};
+    const bool kept = camera::SafeRead(at, &keptYaw, sizeof(keptYaw)) &&
+                      camera::SafeRead(at + 0xC, &keptPitch, sizeof(keptPitch)) &&
+                      std::fabs(keptYaw - (yaw + kNudge)) < kNudge * 0.3f &&
+                      std::fabs(keptPitch - (pitch + pitchNudge)) < kNudge * 0.3f;
+    // Signed: the camera's yaw up by the nudge, its pitch the pitch nudge's way.
+    bool followed = camera::GameWeaponAngles(nudged[0], nudged[1]);
+    if (followed) {
+        float yawMoved = nudged[0] - still[1][0];
+        yawMoved -= 2 * kPi * std::round(yawMoved / (2 * kPi));
+        followed = std::fabs(yawMoved - kNudge) < kNudge * 0.3f &&
+                   std::fabs((nudged[1] - still[1][1]) - pitchNudge) < kNudge * 0.3f;
+    }
+    if (!kept)
+        return Proof::kNo;
+    SafeWrite(at, yaw);
+    SafeWrite(at + 0xC, pitch);
+    if (!followed)
+        return Proof::kKept;
+    Sleep(150);
+    float back[2] = {};
+    const bool returned = camera::GameWeaponAngles(back[0], back[1]) && YawApart(back[0], still[1][0]) < kNudge * 0.3f &&
+                          std::fabs(back[1] - still[1][1]) < kNudge * 0.3f;
+    return returned ? Proof::kYes : Proof::kKept;
+}
+
+// Background thread: the pairs tested in turn; the first that proves to be the player's look
+// (Proves) is used.
+void Search(uintptr_t soldier) {
+    float cameraYaw = 0.0f, cameraPitch = 0.0f;
+    for (int wait = 0; wait < 20 && !camera::GameWeaponAngles(cameraYaw, cameraPitch); ++wait)  // just after a load
+        Sleep(50);
     uintptr_t found = 0;
-    float cameraYaw = 0.0f;
-    const bool haveCamera = CameraYaw(cameraYaw);
-    for (uintptr_t o : objects) {
-        const uintptr_t at = o + kYawField;
-        float yaw = 0.0f, pitch = 0.0f, after = 0.0f;
-        if (!camera::SafeRead(at, &yaw, sizeof(yaw)) || !camera::SafeRead(o + kPitchField, &pitch, sizeof(pitch)) ||
-            !LooksLikeAngle(yaw, false) || !LooksLikeAngle(pitch, true) ||
-            (haveCamera && YawApart(yaw, cameraYaw) > 1.0f) || !SafeWrite(at, yaw + kNudge))
-            continue;
-        Sleep(150);
-        if (camera::SafeRead(at, &after, sizeof(after)) && std::fabs(after - (yaw + kNudge)) < kNudge * 0.3f) {
-            SafeWrite(at, after - kNudge);
-            found = at;
-            break;
+    size_t candidates = 0;
+    int kept = 0;
+    // Looking level, the pitch is a zero, which matches every zero after a yaw-like float: nothing
+    // is nudged then (nudging stray matches crashed the game once, from outside, 2026-10-30).
+    int busy = 0;  // pairs not tried: the camera was moving (turning, firing)
+    if (camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.02f) {
+        const std::vector<uintptr_t> pairs = Pairs(soldier, cameraYaw, cameraPitch);
+        candidates = pairs.size();
+        for (size_t k = 0; k < pairs.size() && k < 24 && !found; ++k) {
+            switch (Proves(pairs[k])) {
+            case Proof::kYes:
+                found = pairs[k], ++kept;
+                break;
+            case Proof::kKept:
+                ++kept;
+                break;
+            case Proof::kBusy:
+                ++busy;
+                break;
+            default:
+                break;
+            }
         }
     }
+    const bool level = !found && camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) <= 0.02f;
+    if (level)
+        TiltView();
     static uintptr_t s_logged = 1;
     if (found && found != s_logged)
-        Log("Aim: the look angles found at %08X (%zu objects of the kind from the soldier; it kept the nudge)",
-            static_cast<unsigned>(found), objects.size());
-    else if (!found && s_logged)
-        Log("Aim: no look angles found (%zu objects of the kind from the soldier, none kept a nudge); nothing is "
-            "written until they are",
-            objects.size());
+        Log("Aim: the look angles found at %08X (%zu pairs near the soldier matching the camera, %d kept a nudge)",
+            static_cast<unsigned>(found), candidates, kept);
+    else if (level)
+        Log("Aim: the game's view is exactly level, which can't be told apart; tilted a little to look again");
+    else if (!found)
+        Log("Aim: no look angles yet (%zu pairs near the soldier matching the camera, %d kept a nudge, none turned "
+            "it, %d not tried with the camera moving); the view follows the head meanwhile",
+            candidates, kept, busy);
     s_logged = found;
     g_yawAddress = found;
     g_foundFor = soldier;
     g_searching = false;
 }
 
-// Where to write the angles, if they're known for the player's current soldier; otherwise a
-// search starts (a new life, a checkpoint, a load) and nothing is written meanwhile.
-bool Targets(const config::Aim& a, uintptr_t& yawAddress, uintptr_t& pitchAddress) {
+// Where to write the angles, if they're known for the player's current soldier and still match the
+// camera (a vehicle, a cutscene or a load can leave them: after a second of not matching, they're
+// looked for again); otherwise a search starts and nothing is written meanwhile.
+bool Targets(uintptr_t& yawAddress, uintptr_t& pitchAddress) {
     const uintptr_t soldier = god::PlayerClientSoldier();
     const uintptr_t found = g_yawAddress.load();
-    float yaw = 0.0f, pitch = 0.0f;
-    if (soldier && soldier == g_foundFor.load() && found && OfTheKind(found - kYawField) &&
-        camera::SafeRead(found, &yaw, sizeof(yaw)) && camera::SafeRead(found + 0xC, &pitch, sizeof(pitch)) &&
-        LooksLikeAngle(yaw, false) && LooksLikeAngle(pitch, true)) {
-        yawAddress = found;
-        pitchAddress = found + (kPitchField - kYawField);
-        return true;
-    }
     const ULONGLONG now = GetTickCount64();
+    float yaw = 0.0f, pitch = 0.0f, cameraYaw = 0.0f, cameraPitch = 0.0f;
+    if (soldier && soldier == g_foundFor.load() && found && camera::SafeRead(found, &yaw, sizeof(yaw)) &&
+        camera::SafeRead(found + 0xC, &pitch, sizeof(pitch)) && LooksLikeAngle(yaw, false) &&
+        LooksLikeAngle(pitch, true)) {
+        // Yaw and pitch both (a wrong pair's yaw stayed near the camera's for 16 s by chance while
+        // its pitch never did, 2026-10-30).
+        const bool matching = !camera::GameWeaponAngles(cameraYaw, cameraPitch) ||
+                              (YawApart(yaw, cameraYaw) < 0.2f && std::fabs(pitch - cameraPitch) < 0.12f);
+        if (matching)
+            g_mismatchSince = 0;
+        else if (!g_mismatchSince)
+            g_mismatchSince = now;
+        if (!g_mismatchSince || now - g_mismatchSince < 1000) {
+            yawAddress = found;
+            pitchAddress = found + 0xC;
+            return true;
+        }
+        Log("Aim: the look angles at %08X stopped matching the weapon camera; looking again",
+            static_cast<unsigned>(found));
+        g_yawAddress = 0;
+        g_mismatchSince = 0;
+    }
     if (soldier && !g_searching.load() && (soldier != g_foundFor.load() || now - g_searchedAt > kSearchAgain)) {
         g_searchedAt = now;
         g_searching = true;
         g_yawAddress = 0;
-        uintptr_t chain = 0;
-        if (a.yaw.base && !camera::Resolve(a.yaw, chain))
-            chain = 0;
-        std::thread(Search, soldier, chain).detach();
+        std::thread(Search, soldier).detach();
     }
     return false;
 }
@@ -180,11 +276,6 @@ void SetTo(uintptr_t address, float value) {
         ++g_writes;
 }
 
-void AddTo(uintptr_t address, float delta) {
-    float value = 0.0f;
-    if (delta != 0.0f && camera::SafeRead(address, &value, sizeof(value)) && SafeWrite(address, value + delta))
-        ++g_writes;
-}
 
 }
 
@@ -193,48 +284,98 @@ namespace aim {
 bool Update(float headYaw, float headPitch, float turn) {
     config::Aim a = config::GetAim();
     uintptr_t yawAddress = 0, pitchAddress = 0;
-    if (!Targets(a, yawAddress, pitchAddress)) {
+    if (!Targets(yawAddress, pitchAddress)) {
         g_havePrevious = false;  // found again: start from there, no jump
+        g_haveTarget = false;
+        g_havePitch = false;
+        return false;
+    }
+    // The hand's yaw is OpenXR's (growing as it turns left); the game's look yaw grows turning
+    // right: it goes in negated. Measured 2026-10-30 (weapon.txt "viewlog", the user sweeping the
+    // gun with the head still): taken as it came, the game aimed the other way from the gun and
+    // the picture, taking the hand's turn back out, swung twice the gun's turn ("the camera moves
+    // with the gun"). The stick's turn (input::TakeTurn) is OpenXR's way too, left positive: it
+    // goes in negated with it (left as it came, the smooth turn ran backwards: user, the same
+    // evening). ([aim] invert_yaw undoes both.)
+    const float sign = a.invertYaw ? 1.0f : -1.0f;
+    float now = 0.0f;
+    if (!camera::SafeRead(yawAddress, &now, sizeof(now))) {
+        g_haveTarget = false;
         return false;
     }
     if (!g_havePrevious) {
-        g_previousYaw = headYaw;
-        g_previousPitch = headPitch;
+        g_base = now - sign * headYaw;
+        g_turned = 0.0f;
         g_havePrevious = true;
-        return true;
+    } else if (g_haveTarget) {
+        // Whatever the game did to it since the last write (it should do nothing).
+        float moved = now - g_target;
+        moved -= 2 * kPi * std::round(moved / (2 * kPi));
+        if (std::fabs(moved) > 0.0005f) {
+            ++g_gameMoves;
+            g_gameMoveMost = std::max(g_gameMoveMost, std::fabs(moved));
+        }
     }
-    float yaw = headYaw - g_previousYaw;
-    if (yaw > kPi)
-        yaw -= 2 * kPi;
-    if (yaw < -kPi)
-        yaw += 2 * kPi;
-    g_previousYaw = headYaw;
-    g_previousPitch = headPitch;
-
-    // Yaw: add the change, since the mouse also turns the body, and the stick's turn with it.
-    // The picture follows the yaw written here (camera.cpp), so the turn is drawn in step with
-    // the frame, whenever the game itself reads it.
-    yaw += turn;
-    if (a.invertYaw)
-        yaw = -yaw;
-    AddTo(yawAddress, yaw);
+    // Yaw: set outright, the stick's turn added to the hand's. The picture follows the yaw written
+    // here (camera.cpp: LookYaw gives this, not what the game made of it), so the turn is drawn in
+    // step with the frame, whenever the game itself reads it, and the gun can't turn the view.
+    g_turned += turn;
+    float yaw = g_base + sign * (headYaw + g_turned);
+    yaw -= 2 * kPi * std::floor(yaw / (2 * kPi));  // the game keeps it within 0 to 2 pi
+    g_target = yaw;
+    g_haveTarget = true;
+    SetTo(yawAddress, yaw);
     // Pitch: set it outright. Adding changes drifted: BF3 clamps how far the player can look
     // up or down, so whatever went past the clamp was lost and the game ended up aiming low.
-    // The stored pitch is the true view pitch (positive = up), so it takes the angle as is.
-    SetTo(pitchAddress, a.invertPitch ? -headPitch : headPitch);
+    // The stored pitch is the true view pitch (positive = up), so it takes the angle as is. Past
+    // that clamp, the game pulled each frame's write back and the gun shook aiming up (user,
+    // 2026-10-30): where it pulls a steep write back to is learned as the limit and kept to.
+    // (Only steep ones: the game's recoil moves the pitch too.)
+    float pitchNow = 0.0f;
+    if (g_havePitch && camera::SafeRead(pitchAddress, &pitchNow, sizeof(pitchNow)) &&
+        std::fabs(pitchNow - g_pitchWritten) > 0.002f) {
+        if (g_pitchWritten > kSteep && pitchNow < g_pitchWritten && pitchNow < g_pitchMax) {
+            g_pitchMax = pitchNow;
+            Log("Aim: the game keeps the look pitch below %.1f degrees", pitchNow * 57.29578f);
+        } else if (g_pitchWritten < -kSteep && pitchNow > g_pitchWritten && pitchNow > g_pitchMin) {
+            g_pitchMin = pitchNow;
+            Log("Aim: the game keeps the look pitch above %.1f degrees", pitchNow * 57.29578f);
+        }
+    }
+    const float pitch = std::clamp(a.invertPitch ? -headPitch : headPitch, g_pitchMin, g_pitchMax);
+    SetTo(pitchAddress, pitch);
+    g_pitchWritten = pitch;
+    g_havePitch = true;
     return true;
 }
 
 void Reset() {
     g_havePrevious = false;
+    g_haveTarget = false;
+}
+
+// weapon.txt "aimtest 20": the hand's yaw taken as turned that many degrees more, from 1 s to 3 s
+// after, so the view's turn can be checked with the controllers lying still (weapon.txt "viewlog":
+// the game's camera turns by it, the picture mustn't).
+std::atomic<ULONGLONG> g_testAt{0};
+std::atomic<float> g_testAngle{0.0f};
+
+void StartTest(float degrees) {
+    g_testAngle.store(degrees * kPi / 180.0f, std::memory_order_relaxed);
+    g_testAt.store(GetTickCount64(), std::memory_order_relaxed);
+    Log("Aim: test: the hand taken as turned %.0f degrees more from 1 s to 3 s from now", degrees);
+}
+
+float TestTurn() {
+    const ULONGLONG since = GetTickCount64() - g_testAt.load(std::memory_order_relaxed);
+    return since >= 1000 && since < 3000 ? g_testAngle.load(std::memory_order_relaxed) : 0.0f;
 }
 
 bool LookYaw(float& radians, float& sign) {
-    config::Aim a = config::GetAim();
-    uintptr_t yawAddress = 0, pitchAddress = 0;
-    if (!Targets(a, yawAddress, pitchAddress) || !camera::SafeRead(yawAddress, &radians, sizeof(radians)))
+    if (!g_haveTarget)
         return false;
-    sign = a.invertYaw ? -1.0f : 1.0f;
+    radians = g_target;  // as written, whatever the game has done to it since
+    sign = config::GetAim().invertYaw ? 1.0f : -1.0f;  // the hand's yaw goes in negated (Update)
     return true;
 }
 
@@ -245,12 +386,19 @@ void Probe() {
         return;
     lastLog = now;
     const uintptr_t yaw = g_yawAddress.load();
-    float angles[4] = {};
+    float angles[4] = {}, cameraYaw = 0.0f, cameraPitch = 0.0f;
     if (yaw && camera::SafeRead(yaw, angles, sizeof(angles)))
         Log("Aim: yaw at %08X = %.4f, pitch %.4f", static_cast<unsigned>(yaw), angles[0], angles[3]);
+    if (camera::GameWeaponAngles(cameraYaw, cameraPitch))
+        Log("Aim: the weapon camera as the game wrote it: yaw %.4f, pitch %.4f", cameraYaw, cameraPitch);
     if (g_writes)
         Log("Aim: %d head moves written in the last second", g_writes);
+    if (g_gameMoves)
+        Log("Aim: the game moved the look yaw itself in %d frames (by up to %.2f degrees)", g_gameMoves,
+            g_gameMoveMost * 57.29578f);
     g_writes = 0;
+    g_gameMoves = 0;
+    g_gameMoveMost = 0.0f;
 }
 
 void FlipYaw() {

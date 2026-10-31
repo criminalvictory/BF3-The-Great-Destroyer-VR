@@ -27,15 +27,22 @@ constexpr float kHandleReach = 0.09f;    // the palm within this of the grip poi
 constexpr float kBoltRelease[3] = {0.03f, 0.01f, 0.37f};
 constexpr float kSlapReach = 0.10f;
 constexpr float kSlapSpeed = 0.7f;       // m/s: slower is a touch, not a slap
+// With the gun's shape: the glove touching the receiver's left side (x > 5 mm), between these
+// heights (y) and along it (z), coming in faster than this.
+constexpr float kSlapSide = 0.005f;
+constexpr float kSlapZone[4] = {-0.04f, 0.075f, 0.26f, 0.48f};  // y from, to; z from, to
+constexpr float kTouchSlapSpeed = 0.25f;  // m/s
 constexpr float kPullTravel = 0.07f;     // as far back as the handle goes
 constexpr float kPullToCharge = 0.045f;  // pulled at least this far and let go: a round chambered
 constexpr double kSpringHome = 0.06;     // s: the handle let go, back home
-// The ejection port's cover springs open on its hinge when the bolt moves and swings shut once it
-// has been still a moment (the user: it opens and shuts, it doesn't slide).
+// The ejection port's cover springs open on its hinge with each shot and snaps shut before the next
+// (the user: it opens and shuts, it doesn't slide; then: faster, between shots). Shots come
+// ~75 ms apart; open within a frame, held about a frame, shut within ~35 ms. It stays open while
+// the bolt is locked back or the charging handle is drawn.
 constexpr float kCoverOpen = 2.8f;       // radians (160 degrees): out and down against the receiver
-constexpr double kCoverSwing = 0.05;     // s to spring open
-constexpr double kCoverHold = 0.6;       // s open after the bolt last moved
-constexpr double kCoverShut = 0.2;       // s to swing shut
+constexpr double kCoverSwing = 0.012;    // s to spring open
+constexpr double kCoverHold = 0.018;     // s open after the bolt last moved
+constexpr double kCoverShut = 0.035;     // s to swing shut
 
 bool g_boltBack = false;
 bool g_grabbed = false;
@@ -43,12 +50,13 @@ float g_grabZ = 0.0f, g_pull = 0.0f, g_maxPull = 0.0f, g_lastTrigger = 0.0f;
 double g_releasedAt = -1.0;
 float g_lastPalm[3] = {};
 bool g_havePalm = false;
+bool g_wasTouching = false;  // the glove touched the gun last frame (a slap is the touch's start)
 double g_lastTime = 0.0;
 int g_lastLoaded = -1;
 float g_cover = 0.0f;  // 0 shut, 1 open
 double g_boltMovedAt = -1.0;
+ULONGLONG g_shotSeen = 0;  // the last shot the cover opened for
 std::atomic<float> g_handleBack{0.0f}, g_coverAngle{0.0f};  // what DrawGun draws
-std::atomic<float> g_pan{0.3f};  // where the gun is, left (-1) to right (1), for its sounds
 bool g_chargeSounded = false;  // this pull of the handle has made its sound
 
 double Now() {
@@ -94,7 +102,7 @@ bool Chamber(const char* how) {
 
 namespace reload {
 
-void Update(const float* gunPose, const float* leftPalm, float trigger) {
+void Update(const float* gunPose, const float* leftPalm, float trigger, const float* touch) {
     const double now = Now();
     const float dt = g_lastTime > 0.0 ? static_cast<float>(now - g_lastTime) : 0.0f;
     g_lastTime = now;
@@ -109,9 +117,6 @@ void Update(const float* gunPose, const float* leftPalm, float trigger) {
         }
         g_lastLoaded = loaded;
     }
-
-    if (gunPose)
-        g_pan = std::clamp(gunPose[3] / 0.35f, -1.0f, 1.0f);  // the view's x is to the right
 
     float palm[3] = {};
     const bool have = gunPose && leftPalm;
@@ -140,7 +145,7 @@ void Update(const float* gunPose, const float* leftPalm, float trigger) {
             if (g_maxPull >= kPullToCharge) {
                 Chamber("charging handle pulled");
                 if (!g_boltBack)  // the bolt goes home (empty, it stays caught back)
-                    sounds::Play("bolt", g_pan);
+                    sounds::Play("bolt");
             }
             Log("Reload: charging handle let go, pulled %.0f mm", g_maxPull * 1000.0f);
         } else {
@@ -148,7 +153,7 @@ void Update(const float* gunPose, const float* leftPalm, float trigger) {
             g_maxPull = std::max(g_maxPull, g_pull);
             if (g_pull > 0.02f && !g_chargeSounded) {
                 g_chargeSounded = true;
-                sounds::Play("charge", g_pan);
+                sounds::Play("charge");
             }
         }
     }
@@ -163,19 +168,30 @@ void Update(const float* gunPose, const float* leftPalm, float trigger) {
     g_handleBack = handle;
 
     // The cover: open while the bolt moves (a shot, locked back, the handle drawn), then shut.
-    if (effects::MsSinceShot() < 100 || g_boltBack || handle > 0.01f)
+    const ULONGLONG shot = effects::LastShot();
+    const bool newShot = shot != g_shotSeen;
+    g_shotSeen = shot;
+    if (newShot || g_boltBack || handle > 0.01f)
         g_boltMovedAt = now;
     const bool open = g_boltMovedAt >= 0.0 && now - g_boltMovedAt < kCoverHold;
     g_cover = open ? std::min(g_cover + dt / static_cast<float>(kCoverSwing), 1.0f)
                    : std::max(g_cover - dt / static_cast<float>(kCoverShut), 0.0f);
     g_coverAngle = kCoverOpen * g_cover * (2.0f - g_cover);  // fast at first, easing into place
 
-    // The bolt release: a quick slap at the left side of the receiver, behind the magazine well.
+    // The bolt release: a slap at the left side of the receiver, behind the magazine well. The glove
+    // touching the gun there as the hand comes in (the gun's shape, gunshape.cpp: the user saw the
+    // hand go through the gun and the slap not always count), or, without the shape, a quick hand
+    // near it.
     if (have && g_havePalm && dt > 0.0f && !g_grabbed && g_boltBack) {
         const float speed = Distance(palm, g_lastPalm) / dt;
-        if (speed > kSlapSpeed && Distance(palm, kBoltRelease) < kSlapReach && Chamber("bolt release slapped"))
-            sounds::Play("bolt", g_pan);
+        const bool onRelease = touch && touch[0] > kSlapSide && touch[1] > kSlapZone[0] && touch[1] < kSlapZone[1] &&
+                               touch[2] > kSlapZone[2] && touch[2] < kSlapZone[3];
+        const bool slapped = onRelease ? speed > kTouchSlapSpeed && !g_wasTouching
+                                       : speed > kSlapSpeed && Distance(palm, kBoltRelease) < kSlapReach;
+        if (slapped && Chamber(onRelease ? "bolt release slapped (the glove touched it)" : "bolt release slapped"))
+            sounds::Play("bolt");
     }
+    g_wasTouching = touch != nullptr;
     if (have)
         std::memcpy(g_lastPalm, palm, sizeof(palm));
     g_havePalm = have;
@@ -184,6 +200,10 @@ void Update(const float* gunPose, const float* leftPalm, float trigger) {
 
 bool BoltBack() {
     return g_boltBack;
+}
+
+bool HandleHeld() {
+    return g_grabbed;
 }
 
 void ReleaseBolt() {
@@ -198,10 +218,6 @@ float HandleBack() {
 
 float CoverAngle() {
     return g_coverAngle.load(std::memory_order_relaxed);
-}
-
-float GunPan() {
-    return g_pan.load(std::memory_order_relaxed);
 }
 
 }

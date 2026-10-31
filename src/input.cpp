@@ -17,9 +17,11 @@
 #include "config.h"
 #include "hands.h"
 #include "log.h"
+#include "pad.h"
 #include "reload.h"
 #include "skin.h"
 #include "sounds.h"
+#include "window.h"
 
 namespace {
 
@@ -67,6 +69,7 @@ XrPosef g_aimPose{};
 // turn's stick and when it was last taken, and when the turn started and was last asked for (ms,
 // QueryPerformanceCounter).
 float g_stickTurn = 0.0f;
+float g_moveTurn = 0.0f;  // the head's angle from the game's facing (SetMoveTurn)
 int g_turnTestFrames = 0;
 std::atomic<float> g_turnRate{0.0f};
 bool g_turnThread = false;
@@ -234,12 +237,30 @@ void SendKey(WORD scan, bool down) {
     SendInput(1, &in, sizeof(in));
 }
 
+// A click reaches the game and also the window under the pointer, so a press only goes with the
+// pointer on BF3's window (window.cpp): on the taskbar's "Show desktop" corner, every shot
+// minimised the game (2026-10-30). A release always goes, so a button never sticks down.
+bool g_mouseDown[2] = {};  // left, right: as the game was last sent them
+
 void SendMouseButton(bool left, bool down) {
+    bool& sent = g_mouseDown[left ? 0 : 1];
+    if (down == sent)
+        return;
+    if (!window::PointerOnGame() && down) {
+        static ULONGLONG lastLog = 0;
+        if (GetTickCount64() - lastLog > 1000) {
+            lastLog = GetTickCount64();
+            Log("Input: a %s click held back; the mouse pointer couldn't be put on the game's window",
+                left ? "fire" : "right");
+        }
+        return;
+    }
     INPUT in{};
     in.type = INPUT_MOUSE;
     in.mi.dwFlags = left ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP)
                          : (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
     SendInput(1, &in, sizeof(in));
+    sent = down;
 }
 
 void SendMouseMove(int dx) {
@@ -369,15 +390,20 @@ void ReleaseAll() {
 }
 
 // The gun doesn't fire with its magazine out, nor its last round: run dry, the game would reload
-// by itself. (Guns loaded a round at a time, like the SMAW, aren't stopped.)
-bool FireBlocked() {
+// by itself. (Guns loaded a round at a time, like the SMAW, aren't stopped.) Says why, or null.
+const char* FireBlocked() {
     if (!skin::RifleInHand())
-        return false;
-    if (skin::MagazineOut() || reload::BoltBack())  // the bolt locked back: charge it first
-        return true;
+        return nullptr;
+    if (skin::MagazineOut())
+        return "the magazine is out";
+    if (reload::BoltBack())  // charge it first
+        return "the bolt is locked back";
     int loaded = 0, spare = 0;
-    return ammo::MagazineSize() >= 5 && ammo::Get(loaded, spare) && loaded <= 1;
+    if (ammo::MagazineSize() >= 5 && ammo::Get(loaded, spare) && loaded <= 1)
+        return "the magazine is empty";
+    return nullptr;
 }
+bool g_fireToldWhy = false;  // logged once a pull
 
 XrVector2f Stick(XrSession session, XrAction action) {
     XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
@@ -536,8 +562,17 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
             down = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &state)) && state.isActive &&
                    state.currentState;
         }
-        if (down && m.action == &g_fire && FireBlocked())
-            down = false;
+        if (m.action == &g_fire) {
+            const char* why = down ? FireBlocked() : nullptr;
+            if (why && !g_fireToldWhy) {
+                int loaded = 0, spare = 0;
+                ammo::Get(loaded, spare);
+                Log("Input: the trigger didn't fire: %s (%d rounds loaded, %d spare)", why, loaded, spare);
+            }
+            g_fireToldWhy = why != nullptr;
+            if (why)
+                down = false;
+        }
         // The left trigger is aim down sights, unless the grip is held with it: a fist. With free
         // hands the scope is looked through by holding the gun up to the eye, and the trigger
         // works the charging handle (reload.cpp) and curls the glove's index finger (user,
@@ -576,8 +611,17 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
     if (g_rDown && !g_xHeld && now >= g_rUntil)
         PressR(false);
 
+    // The left stick walks where the head faces (user, 2026-10-30: not where the gun points). The
+    // game walks along its own facing, which follows the gun, so the stick is turned by the head's
+    // angle from it; then it goes in as a controller's left stick (pad.cpp), or as W/A/S/D.
     XrVector2f move = Stick(session, g_move);
-    bool want[4] = {move.y > 0.5f, move.y < -0.5f, move.x < -0.5f, move.x > 0.5f};
+    const float c = std::cos(g_moveTurn), s = std::sin(g_moveTurn);
+    float mx = move.x * c - move.y * s, my = move.x * s + move.y * c;
+    const float length = std::sqrt(mx * mx + my * my);
+    constexpr float kDeadZone = 0.15f;
+    const float scale = length > kDeadZone ? (length - kDeadZone) / (1.0f - kDeadZone) / length : 0.0f;
+    const bool analog = config::Get().analogMove && GameHasFocus() && pad::SetMove(mx * scale, my * scale);
+    bool want[4] = {!analog && my > 0.5f, !analog && my < -0.5f, !analog && mx < -0.5f, !analog && mx > 0.5f};
     for (int i = 0; i < 4; ++i) {
         if (want[i] != g_moveKeys[i].down) {
             SendKey(g_moveKeys[i].scan, want[i]);
@@ -603,6 +647,10 @@ void UpdateTurn(bool direct) {
     g_directTurn = direct ? x : 0.0f;
     if (direct && TurnAmount(x) > 0.0f)
         NoteTurning();
+}
+
+void SetMoveTurn(float radians) {
+    g_moveTurn = radians;
 }
 
 float TakeTurn() {
@@ -702,10 +750,10 @@ void MagazineTap() {
     if (skin::MagazineOut()) {
         ammo::Insert();
         skin::InsertMagazine();
-        sounds::Play("mag_in", reload::GunPan());
+        sounds::Play("mag_in");
     } else if (skin::EjectMagazine()) {
         ammo::Eject();
-        sounds::Play("mag_out", reload::GunPan());
+        sounds::Play("mag_out");
     }
 }
 

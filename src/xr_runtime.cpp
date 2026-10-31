@@ -39,6 +39,7 @@
 #include "log.h"
 #include "perfinfo.h"
 #include "skin.h"
+#include "overlay.h"
 #include "views.h"
 #include "window.h"
 #include "xr_runtime.h"
@@ -251,6 +252,15 @@ bool CreateSession(ID3D11Device* device) {
     ci.systemId = g_system;
     if (!Check(xrCreateSession(g_instance, &ci, &g_session), "xrCreateSession"))
         return false;
+    // What the headset asks for per eye (SteamVR's resolution setting), against [window] size.
+    uint32_t viewCount = 0;
+    XrViewConfigurationView configViews[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+    if (XR_SUCCEEDED(xrEnumerateViewConfigurationViews(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                       2, &viewCount, configViews)) &&
+        viewCount > 0)
+        Log("Headset: %ux%u per eye recommended (at most %ux%u); the game draws %d per eye ([window] size)",
+            configViews[0].recommendedImageRectWidth, configViews[0].recommendedImageRectHeight,
+            configViews[0].maxImageRectWidth, configViews[0].maxImageRectHeight, config::Get().windowSize);
 
     const XrPosef identity{{0, 0, 0, 1}, {0, 0, 0}};
     return CreateReferenceSpace(XR_REFERENCE_SPACE_TYPE_LOCAL, identity, g_localSpace) &&
@@ -1016,7 +1026,9 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             Log("Aiming with %s", useHand ? "the right controller" : "the head");
         }
         float yaw = 0.0f, pitch = 0.0f;
-        LookAngles(useHand ? hand.orientation : head, yaw, pitch);
+        // With both hands on the gun it points from the right hand to the left (hands.cpp).
+        XrQuaternionf twoHanded;
+        LookAngles(useHand ? (hands::AimOrientation(twoHanded) ? twoHanded : hand.orientation) : head, yaw, pitch);
         if (useHand) {
             // BF3 only draws what's in front of where it aims. With the hand far off to one side,
             // what the head looks at isn't drawn at all, so the aim is kept within a limit of the
@@ -1031,15 +1043,38 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
                 offset += 2 * kPi;
             yaw = headYaw + std::clamp(offset, -limit, limit);
             pitch = headPitch + std::clamp(pitch - headPitch, -limit, limit);
+            yaw += aim::TestTurn();  // weapon.txt "aimtest": a gun turn without moving it
         }
         g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
-        g_yawHistory[g_yawHistoryNext] = yaw;
+        // The picture takes the hand's turn back out of the game's camera, which follows the hand
+        // only while the look angles are written. Until they are (a new level, a checkpoint), the
+        // hand's turn as it last was is taken out, so moving the gun doesn't move the view (it did,
+        // user 2026-10-30) and the head still turns it.
+        static float s_handYaw = 0.0f;
+        if (g_turnDirect || !useHand)
+            s_handYaw = yaw;
+        const float viewYaw = s_handYaw;
+        // Walking goes where the head faces, not where the gun points (user, 2026-10-30): the game
+        // walks along its own facing, which is the hand's yaw the view turn takes out.
+        if (useHand) {
+            float headYaw = 0.0f, headPitch = 0.0f;
+            LookAngles(head, headYaw, headPitch);
+            float apart = std::fmod(headYaw - viewYaw, 2 * kPi);
+            if (apart > kPi)
+                apart -= 2 * kPi;
+            if (apart < -kPi)
+                apart += 2 * kPi;
+            input::SetMoveTurn(apart);
+        } else {
+            input::SetMoveTurn(0.0f);
+        }
+        g_yawHistory[g_yawHistoryNext] = viewYaw;
         int lagged = (g_yawHistoryNext - config::Get().viewLag + kYawHistory) % kYawHistory;
         g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
         if (useHand) {
             camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, g_yawHistory[lagged]};
-            turn.currentYaw = yaw;
-            turn.haveLook = aim::LookYaw(turn.lookYaw, turn.lookSign);
+            turn.currentYaw = viewYaw;
+            turn.haveLook = g_turnDirect && aim::LookYaw(turn.lookYaw, turn.lookSign);
             camera::SetViewTurn(&turn);
             // The picture's turn: the look yaw written against the controller's (camera.cpp).
             if (turn.haveLook)
@@ -1243,6 +1278,7 @@ void RenderFrame(IDXGISwapChain* swap) {
 namespace vr {
 
 void OnPresent(IDXGISwapChain* swap) {
+    overlay::NewFrame();  // the next frame's eye pictures follow
     // Hotkeys and the camera tools work without a headset.
     PollHotkeys();
     {

@@ -23,6 +23,7 @@ constexpr uint8_t kBuildViewsStart[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81
 constexpr size_t kViewSize = 0x1100;
 constexpr size_t kMainCamera = 0x30, kCullCamera = 0x4B0, kFirstPersonCamera = 0x930, kCameraSize = 0x480;
 constexpr size_t kFovPair = 0x48, kAspect = 0x58;
+constexpr size_t kViewport = 0x10;  // x, y, width, height (int32 each)
 
 // GameRenderSettings, as the view builder reads it: [[bf3.exe+1F84D78]+0x3C], recognised by its
 // vtable; SplitScreenTestViewCount at +0x40 (BF3's type tables).
@@ -36,6 +37,7 @@ bool g_hooked = false;
 std::atomic<bool> g_want{false}, g_active{false};
 std::atomic<float> g_offset[2] = {0.0f, 0.0f};
 std::atomic<float> g_fov{0.0f};  // what the eyes were last built with
+std::atomic<int32_t> g_rightAt{0};  // where the game put the second view (x), before MakeEyes moved it
 
 bool LooksLikeFov(float v) { return v > 0.2f && v < 2.8f; }
 
@@ -47,8 +49,17 @@ void WriteFov(uint8_t* camera, float fov) {
 
 // The two views made into the eyes: both start from the first view's cameras (the game's own),
 // are turned to the head, and are shifted half the eye distance each way along the head's right.
+// The second is also put at the window's left edge, where the first is (overlay.cpp moves its
+// finished picture into the right half): placed at the right, its screen effects worked from that
+// place against pictures only an eye wide, and while suppressed the whole right eye was smeared
+// into streaks (the user's video; caught in both-eye pictures, 2026-10-30).
 void MakeEyes(uint8_t* views) {
     uint8_t* eye[2] = {views, views + kViewSize};
+    auto* place = reinterpret_cast<int32_t*>(eye[1] + kViewport);
+    if (place[0] != 0) {
+        g_rightAt.store(place[0], std::memory_order_relaxed);
+        place[0] = 0;
+    }
     const float* game = reinterpret_cast<const float*>(eye[0] + kMainCamera);
     input::NoteTurnStep(0, std::atan2(game[8], game[10]));  // the stick turn's evenness, as built
     // The second view is the split-screen test's: the first one's camera turned round.
@@ -79,11 +90,52 @@ void MakeEyes(uint8_t* views) {
     g_fov.store(LooksLikeFov(drawn) ? drawn : 0.0f, std::memory_order_relaxed);
 }
 
+// weapon.txt "viewdiff N": for N seconds, the two views' descriptions compared outside their
+// camera blocks (which MakeEyes makes alike), logged when what differs changes (at most 4 times a
+// second). The suppression blur stayed in the right eye with the HUD in both (2026-10-30): if the
+// game keeps the screen's effects in a view's description, they differ here while suppressed.
+std::atomic<ULONGLONG> g_diffUntil{0};
+
+void LogDifferences(const uint8_t* views) {
+    if (GetTickCount64() > g_diffUntil.load(std::memory_order_relaxed))
+        return;
+    static ULONGLONG lastLog = 0;
+    static uint32_t last[kViewSize / 4][2] = {};
+    static bool lastDiffers[kViewSize / 4] = {};
+    if (GetTickCount64() - lastLog < 250)
+        return;
+    const auto* a = reinterpret_cast<const uint32_t*>(views);
+    const auto* b = reinterpret_cast<const uint32_t*>(views + kViewSize);
+    char line[900];
+    int used = 0;
+    bool changed = false;
+    for (size_t i = 0; i < kViewSize / 4; ++i) {
+        const size_t at = i * 4;
+        if (at >= kMainCamera && at < kFirstPersonCamera + kCameraSize)
+            continue;
+        const bool differs = a[i] != b[i];
+        if (differs != lastDiffers[i] || (differs && (a[i] != last[i][0] || b[i] != last[i][1])))
+            changed = true;
+        lastDiffers[i] = differs, last[i][0] = a[i], last[i][1] = b[i];
+        if (differs && used < 820) {
+            float fa, fb;
+            std::memcpy(&fa, &a[i], 4), std::memcpy(&fb, &b[i], 4);
+            used += snprintf(line + used, sizeof(line) - used, " +%03zX %08X|%08X (%g|%g)", at, a[i], b[i], fa, fb);
+        }
+    }
+    if (!changed)
+        return;
+    lastLog = GetTickCount64();
+    Log("Views: the eyes' descriptions differ at%s", used ? line : " nothing");
+}
+
 void __fastcall BuildViewsHook(void* self, void* edx, void* source, uint32_t* count, uint8_t* views) {
     g_buildViews(self, edx, source, count, views);
     bool eyes = g_want.load(std::memory_order_relaxed) && count && *count == 2 && views;
-    if (eyes)
+    if (eyes) {
+        LogDifferences(views);
         MakeEyes(views);
+    }
     // The renderer copies these views next; the camera breakpoints there leave them alone now.
     camera::SetViewsMode(eyes);
     g_active.store(eyes, std::memory_order_relaxed);
@@ -156,5 +208,12 @@ void SetEyeOffsets(float left, float right) {
 float EyeOffset(int eye) { return eye == 0 || eye == 1 ? g_offset[eye].load(std::memory_order_relaxed) : 0.0f; }
 
 float RenderedFov() { return Active() ? g_fov.load(std::memory_order_relaxed) : 0.0f; }
+
+bool RightEyeAtLeft() { return Active() && g_rightAt.load(std::memory_order_relaxed) != 0; }
+
+void WatchDifferences(int seconds) {
+    g_diffUntil.store(GetTickCount64() + 1000ull * seconds, std::memory_order_relaxed);
+    Log("Views: comparing the eyes' descriptions for %d s", seconds);
+}
 
 }

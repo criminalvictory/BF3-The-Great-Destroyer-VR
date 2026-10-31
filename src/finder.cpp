@@ -795,8 +795,10 @@ void RunAngles() {
             aim.yaw = c->pointer;
             aim.yawDegrees = IsDegrees(yaw->encoding);
             // Confirmed in game for atan2(x,-z): BF3's yaw grows turning right, head yaw turning left.
-            if ((yaw->encoding & 15) == 2)
-                aim.invertYaw = true;
+            // aim.cpp now takes that as given (invert_yaw 0); only another encoding would flip it.
+            // (When this finder set it and the pair search that replaced it didn't, the hand's yaw
+            // went in unflipped and the view swung with the gun again: 2026-10-30.)
+            aim.invertYaw = (yaw->encoding & 15) != 2;
             LogChain(*c, 1);
             saved = true;
         } else {

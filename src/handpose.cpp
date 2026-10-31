@@ -163,7 +163,7 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
         const int k = f - 1;
         const float c = Clamp01(fingers.curl[k]);
         const float* axis = bendAxis[f];
-        const float spread = kSpread[k] * Clamp01(fingers.spread) * (1 - c) + g_curlSpread[k] * c;
+        const float spread = kSpread[k] * Clamp01(fingers.spread) * (1 - c) + g_curlSpread[k] * c + fingers.apart[k];
         float apart[12], bent[12], knuckle[12], middle[12], last[12];
         TurnAbout(kPalm, spread, joint[f][0], apart);
         TurnAbout(axis, Lerp(kRelaxed[k].knuckle, g_fist[k].knuckle, c), joint[f][0], bent);
@@ -201,6 +201,48 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
             std::memcpy(out[b], IsCuff(b) ? widenCuff : widen, sizeof(widen));
         else
             Compose(chain[f][depth - 1], fit[f], out[b]);
+    }
+}
+
+void BendFurther(float bones[kBones][12], const float bend[5]) {
+    constexpr float kShare[3] = {0.35f, 0.4f, 0.25f};  // of the bend at the knuckle, middle and last joint
+    for (int f = 0; f < 5; ++f) {
+        if (bend[f] == 0.0f)
+            continue;
+        // The finger's bones by how many joints lie between each and the palm (1-3).
+        int at[4] = {-1, -1, -1, -1};
+        for (int b = 0; b < kBones; ++b)
+            if (kFinger[b] == f && kDepth[b] >= 1 && kDepth[b] <= 3)
+                at[kDepth[b]] = b;
+        if (at[1] < 0)
+            continue;
+        // Its bending axis, turned into the pose as its first bone is.
+        float axis[3], posedAxis[3];
+        Cross(kDirection[f], kPalm, axis);
+        Normalize(axis);
+        const float* first = bones[at[1]];
+        for (int i = 0; i < 3; ++i)
+            posedAxis[i] = first[i * 4] * axis[0] + first[i * 4 + 1] * axis[1] + first[i * 4 + 2] * axis[2];
+        Normalize(posedAxis);
+        // Each joint where the pose has it (it moves with the bone just past it).
+        float turns[3][12];
+        for (int j = 0; j < 3; ++j) {
+            float joint[3];
+            Transform(bones[at[j + 1] >= 0 ? at[j + 1] : at[1]], kJoint[f][j], joint);
+            TurnAbout(posedAxis, bend[f] * kShare[j], joint, turns[j]);
+        }
+        // A bone turns at every joint between it and the palm, the farthest first.
+        for (int d = 1; d <= 3; ++d) {
+            if (at[d] < 0)
+                continue;
+            float m[12], turned[12];
+            std::memcpy(m, bones[at[d]], sizeof(m));
+            for (int j = d - 1; j >= 0; --j) {
+                Compose(turns[j], m, turned);
+                std::memcpy(m, turned, sizeof(m));
+            }
+            std::memcpy(bones[at[d]], m, sizeof(m));
+        }
     }
 }
 

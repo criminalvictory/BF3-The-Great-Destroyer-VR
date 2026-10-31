@@ -43,6 +43,9 @@ void StartTurnTest();
 void UpdateTurn(bool direct);
 // The direct turn since the last call: radians, left positive ([controllers] turn_degrees).
 float TakeTurn();
+// Each frame: how far the head is turned from the way the game faces (radians, left positive).
+// The left stick walks where the head faces, so it's turned by this into the game's frame.
+void SetMoveTurn(float radians);
 // The turn's evenness from frame to frame, logged once a second while the stick turns: which 0 =
 // the yaw of the game's own camera as built, 1 = the yaw shown. Radians.
 void NoteTurnStep(int which, float yaw);
