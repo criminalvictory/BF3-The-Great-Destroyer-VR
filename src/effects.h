@@ -45,7 +45,8 @@ void SetMoveMatrices(int which);
 // weapon.txt "flashprobe": the next sprites of the muzzle flash logged with their vertices (read
 // back) and vertex-shader constants.
 void ProbeFlashes(int sprites);
-// weapon.txt "flashmove 0": the muzzle flash left where the game draws it (1, the default: at the gun).
+// weapon.txt "flashmove 1": the muzzle flash drawn with its block's first matrix moved with the gun (an
+// experiment, off by default).
 void SetFlashMove(bool on);
 void SetLift(float metres);
 

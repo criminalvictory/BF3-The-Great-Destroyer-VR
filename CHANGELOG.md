@@ -36,8 +36,10 @@ self-test and the mod's own pictures, not yet in the headset.
   bolt catch's edges. Now it's kept by the hand's middle, pushed out by all the spheres in the gun at
   once, and slides smoothly (turning the wrist while touching: 35 mm jerks before, about 1 mm now).
   A hard slap can't pass through the gun (its path is swept, stopping at the first touch).
-- **The muzzle flash is drawn with its own placement moved with the gun** (its sprites are placed by
-  a matrix in their own block, not by the view as was tried before). Not yet seen in the headset.
+- Muzzle flash research: its sprites were read back (`flashprobe`): flat quads placed through their
+  own block of constants, not the view as tried before. Moving that block's first matrix with the
+  gun (`flashmove 1`, off by default) applied only some of the time and the flash wasn't seen to
+  move, so the flash still comes from where the game holds its gun.
 
 ### Fixed
 - **The game could crash right after a load**: the look-angle search tried 24 of 163 matching

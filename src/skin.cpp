@@ -723,7 +723,7 @@ void ReadWeaponSelection() {
     float flashLift = 0.0f;
     int hidePsCount = 0;
     float testPull = -1.0f;
-    int flashMove = 1;
+    int flashMove = 0;
     int hudFix = 0;
     int moveCount = 0;
     int hideCount = 0;

@@ -291,7 +291,9 @@ bool ReadBack(ID3D11DeviceContext* ctx, ID3D11Buffer* buffer, UINT offset, UINT 
 // game holds it to the hand, if it's at the game's gun (the same shader draws screen-wide things,
 // placed elsewhere).
 std::atomic<uint32_t> g_flashMoved{0}, g_flashNotAtGun{0};
-std::atomic<bool> g_flashMove{true};  // weapon.txt "flashmove 0": left where the game puts it (to compare)
+// weapon.txt "flashmove 1": on (off by default: the sprites' first matrix turned out to be at the game's
+// gun only sometimes, 2026-10-31, and the flash wasn't seen to move; an experiment for now).
+std::atomic<bool> g_flashMove{false};
 
 bool DrawAtGun(int which, ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
     if (!g_flashMove.load(std::memory_order_relaxed))
