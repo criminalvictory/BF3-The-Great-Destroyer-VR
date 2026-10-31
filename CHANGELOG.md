@@ -4,6 +4,33 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, afternoon: The Great Destroyer: no crash at the train, cutscenes you can look around in (stage: pre-alpha, experimental)
+
+Tried by the user in The Great Destroyer. The in-game self-test wasn't run: on the moving train the
+aim can't be found again (below); the offline tests pass.
+
+### Fixed
+- **The crash jumping onto the train** (four crashes, each at a different place in the game): after a
+  cutscene or the jump into the train's section of the level, the mod kept writing your look angles
+  where it had found them before, which by then held something else. While the game draws without the
+  head's turn, nothing is written now, and the look angles are forgotten and looked for again after.
+  The user then made it through the jump and through the train window.
+- **Cutscenes turning the wrong way** (the user: "if I move it to the left, it goes to the right"):
+  in the opening interrogation the game draws from its own camera, without the head's turn, but the
+  picture went to the headset as if seen from the head. Such pictures are now handed over as drawn,
+  kept still in the room, and the head looks about them. Black shows past the game's 100 degrees.
+- **The game turning the view itself** (scripted moments, vehicles): the head's look angles were
+  written over it every frame. Turned by the game more than 2 degrees in a frame, the mod lets it lead
+  until it has left the view alone for 1.5 s. weapon.txt `scripted 0` writes through as before.
+
+### New
+- **A crash log**: a crash the game doesn't recover from is written to bf3vr.log ("CRASH?"): where,
+  what it touched, the registers and the code addresses on the stack.
+
+### Known
+- On the moving train the aim isn't found again after the jump (the search only tests with the camera
+  still): the view follows the head, the gun doesn't aim the game.
+
 ## 2026-10-31, midday: the left hand aims, the thumb wraps the magazine (stage: pre-alpha, experimental)
 
 Both tried in the headset by the user and confirmed; the self-test passes.

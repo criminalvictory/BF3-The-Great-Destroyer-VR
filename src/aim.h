@@ -14,6 +14,15 @@ bool Update(float headYaw, float headPitch, float turn = 0.0f);
 // Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.
 void Reset();
 
+// Drops the look angles found, so they're looked for again: after the game drew without the head's
+// turn (a cutscene, the jump onto the train in The Great Destroyer), the place they were found can
+// hold something else, and writing there crashed the game 2 s after the jump (2026-10-31).
+void Forget();
+
+// weapon.txt "scripted 0/1": whether a scripted moment (the game turning the look yaw itself) stops the
+// writes until it's over (on by default; aim.cpp).
+void SetScriptedFollow(bool on);
+
 // weapon.txt "aimtest 20": for 2 s from 1 s after, TestTurn() is that many degrees (radians), added
 // to the hand's yaw, to check the view's turn without moving the controllers.
 void StartTest(float degrees);

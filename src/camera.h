@@ -71,9 +71,16 @@ void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
 // unchanged) while no view turn is set.
 bool TurnToHead(float* transform);
+// How many cameras TurnToHead turned since the last call (xr_runtime.cpp, once a picture: none means
+// the game drew it facing its own way, as in the cutscenes of The Great Destroyer).
+int TakeTurned();
 // weapon.txt "viewlog N": for N seconds, log each frame's view turn (hand, written look, game
 // camera's yaw and place, head, shown).
 void LogTurns(int seconds);
+
+// weapon.txt "mirrorfix 0/1": a camera whose rows are mirrored from the player's own (a cutscene's)
+// gets the head's turn mirrored to match (on by default).
+void SetMirrorFix(bool on);
 
 // The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
 float SourceFov();

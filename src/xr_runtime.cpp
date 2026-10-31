@@ -144,6 +144,17 @@ constexpr int kYawHistory = 3;
 float g_yawHistory[kYawHistory] = {};
 int g_yawHistoryNext = 0;
 
+// A picture the game drew without the head's turn in its camera (camera::TakeTurned none: the
+// cutscenes of The Great Destroyer, as Kovac walks in; the viewlog showed no camera turned there
+// for 20 s at a time) was still handed over as seen from the head, so the headset moved it the wrong
+// way as the head turned (the user, 2026-10-31: "if I move it to the left, it goes to the right").
+// It's handed over as seen from where it was drawn instead: the room yaw the game's camera stands
+// for (the hand's yaw the view turn would have taken out, g_viewTurnYaw), level. The headset then
+// keeps it still in the room and the head looks about it, the right way round.
+bool g_viewTurnOn = false;
+float g_viewTurnYaw = 0.0f;
+bool g_unturnedLogged = false;
+
 bool Check(XrResult result, const char* what) {
     if (XR_SUCCEEDED(result))
         return true;
@@ -1019,8 +1030,20 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         // each eye shows its half.
         if (!SubmitImage(back, desc, g_swapchains[kLeftEye]))
             return;
+        // Three pictures in a row, so a picture that missed its turn in ordinary play doesn't flick.
+        static int s_unturnedRun = 0;
+        s_unturnedRun = g_viewTurnOn && camera::TakeTurned() == 0 ? s_unturnedRun + 1 : 0;
+        const bool unturned = s_unturnedRun >= 3;
+        if (unturned != g_unturnedLogged) {
+            g_unturnedLogged = unturned;
+            Log("Views: %s", unturned ? "the game draws without the head's turn (a cutscene's camera): the picture "
+                                        "is kept still in the room, the head looks about it"
+                                      : "the head's turn is in the game's camera again");
+        }
         for (int e = 0; e < 2; ++e) {
             g_eyePose[e] = renderPose(e);
+            if (unturned)
+                g_eyePose[e].orientation = {0.0f, std::sin(g_viewTurnYaw / 2), 0.0f, std::cos(g_viewTurnYaw / 2)};
             g_eyeValid[e] = true;
         }
         g_sideBySide = true;
@@ -1091,7 +1114,20 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             pitch = headPitch + std::clamp(pitch - headPitch, -limit, limit);
             yaw += aim::TestTurn();  // weapon.txt "aimtest": a gun turn without moving it
         }
-        g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
+        // While the game draws without the head's turn (a cutscene, the jump onto the train in The
+        // Great Destroyer) it doesn't use the look angles either: nothing is written then. The game
+        // crashed four times at that jump (2026-10-31), the last 5 s after the picture went unturned
+        // with the angles still written 144 times a second; afterwards they're taken up from where
+        // the game left them, without a jump. Paused alone that wasn't enough: it crashed 2 s after the
+        // picture was turned again, the angles written where they had been found before the jump.
+        // They're forgotten and looked for again (aim::Forget).
+        if (g_unturnedLogged) {
+            input::TakeTurn();
+            aim::Forget();
+            g_turnDirect = false;
+        } else {
+            g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
+        }
         // The picture takes the hand's turn back out of the game's camera, which follows the hand
         // only while the look angles are written. Until they are (a new level, a checkpoint), the
         // hand's turn as it last was is taken out, so moving the gun doesn't move the view (it did,
@@ -1120,6 +1156,8 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         if (useHand) {
             camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, g_yawHistory[lagged]};
             turn.currentYaw = viewYaw;
+            g_viewTurnOn = true;
+            g_viewTurnYaw = g_yawHistory[lagged];
             turn.haveLook = g_turnDirect && aim::LookYaw(turn.lookYaw, turn.lookSign);
             camera::SetViewTurn(&turn);
             // The picture's turn: the look yaw written against the controller's (camera.cpp).
@@ -1127,6 +1165,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
                 input::NoteTurnStep(1, turn.lookSign * turn.lookYaw - yaw);
         } else {
             camera::SetViewTurn(nullptr);
+            g_viewTurnOn = false;
         }
     }
     g_poseNewest = (g_poseNewest + 1) % kPoseHistory;

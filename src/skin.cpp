@@ -916,10 +916,24 @@ void ReadWeaponSelection() {
             line = next;
             continue;
         }
+        if (const char* sc = std::strstr(line, "scripted")) {  // scripted moments lead the view (aim.cpp)
+            int on = 1;
+            sscanf_s(sc + 8, "%d", &on);
+            aim::SetScriptedFollow(on != 0);
+            line = next;
+            continue;
+        }
         if (const char* tb = std::strstr(line, "turnby")) {  // the view turned at once (input.cpp)
             float degrees = 0.0f;
             sscanf_s(tb + 6, "%f", &degrees);
             input::TurnBy(degrees);
+            line = next;
+            continue;
+        }
+        if (const char* mf = std::strstr(line, "mirrorfix")) {  // a mirrored cutscene camera (camera.cpp)
+            int on = 1;
+            sscanf_s(mf + 9, "%d", &on);
+            camera::SetMirrorFix(on != 0);
             line = next;
             continue;
         }

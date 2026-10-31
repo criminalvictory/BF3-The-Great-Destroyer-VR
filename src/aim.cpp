@@ -45,6 +45,20 @@ bool g_haveTarget = false;
 int g_writes = 0;  // head moves written since the last Probe log
 int g_gameMoves = 0;      // frames the game had moved the look yaw away from the last one written
 float g_gameMoveMost = 0.0f;
+
+// A scripted moment (a cutscene, a QTE, a vehicle) turns the look yaw itself, by up to 178 degrees a
+// frame, and the head's yaw written over it each frame fought it: the view turned the wrong way (the
+// user, The Great Destroyer, 2026-10-31: "When Kovac is walking into the room, it's inverted"; the car
+// ride at the start of Rock and a Hard Place, the same). Moved by more than kScriptedMove, nothing is
+// written until the game has left the yaw alone for kScriptedQuiet: the game's camera is then the
+// body and the head turns the picture about it (xr_runtime.cpp keeps the hand's yaw as it was), the
+// horizon level. weapon.txt "scripted 0" writes through it as before.
+constexpr float kScriptedMove = 2.0f / kRadToDeg;
+constexpr ULONGLONG kScriptedQuiet = 1500;
+std::atomic<bool> g_scriptedOn{true};
+bool g_scripted = false;
+float g_scriptedSeen = 0.0f;   // the look yaw as last read while scripted
+ULONGLONG g_scriptedMovedAt = 0;
 // How far up and down the game lets the look pitch go, as learned (radians), and the last written.
 constexpr float kSteep = 0.9f;  // about 52 degrees: only writes past this teach the limits
 float g_pitchMax = 1.5f, g_pitchMin = -1.5f, g_pitchWritten = 0.0f;
@@ -317,6 +331,22 @@ bool Update(float headYaw, float headPitch, float turn) {
         g_haveTarget = false;
         return false;
     }
+    const ULONGLONG tick = GetTickCount64();
+    if (g_scripted) {
+        float moved = now - g_scriptedSeen;
+        moved -= 2 * kPi * std::round(moved / (2 * kPi));
+        g_scriptedSeen = now;
+        if (std::fabs(moved) > 0.0005f) {
+            g_scriptedMovedAt = tick;
+            ++g_gameMoves;
+            g_gameMoveMost = std::max(g_gameMoveMost, std::fabs(moved));
+        }
+        if (tick - g_scriptedMovedAt < kScriptedQuiet && g_scriptedOn.load(std::memory_order_relaxed))
+            return false;
+        g_scripted = false;
+        g_havePrevious = false;  // from where the game left it, no jump
+        Log("Aim: the game left the look yaw alone for %.1f s: the head aims again", kScriptedQuiet / 1000.0f);
+    }
     if (!g_havePrevious) {
         g_base = now - sign * headYaw;
         g_turned = 0.0f;
@@ -328,6 +358,17 @@ bool Update(float headYaw, float headPitch, float turn) {
         if (std::fabs(moved) > 0.0005f) {
             ++g_gameMoves;
             g_gameMoveMost = std::max(g_gameMoveMost, std::fabs(moved));
+        }
+        if (std::fabs(moved) > kScriptedMove && g_scriptedOn.load(std::memory_order_relaxed)) {
+            g_scripted = true;
+            g_scriptedSeen = now;
+            g_scriptedMovedAt = tick;
+            g_haveTarget = false;
+            g_havePitch = false;
+            Log("Aim: the game turned the look yaw itself by %.1f degrees (a scripted moment): the game's camera "
+                "leads, the head looks about it",
+                std::fabs(moved) * kRadToDeg);
+            return false;
         }
     }
     // Yaw: set outright, the stick's turn added to the hand's. The picture follows the yaw written
@@ -366,6 +407,20 @@ bool Update(float headYaw, float headPitch, float turn) {
 void Reset() {
     g_havePrevious = false;
     g_haveTarget = false;
+}
+
+void Forget() {
+    if (g_yawAddress.exchange(0))
+        Log("Aim: the look angles forgotten (the game drew without the head's turn: they're looked for again after)");
+    g_foundFor = 0;
+    g_havePrevious = false;
+    g_haveTarget = false;
+    g_havePitch = false;
+}
+
+void SetScriptedFollow(bool on) {
+    if (g_scriptedOn.exchange(on) != on)
+        Log("Aim: scripted moments %s", on ? "lead the view (the head looks about them)" : "written over as before");
 }
 
 // weapon.txt "aimtest 20": the hand's yaw taken as turned that many degrees more, from 1 s to 3 s

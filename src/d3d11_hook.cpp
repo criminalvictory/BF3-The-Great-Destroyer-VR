@@ -1,4 +1,5 @@
 #include "d3d11_hook.h"
+#include "crash.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -27,6 +28,7 @@ PresentFn g_origPresent = nullptr;
 ResizeBuffersFn g_origResizeBuffers = nullptr;
 
 HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval, UINT flags) {
+    crash::KeepOnTop();
     vr::OnPresent(swap);
     // How long the game's own Present takes once ours is done: handing frames to the headset
     // seemed to stall the game (about 18 ms a frame against 8 ms without), so time where.

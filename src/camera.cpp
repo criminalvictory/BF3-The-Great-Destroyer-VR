@@ -112,6 +112,8 @@ struct ViewTurnState {
 ViewTurnState g_view[2] = {};
 std::atomic<int> g_viewIndex{0};
 std::atomic<ULONGLONG> g_turnLogUntil{0};  // weapon.txt "viewlog N" (TurnToHead)
+std::atomic<bool> g_mirrorFix{true};       // weapon.txt "mirrorfix 0": a mirrored camera turned as any (TurnToHead)
+std::atomic<int> g_turned{0};              // cameras turned to the head since TakeTurned
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -636,7 +638,36 @@ bool TurnToHead(float* transform) {
     std::memcpy(before, transform, sizeof(before));
     float local[4];
     ViewTurnLocal(transform, view.turn, local);
+    // A cutscene's camera can come mirrored (the user, The Great Destroyer 2026-10-31: as Kovac walks
+    // in, turning the head left turned the view right; the look angles weren't even known then, so
+    // nothing fought the game): its rows the other handedness from the player's own camera, learned
+    // while the look angles are written (that camera follows them). The turn is then mirrored the
+    // same way, across its right row: yaw and roll the other way, pitch as it is.
+    static std::atomic<int> s_normalHand{0};
+    static int s_lastHand = 0;
+    const float* r0 = transform;
+    const float* r1 = transform + 4;
+    const float* r2 = transform + 8;
+    const float det = r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
+                      r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+    const int hand = det < 0.0f ? -1 : 1;
+    if (view.turn.haveLook && s_normalHand.exchange(hand) != hand)
+        Log("Camera: the player's camera has %s rows", hand > 0 ? "right-handed" : "left-handed");
+    const int normal = s_normalHand.load(std::memory_order_relaxed);
+    const bool mirrored = normal != 0 && hand != normal && g_mirrorFix.load(std::memory_order_relaxed);
+    static ULONGLONG s_handLogged = 0;
+    if (hand != s_lastHand && GetTickCount64() - s_handLogged >= 1000) {
+        s_lastHand = hand;
+        s_handLogged = GetTickCount64();
+        Log("Camera: the camera turned to the head has %s rows (det %.3f)%s", hand > 0 ? "right-handed" : "left-handed",
+            det, mirrored ? ": mirrored from the player's own, the head's turn mirrored to match" : "");
+    }
+    if (mirrored) {
+        local[1] = -local[1];
+        local[2] = -local[2];
+    }
     TurnLocal(transform, local);
+    g_turned.fetch_add(1, std::memory_order_relaxed);
     // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
     // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
     // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
@@ -654,6 +685,15 @@ bool TurnToHead(float* transform) {
             std::atan2(-forward[0], -forward[2]) * deg, std::atan2(transform[8], -transform[10]) * deg);
     }
     return true;
+}
+
+int TakeTurned() {
+    return g_turned.exchange(0, std::memory_order_relaxed);
+}
+
+void SetMirrorFix(bool on) {
+    if (g_mirrorFix.exchange(on) != on)
+        Log("Camera: a mirrored camera's turn is %s", on ? "mirrored to match" : "left as any other");
 }
 
 void LogTurns(int seconds) {
