@@ -80,7 +80,10 @@ if ($procId -ne $game.Id) { Write-Host 'BF3 is not the focused window: no input 
 
 $keys = @{ f3 = 0x72; start = 0x7E; vanished = 0x7C; visible = 0x7D; flip = 0x70; insert = 0x2D; delete = 0x2E; pageup = 0x21; pagedown = 0x22; f11 = 0x7A; f8 = 0x77; enter = 0x0D; f16 = 0x7F; f17 = 0x80; f18 = 0x81; f19 = 0x82; pause = 0x13; scroll = 0x91; end = 0x23 }
 if ($keys.ContainsKey($Action)) {
+    $ctrl = $Action -in 'scroll', 'f3'  # Ctrl + Scroll Lock (the stereo test mode) and Ctrl + F3 (the angle finder)
+    if ($ctrl) { [DrawHunt.U]::Key(0x11, $true); Start-Sleep -Milliseconds 50 }
     [DrawHunt.U]::Key($keys[$Action], $true); Start-Sleep -Milliseconds 120; [DrawHunt.U]::Key($keys[$Action], $false)
+    if ($ctrl) { Start-Sleep -Milliseconds 50; [DrawHunt.U]::Key(0x11, $false) }
     Start-Sleep -Milliseconds 1200
 }
 if ($Action -eq 'hold') {

@@ -39,6 +39,9 @@ void BendFurther(float bones[kBones][12], const float bend[5]);
 // For tools/handview.cpp's checks: each finger's joints in the bind space, from the palm out (the
 // thumb's base, knuckle and last joint; the others' knuckle, middle and last joint), then its tip.
 void Joints(float out[5][4][3]);
+// The point a left glove bone turns about, in the bind space: its finger's joint nearer the palm, or
+// the hand's middle for the palm and the wrist (hands.cpp blends a bone's moves about it).
+void Pivot(int bone, float out[3]);
 // For tools/handview.cpp's tuning, in degrees: "thumb" the folded thumb (across in front of the
 // palm, then bent at its base, knuckle and last joint), "fist1".."fist4" a curled finger (index ...
 // little: at its knuckle, middle and last joint), "curlspread" the curled fingers' turn towards the

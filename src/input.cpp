@@ -165,6 +165,7 @@ int g_turnTestFrames = 0;
 std::atomic<float> g_turnRate{0.0f};
 bool g_turnThread = false;
 float g_directTurn = 0.0f;
+std::atomic<float> g_turnBy{0.0f};  // weapon.txt "turnby": degrees still to turn at once, right positive
 double g_lastTake = 0.0;
 std::atomic<double> g_turnSince{0.0}, g_turnLast{0.0};
 
@@ -767,12 +768,18 @@ float TakeTurn() {
     g_lastTake = now;
     if (elapsed < 0.0 || elapsed > 50.0)
         elapsed = 1000.0 / 72.0;  // after a pause, one frame's worth
+    const float once = -g_turnBy.exchange(0.0f) * 0.01745329f;  // weapon.txt "turnby", on top of the stick's
     const float amount = TurnAmount(g_directTurn);
     if (amount == 0.0f)
-        return 0.0f;
+        return once;
     // Left is positive; the stick to the right turns right.
     const float radians = amount * config::Get().turnDegrees * 0.01745329f * static_cast<float>(elapsed / 1000.0);
-    return g_directTurn > 0.0f ? -radians : radians;
+    return (g_directTurn > 0.0f ? -radians : radians) + once;
+}
+
+void TurnBy(float degrees) {
+    g_turnBy.store(degrees);
+    Log("Turn test: the view turned %.0f degrees %s at once", std::fabs(degrees), degrees < 0.0f ? "left" : "right");
 }
 
 void NoteTurnStep(int which, float yaw) {

@@ -10,6 +10,7 @@
 #include "effects.h"
 #include "log.h"
 #include "perfinfo.h"
+#include "shaders.h"
 #include "skin.h"
 #include "xr_runtime.h"
 
@@ -75,7 +76,11 @@ struct ContextFunctions {
     void* drawIndexed[2];
     void* clearDepth[2];
     effects::DrawFunctions draws;
+    void* createPixelShader;  // the device's (shaders.cpp)
 };
+
+// ID3D11Device vtable slot.
+constexpr int kCreatePixelShaderSlot = 15;
 
 void TakeDraws(void** table, int which, effects::DrawFunctions& d) {
     d.draw[which] = table[kDrawSlot];
@@ -122,6 +127,7 @@ bool FindSwapChainVtable(void**& vtable, ContextFunctions& contexts) {
         contexts.clearDepth[0] = contexts.clearDepth[1] = immediate[kClearDepthStencilViewSlot];
         TakeDraws(immediate, 0, contexts.draws);
         TakeDraws(immediate, 1, contexts.draws);
+        contexts.createPixelShader = (*reinterpret_cast<void***>(device))[kCreatePixelShaderSlot];
         ID3D11DeviceContext* deferred = nullptr;
         if (SUCCEEDED(device->CreateDeferredContext(0, &deferred))) {
             void** table = *reinterpret_cast<void***>(deferred);
@@ -172,6 +178,8 @@ bool Install() {
     bool statsHooked = perfinfo::Install();
     // The other draw calls, for the gun's effects (effects.cpp). Not fatal if it fails.
     effects::InstallHooks(contexts.draws);
+    // The game's pixel shaders by their bytecode, to know the lens flare's from run to run (shaders.cpp).
+    shaders::InstallHook(contexts.createPixelShader);
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         Log("MH_EnableHook failed");
         return false;

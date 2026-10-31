@@ -307,6 +307,11 @@ void BendRightIndex(float palette[][12], float degrees, const int8_t* map, size_
 
 void Joints(float out[5][4][3]) { std::memcpy(out, kJoint, sizeof(kJoint)); }
 
+void Pivot(int bone, float out[3]) {
+    const int f = bone >= 0 && bone < kBones ? kFinger[bone] : -1, d = bone >= 0 && bone < kBones ? kDepth[bone] : 0;
+    std::memcpy(out, f >= 0 && d > 0 ? kJoint[f][d - 1] : kMiddle, 3 * sizeof(float));
+}
+
 void RightJoints(float out[5][4][3]) { std::memcpy(out, kRightJoint, sizeof(kRightJoint)); }
 
 void RightAxes(float out[5][3]) { std::memcpy(out, kRightAxis, sizeof(kRightAxis)); }

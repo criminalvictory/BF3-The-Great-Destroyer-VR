@@ -4,6 +4,40 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, morning: the gun stays in your hands, no lens-flare ring, a steady grip (stage: pre-alpha, experimental)
+
+From the user's headset session and videos this morning. The grip and wrist fixes were seen in the
+headset ("both fixed"); the rest is checked by the self-test, an offline test and the mod's own
+pictures, not yet in the headset.
+
+### Fixed
+- **The gun jumping to wrong places** (the user's video: the rifle lying across the body, swinging
+  round at the face, dropping out of view). It happened only while the left hand "held" the handguard
+  (the grip squeezed for 38 s): the gun then pointed from the right hand to the left wherever the left
+  hand went, and switched in one jump. Now the left hand steers the gun only while the line between the
+  hands is near where the right hand points it (fully within 35 degrees, not at all past 65) and the
+  hands are more than 10-15 cm apart; the change eases in and out over a tenth of a second, a tracking
+  jump of the left controller can't throw the gun across the view, a short loss of it changes nothing,
+  and a hold taken on the way in follows the hand onto the handguard. The hold itself still lasts until
+  the grip is let go. `src/steer.h`, with an offline test (`steertest.exe`, 19 checks, in the
+  self-test). weapon.txt `steer 35 65` tries other angles; the log says once a second how far the hands
+  strayed and what the left grip read, to tune them from.
+- **The "crosshair" seen when hit** was the sun's lens flare: an aperture-shaped ring the game draws
+  near the middle of the view when the sun is in sight (it came with the sun while being shot at). It's
+  taken off; the dirty-lens blobs from the same flare stay (the user likes them). The game's shaders
+  are now known by their code from one start to the next (`src/shaders.cpp`). weapon.txt `lensflare 1`
+  keeps the ring.
+- **A stretched, spiky glove while gripping**: the glove's blend onto the handguard (and the handle and
+  magazine holds) turned about each joint, not about a point 1.2 m away.
+- **Black patches on the left wrist**: the bare forearm's bones now move with the glove's own.
+- **The camera following the right controller**: a stray F4 had flipped the aim's direction (saved).
+  F2, F3, F4 and Scroll Lock now need Ctrl, and the log warns if the direction is flipped.
+
+### Notes
+- The orange markers the user saw in a recording are only in recordings: OBS takes each frame before
+  the mod takes them off. The headset's picture doesn't have them.
+- weapon.txt `turnby 30` turns the view at once (finding the sun with nobody in the headset).
+
 ## 2026-10-31, overnight: a self-test, casings out of the port, the flap with the handle, a smooth glove, no crash in the aim search (stage: pre-alpha, experimental)
 
 Since the last upload. Worked on overnight with nobody in the headset: a stand-in hand holds the

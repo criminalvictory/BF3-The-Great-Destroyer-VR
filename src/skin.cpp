@@ -62,10 +62,12 @@
 #include "ammo.h"
 #include "camera.h"
 #include "effects.h"
+#include "hands.h"
 #include "input.h"
 #include "log.h"
 #include "overlay.h"
 #include "reload.h"
+#include "shaders.h"
 #include "sounds.h"
 #include "views.h"
 
@@ -744,6 +746,9 @@ void ReadWeaponSelection() {
     //   "refill"             300 spare rounds for the gun in hand
     //   "tail"               log the next frame's draws to window-sized targets (effects.cpp)
     //   "viewdiff 60"        for 60 s, log where the two eye views' descriptions differ (views.cpp)
+    //   "turnby 30"          the view turned 30 degrees right at once, -30 left (input.cpp)
+    //   "steer 35 65"        the left hand on the handguard steers the gun fully within 35 degrees of
+    //                        the right hand's line, not at all past 65 (hands.cpp, steer.h)
     //   "empty"              no rounds left in it: the game's reload (R) is then its empty one
     //   "dumpview"           log BF3's per-view constants once
     //   "eyetrace"           log the next 40 first-person view uploads and the eye each is given
@@ -757,6 +762,8 @@ void ReadWeaponSelection() {
     //   "hudskip 10-19 40"   those HUD draws of each frame left out (overlay.cpp), to tell which is which
     //   "hudskiptex 64x32"   the HUD draws with a texture that size left out
     //   "orangemarkers 1"    the enemies' orange markers left on (taken off by default: overlay.cpp)
+    //   "lensflare 1"        the sun's lens flare ghost left on (taken off by default: shaders.cpp);
+    //                        "flareps 1a2b..." more of its pixel shaders by checksum (as "tail" logs them)
     //   "fingertest 1"       the glove's trigger finger drawn as if the trigger were pulled (nothing fires)
     //   "casings 0"          the spent casings where the game throws them (effects.cpp); "casings 1 0.2
     //                        0.8": out of the ejection port, all the way within 0.2 m of it, not at 0.8 m
@@ -777,6 +784,10 @@ void ReadWeaponSelection() {
     uint64_t hudSkip[4] = {};
     uint32_t hudSkipTex[4] = {};
     int keepOrange = 0;
+    int keepFlare = 0;
+    uint64_t flarePs[8] = {};
+    int flarePsCount = 0;
+    float steerCone[2] = {35.0f, 65.0f};
     float fingerTest = 0.0f;
     int casings = 1;
     float casingReach[2] = {0.2f, 0.8f};
@@ -817,6 +828,21 @@ void ReadWeaponSelection() {
         if (const char* om = std::strstr(line, "orangemarkers")) {
             keepOrange = 1;
             sscanf_s(om + 13, "%d", &keepOrange);
+            line = next;
+            continue;
+        }
+        if (const char* lf = std::strstr(line, "lensflare")) {
+            keepFlare = 1;
+            sscanf_s(lf + 9, "%d", &keepFlare);
+            line = next;
+            continue;
+        }
+        if (const char* fp = std::strstr(line, "flareps")) {
+            unsigned long long c[8] = {};
+            const int n = sscanf_s(fp + 7, "%llx %llx %llx %llx %llx %llx %llx %llx", &c[0], &c[1], &c[2], &c[3], &c[4],
+                                   &c[5], &c[6], &c[7]);
+            for (int i = 0; i < n && flarePsCount < 8; ++i)
+                flarePs[flarePsCount++] = c[i];
             line = next;
             continue;
         }
@@ -873,6 +899,18 @@ void ReadWeaponSelection() {
             float degrees = 20.0f;
             sscanf_s(at + 7, "%f", &degrees);
             aim::StartTest(degrees);
+            line = next;
+            continue;
+        }
+        if (const char* st = std::strstr(line, "steer")) {  // the left hand's steering cone (hands.cpp, steer.h)
+            sscanf_s(st + 5, "%f %f", &steerCone[0], &steerCone[1]);
+            line = next;
+            continue;
+        }
+        if (const char* tb = std::strstr(line, "turnby")) {  // the view turned at once (input.cpp)
+            float degrees = 0.0f;
+            sscanf_s(tb + 6, "%f", &degrees);
+            input::TurnBy(degrees);
             line = next;
             continue;
         }
@@ -1077,6 +1115,8 @@ void ReadWeaponSelection() {
     overlay::SetHudSkip(hudSkip);
     overlay::SetHudSkipTextures(hudSkipTex);
     overlay::SetKeepOrange(keepOrange != 0);
+    shaders::SetLensFlare(keepFlare != 0, flarePs, flarePsCount);
+    hands::SetSteerCone(steerCone[0], steerCone[1]);
     input::SetTriggerTest(std::clamp(fingerTest, 0.0f, 1.0f));
     effects::SetCasings(casings != 0, casingReach[0], casingReach[1]);
     for (size_t r = 0; r < kBoostRules; ++r)
@@ -1810,12 +1850,16 @@ struct ArmDraw {
     size_t forearmCount = 0;
 };
 // Matched by vertices at the same place in the gloves' mesh dump and these depth passes', so the
-// fingers bend alike in every pass. The bare forearms share no vertices with the gloves: their 'L'
-// entries, at the wrist, go with the cuff.
+// fingers bend alike in every pass. The bare forearms' 'L' entries go with the glove bone their depth
+// copy (in the body's depth pass) is drawn with: 2 with the cuff's twist bone 4 (the body's depth 19),
+// 4 with bone 0 (20), 8 with the hand's bone 1 (21), 9 with 18 (38), the rest (their depth copies fold
+// inside the forearm) with the forearm's bone 5. All on bone 0 before, the forearm and its depth copy
+// were drawn up to 33 degrees apart while the glove held the handguard (the game's grip turns the
+// cuff's bones apart): black patches below the watch (the user's picture, 2026-10-31 08:04).
 constexpr int8_t kGloveDepthLeft[] = {-1, -1, 14, 13, 16, -1, 8, 9, 19, 15, 18, 17, 2};
 constexpr int8_t kBodyDepthLeft[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4,
                                      0,  1,  6,  7,  21, 22, 12, 11, 20, 10, 14, 13, 16, 3,  8,  9,  19, 15, 18, 17, 2};
-constexpr int8_t kForearmLeft[] = {-1};
+constexpr int8_t kForearmLeft[] = {5, 5, 4, 5, 0, -1, 5, -1, 1, 18};
 // Wrist movement (armik.h; the judge's synthesis, 2026-10-31): the entries that are a forearm's bones
 // in the game's rig, matched by vertices at the same bind place with the same weights in the dumps,
 // so every pass draws them alike (a depth copy placed apart from its colour shows black). The left's
@@ -2482,7 +2526,7 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
         float forearm[2][12];
         bool haveForearm[2] = {t.left, false};
         if (t.left)
-            Compose(t.leftPose, t.leftFingers[0], forearm[0]);  // as the bare forearm's 'L' bones are
+            Compose(t.leftPose, t.leftFingers[5], forearm[0]);  // as the bare forearm's elbow half is (kForearmLeft)
         if (auto it = g_learned.find(kBareForearms); t.gun && it != g_learned.end() && it->second.have[12]) {
             Compose(t.gunPose, it->second.rel[12], forearm[1]);  // its middle bone, as placed below
             haveForearm[1] = true;

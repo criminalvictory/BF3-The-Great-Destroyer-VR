@@ -625,7 +625,8 @@ void PollHotkeys() {
         skin::HuntAnswer(true);
     if (KeyPressed(VK_F14))
         skin::HuntAnswer(false);
-    if (KeyPressed(VK_F3))
+    // Ctrl + F3: the old look-angle finder, which also sets the yaw's direction (saved): not by accident.
+    if (KeyPressed(VK_F3) && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
         finder::StartAngles();
     if (KeyPressed(VK_F12))
         finder::StartSkeleton();
@@ -635,7 +636,9 @@ void PollHotkeys() {
     // Pause: the skinning research hooks on/off (off by default: they cost frame rate).
     if (KeyPressed(VK_PAUSE))
         skin::ToggleResearch();
-    if (KeyPressed(VK_SCROLL)) {
+    // Ctrl + Scroll Lock: the next stereo test mode. Scroll Lock alone once switched the user's session
+    // to depth 3D in the headset (halos round the arms, the arms big: 2026-10-31 08:02).
+    if (KeyPressed(VK_SCROLL) && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
         static const char* kNames[] = {"per-eye views (BF3 draws both eyes each frame)",
                                        "depth 3D (both eyes from each frame and its depth)",
                                        "hybrid (each frame from one eye, the other eye from its depth)",
@@ -654,9 +657,13 @@ void PollHotkeys() {
             skin::SetCamera(cam.trans, cam.right, cam.up, forward);
         }
     }
-    if (KeyPressed(VK_F4))
+    // Ctrl + F4 / Ctrl + F2: the look yaw's / pitch's direction flipped (saved to bf3vr.ini). F4 alone
+    // once flipped it in the user's session unnoticed: the game aimed opposite the gun and the view
+    // swung twice the gun's turn ("moving the right controller moves my camera", 2026-10-31 08:15).
+    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (KeyPressed(VK_F4) && ctrl)
         aim::FlipYaw();
-    if (KeyPressed(VK_F2))
+    if (KeyPressed(VK_F2) && ctrl)
         aim::FlipPitch();
     // Stereo mode sets the offset and view turn per frame; in theater it's the shift test or nothing.
     if (config::Get().mode == config::Mode::Theater) {
@@ -1064,7 +1071,8 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             Log("Aiming with %s", useHand ? "the right controller" : "the head");
         }
         float yaw = 0.0f, pitch = 0.0f;
-        // With both hands on the gun it points from the right hand to the left (hands.cpp).
+        // With both hands on the gun it points towards the left hand as far as the hands agree
+        // (hands.cpp, steer.h).
         XrQuaternionf twoHanded;
         LookAngles(useHand ? (hands::AimOrientation(twoHanded) ? twoHanded : hand.orientation) : head, yaw, pitch);
         if (useHand) {

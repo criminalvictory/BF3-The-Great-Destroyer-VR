@@ -23,6 +23,15 @@ function Since([int]$from) { $all = LogLines; if ($all.Count -le $from) { return
 function WriteFile([string]$path, [string]$text) {
     for ($i = 0; $i -lt 20; $i++) { try { [IO.File]::WriteAllText($path, $text); return } catch { Start-Sleep -Milliseconds 30 } }
 }
+# The forearms row (6) writes a test arms.txt marked by its first line; a run killed in the middle left
+# it (the forearms on, the stand-in's test lines): put back what was there, or nothing.
+$arms = Join-Path $root 'build\arms.txt'
+$armsBackup = Join-Path $root 'build\arms.selftest.bak'
+$armsMarker = '# selftest: put back by tools\selftest.ps1'
+if ((Test-Path $arms) -and ((Get-Content $arms -TotalCount 1) -eq $armsMarker)) {
+    if (Test-Path $armsBackup) { WriteFile $arms ([IO.File]::ReadAllText($armsBackup)) } else { Remove-Item $arms -ErrorAction SilentlyContinue }
+    Remove-Item $armsBackup -ErrorAction SilentlyContinue
+}
 function Stamp([string]$line) {
     if ($line -match '^\[(\d+):(\d+):(\d+)\.(\d+)\]') { return [int]$matches[1] * 3600.0 + [int]$matches[2] * 60 + [int]$matches[3] + [int]$matches[4] / 1000.0 }
     return -1.0
@@ -208,16 +217,21 @@ else {
 # into reach, its wrist turned straight along the forearm solved for it, then bent 30 degrees of
 # flexion about the wrist joint; the once-a-second readings must say so. arms.txt is put back as it
 # was (no file: none again, the forearms off).
-$arms = Join-Path $root 'build\arms.txt'
 if (-not (Get-Process bf3 -ErrorAction SilentlyContinue)) { Result 'Forearms' 'SKIP' 'bf3.exe is not running' }
 elseif ($text -notmatch 'Window: resizing to \d+x\d+') { Result 'Forearms' 'SKIP' 'stereo is not on' }
 else {
     $hadArms = Test-Path $arms
     $armsBefore = if ($hadArms) { [IO.File]::ReadAllText($arms) } else { $null }
     $from = (LogLines).Count
-    WriteFile $arms "on`nlog 1`ntest move -0.25 0.05 0.35`ntest neutral`ntest bend 30 0 0`n"
-    Start-Sleep -Seconds 4
-    if ($hadArms) { WriteFile $arms $armsBefore } else { Remove-Item $arms -ErrorAction SilentlyContinue }
+    try {
+        # The marker line lets the next run put a file left by a killed run back (top of this script).
+        if ($hadArms) { WriteFile $armsBackup $armsBefore }
+        WriteFile $arms "$armsMarker`non`nlog 1`ntest move -0.25 0.05 0.35`ntest neutral`ntest bend 30 0 0`n"
+        Start-Sleep -Seconds 4
+    } finally {
+        if ($hadArms) { WriteFile $arms $armsBefore } else { Remove-Item $arms -ErrorAction SilentlyContinue }
+        Remove-Item $armsBackup -ErrorAction SilentlyContinue
+    }
     $lines = @(Since $from)
     $readings = @(); $unread = 0
     foreach ($l in @($lines | Where-Object { $_ -match 'Arms: left' })) {
@@ -261,6 +275,14 @@ if (Test-Path $armtest) {
     $out = & $armtest 2>&1
     Result 'Arm IK (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
 } else { Result 'Arm IK (offline)' 'SKIP' 'build\armtest.exe not built' }
+
+# 11. The left hand steering the gun while it holds the handguard, offline (tools/steertest.cpp):
+# src/steer.h on scripted hands (the rifle had followed a left hand beside or behind the right, 2026-10-31).
+$steertest = Join-Path $root 'build\steertest.exe'
+if (Test-Path $steertest) {
+    $out = & $steertest 2>&1
+    Result 'Two-hand steer (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
+} else { Result 'Two-hand steer (offline)' 'SKIP' 'build\steertest.exe not built' }
 
 $failed = @($results | Where-Object Status -eq 'FAIL').Count
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

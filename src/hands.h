@@ -18,9 +18,14 @@ void Toggle();
 // Free hands are on (the left trigger then works the charging handle instead of zooming).
 bool On();
 
-// With the left hand holding the handguard: the right controller's aim orientation turned to
-// where the gun points (from the right hand to the left), for the game to aim and fire along, in
-// the recentered space. False when the left hand isn't holding it. After Update, same thread.
+// True while the left hand steers the gun (steer.h: holding the handguard, eased in and out, letting
+// go too): the right controller's aim orientation turned as the gun is drawn, for the game to aim
+// and fire along, in the recentered space; otherwise false (the gun goes by the right hand alone).
+// After Update, same thread.
 bool AimOrientation(XrQuaternionf& out);
+
+// weapon.txt "steer 35 65": the left hand steers the gun fully while the hands' line is within the
+// first angle of where the right hand points it, not at all past the second (degrees; steer.h).
+void SetSteerCone(float fullDegrees, float noneDegrees);
 
 }

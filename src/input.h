@@ -73,6 +73,9 @@ void StartTurnTest();
 void UpdateTurn(bool direct);
 // The direct turn since the last call: radians, left positive ([controllers] turn_degrees).
 float TakeTurn();
+// weapon.txt "turnby 30": the view turned that many degrees at once, right positive (to find the
+// sun for the lens flare with nobody in the headset).
+void TurnBy(float degrees);
 // Each frame: how far the head is turned from the way the game faces (radians, left positive).
 // The left stick walks where the head faces, so it's turned by this into the game's frame.
 void SetMoveTurn(float radians);

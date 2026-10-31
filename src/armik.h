@@ -146,7 +146,11 @@ inline void Solve(const float* hand, const float* shoulder, const float* out, co
     for (int i = 0; i < 3; ++i)
         P[i] = out[i] * o - up[i] * dn + back[i] * p.poleBack;
     Across(P, D);
-    float last[3] = {state.pole[0], state.pole[1], state.pole[2]};
+    // Last frame's way, kept in the body's axes: a turn of the head alone turns the view's space the
+    // solve is made in, and dragged the elbow (and the watch) round with it (the review, 2026-10-31).
+    float last[3];
+    for (int i = 0; i < 3; ++i)
+        last[i] = out[i] * state.pole[0] + up[i] * state.pole[1] + back[i] * state.pole[2];
     Across(last, D);
     const float length = Normalize(P);
     if (state.have && Normalize(last) > 1e-4f) {
@@ -173,7 +177,7 @@ inline void Solve(const float* hand, const float* shoulder, const float* out, co
         if (Normalize(P) < 1e-4f)
             P[0] = 1, P[1] = 0, P[2] = 0;  // that line along z
     }
-    std::memcpy(state.pole, P, sizeof(P));
+    state.pole[0] = Dot(P, out), state.pole[1] = Dot(P, up), state.pole[2] = Dot(P, back);
     // The elbow: the two bones' triangle on the shoulder-wrist line, its apex towards the pole.
     // Beyond reach the arm is straight, pointing at the shoulder.
     const float lo = std::fabs(kUpper - kFore) + 1e-3f, hi = kUpper + kFore - 1e-4f;

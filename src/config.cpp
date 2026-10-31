@@ -236,6 +236,9 @@ void Load(HMODULE self) {
     aim.pitchDegrees = ReadBool(L"aim", L"pitch_degrees", false);
     aim.invertYaw = ReadBool(L"aim", L"invert_yaw", false);
     aim.invertPitch = ReadBool(L"aim", L"invert_pitch", false);
+    if (aim.invertYaw)  // a stray key once saved it so: the game aims opposite the gun, the view swings with it
+        Log("Config: [aim] invert_yaw=1: the hand's yaw goes in as it came, not negated: the game aims the other "
+            "way from the gun and the view turns with the gun. Ctrl + F4 flips it back");
 
     Fov fov;
     fov.value = ReadFloat(L"fov", L"value", fov.value);

@@ -19,6 +19,7 @@
 #include "ammo.h"
 #include "log.h"
 #include "overlay.h"
+#include "shaders.h"
 #include "skin.h"
 
 namespace {
@@ -95,6 +96,19 @@ bool HiddenPs(ID3D11DeviceContext* ctx) {
         if (h.load(std::memory_order_relaxed) == reinterpret_cast<uintptr_t>(ps))
             return true;
     return false;
+}
+
+// The sun's lens flare and dirty lens (shaders.cpp): quads of their own, so only a 6-vertex draw is
+// asked about.
+bool LensFlare(ID3D11DeviceContext* ctx, UINT count) {
+    if (count != 6)
+        return false;
+    ID3D11PixelShader* ps = nullptr;
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    if (!ps)
+        return false;
+    ps->Release();
+    return shaders::IsLensFlare(ps);
 }
 
 bool Hidden(UINT count) {
@@ -638,7 +652,9 @@ void DumpFx(UINT count) {
 std::atomic<int> g_dumpInstancesLeft{0};
 
 void DumpInstances(ID3D11DeviceContext* ctx, UINT count, UINT instances, UINT first, bool) {
-    if (count != g_dumpFx.load(std::memory_order_relaxed) || g_dumpInstancesLeft.fetch_sub(1) <= 0)
+    // The flash's 36-index mesh only, not the world's other boxes ("dumpfx 36", 2026-10-31).
+    if (count != g_dumpFx.load(std::memory_order_relaxed) || (count == 36 && !FlashMesh(ctx, count)) ||
+        g_dumpInstancesLeft.fetch_sub(1) <= 0)
         return;
     // Read back only on the immediate context (a deferred one can't be read; both hooks may be one).
     const bool immediate = ctx->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE;
@@ -738,6 +754,7 @@ struct TailDraw {
     D3D11_STENCIL_OP stencilPass;
     D3D11_RECT scissor;
     UINT texture0;  // the first pixel-shader texture's width (0 none)
+    uint64_t psSum;  // the pixel shader's bytecode checksum (shaders.cpp; the same every start)
 };
 std::mutex g_tailMutex;
 std::vector<TailDraw> g_tail;
@@ -833,6 +850,7 @@ void Tail(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
     ctx->PSGetShader(&ps, nullptr, nullptr);
     ctx->OMGetDepthStencilState(&depth, &d.stencil);
     d.vs = vs, d.ps = ps;
+    d.psSum = shaders::ChecksumOf(ps);
     if (vs)
         vs->Release();
     if (ps)
@@ -932,10 +950,11 @@ void LogTail() {
     // The last of them one by one.
     for (size_t i = g_tail.size() > 150 ? g_tail.size() - 150 : 0; i < g_tail.size(); ++i) {
         const TailDraw& d = g_tail[i];
-        Log("Tail %zu: %s %u x%u, context %p, VS %p PS %p, target %p %ux%u format %u, viewport %.0f,%.0f %.0fx%.0f, "
-            "blend %s (%s, %s), stencil %u; depth view %ux%u, depth %s%s func %d, stencil test %s func %d pass %d, "
-            "scissor %s %ld,%ld-%ld,%ld, texture 0 %u wide",
-            i, kTypeNames[d.type], d.count, d.instances, d.ctx, d.vs, d.ps, d.target, d.width, d.height, d.format,
+        Log("Tail %zu: %s %u x%u, context %p, VS %p PS %p (%016llx), target %p %ux%u format %u, viewport %.0f,%.0f "
+            "%.0fx%.0f, blend %s (%s, %s), stencil %u; depth view %ux%u, depth %s%s func %d, stencil test %s func %d "
+            "pass %d, scissor %s %ld,%ld-%ld,%ld, texture 0 %u wide",
+            i, kTypeNames[d.type], d.count, d.instances, d.ctx, d.vs, d.ps, static_cast<unsigned long long>(d.psSum),
+            d.target, d.width, d.height, d.format,
             d.viewport.TopLeftX, d.viewport.TopLeftY, d.viewport.Width, d.viewport.Height, d.blend ? "on" : "off",
             BlendName(d.src), BlendName(d.dst), d.stencil, d.depthWidth, d.depthHeight, d.depthTest ? "test" : "off",
             d.depthWrite ? "+write" : "", static_cast<int>(d.depthFunc), d.stencilTest ? "on" : "off",
@@ -1232,7 +1251,7 @@ void ProbeDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instanc
 
 void STDMETHODCALLTYPE Draw0(ID3D11DeviceContext* c, UINT count, UINT start) {
     NoteDraw(c, kPlain, count, 1);
-    if (HiddenPs(c))
+    if (HiddenPs(c) || LensFlare(c, count))
         return;
     if (overlay::Draw(c, count, [&] { g_origDraw[0](c, count, start); }))
         return;
@@ -1251,7 +1270,7 @@ void STDMETHODCALLTYPE Draw0(ID3D11DeviceContext* c, UINT count, UINT start) {
 }
 void STDMETHODCALLTYPE Draw1(ID3D11DeviceContext* c, UINT count, UINT start) {
     NoteDraw(c, kPlain, count, 1);
-    if (HiddenPs(c))
+    if (HiddenPs(c) || LensFlare(c, count))
         return;
     if (overlay::Draw(c, count, [&] { g_origDraw[1](c, count, start); }))
         return;

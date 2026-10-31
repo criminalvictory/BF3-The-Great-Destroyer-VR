@@ -61,6 +61,7 @@ add_library(bf3vr SHARED
     src/collide.cpp
     src/pouch.cpp
     src/overlay.cpp
+    src/shaders.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(bf3vr PRIVATE openxr_loader minhook d3d11 dxgi d3dcompiler xaudio2 ole32)
@@ -102,6 +103,13 @@ target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the
 # poses, the time a solve takes, and the stand-in's test hooks.
 add_executable(armtest tools/armtest.cpp)
 target_compile_definitions(armtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The left hand steering the gun while it holds the handguard (src/steer.h, header only) on scripted
+# frames at 72 Hz: both hands swinging it, the left hand pivoting it, wandering off the handguard, the
+# hands coming together, letting go, one-frame glitches, the line back while the last steer eases out,
+# degenerate inputs, the time an update takes.
+add_executable(steertest tools/steertest.cpp)
+target_compile_definitions(steertest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)

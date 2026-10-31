@@ -27,7 +27,7 @@ account banned. This project contains only its own code; it ships no EA files.
 
 If the picture looks wrong:
 
-- **Scroll Lock** cycles how the 3D is made: per-eye views (normal), depth 3D, hybrid, alternate
+- **Ctrl + Scroll Lock** cycles how the 3D is made: per-eye views (normal), depth 3D, hybrid, alternate
   eyes, mono, frozen. If one looks better to you, that's useful to know.
 - **Delete** turns the wide view off and on; **Page Up / Page Down** make it wider or narrower.
 - The settings files are in the `build` folder: `bf3vr.ini` (general), `depth3d.txt` (the 3D
@@ -52,13 +52,13 @@ If the picture looks wrong:
   (380 processes, 7,800 threads). Made in 2011, it took microseconds then. The mod answers it from
   a copy refreshed once a second (`src/perfinfo.cpp`); with two views the frames no longer missed
   the headset and turning with the stick stopped stuttering.
-- **Stereo 3D from depth** (Scroll Lock): every game frame becomes both eyes. Each pixel is shifted
+- **Stereo 3D from depth** (Ctrl + Scroll Lock): every game frame becomes both eyes. Each pixel is shifted
   sideways by the eye's offset over its distance, read from BF3's own depth buffer, so both eyes
   update every frame and head turns no longer double the picture (alternate-eye rendering, one
   frame per eye in turn, did). The gun and arms get their real depth too: BF3 draws them squeezed
   towards the eye and marks them in the stencil buffer, so the mod un-squeezes exactly those
   pixels. Cheaper than per-eye views, but around near things against far ones it shows a soft halo.
-  Scroll Lock cycles per-eye views / depth 3D / hybrid / alternate eyes / mono / frozen; tuning is
+  Ctrl + Scroll Lock cycles per-eye views / depth 3D / hybrid / alternate eyes / mono / frozen; tuning is
   in `build\depth3d.txt` (see below).
 - **Head tracking**: the head turns the picture, including tilt.
 - **Motion controller aiming**: the right controller aims; bullets, muzzle flash and the gun model
@@ -90,6 +90,14 @@ If the picture looks wrong:
   width). Without one, the line-up made on the test setup's Steam Frame is used. BF3 draws the first-person arms in a space of their own whose origin jumps a metre at a
   time as you walk; each draw places the hands with the eye and axes of the view-projection it is
   drawn with, so they stay steady while moving.
+- **Both hands on the rifle**: squeeze the left grip with the left hand at the handguard and the
+  glove takes hold there (the game's own grip for this gun) until you let go of the grip. While it
+  holds, the gun points from your right hand towards your left, and the game aims along it, as long
+  as your left hand is where a handguard could be: with it beside, below or behind the right hand,
+  or the hands closer than 10-15 cm, the right hand alone points the gun. The change eases in and
+  out over about a tenth of a second, letting go too, and a sudden jump of the left controller's
+  tracking can't throw the gun across the view. (Before, the rifle followed the left hand wherever
+  it went while the grip was squeezed, and swung round in one jump.)
 - **God mode** (End on/off, on by default): the campaign runs the game's own server inside
   `bf3.exe`, and the health that decides deaths is the server's copy of your soldier. The mod finds
   it every spawn and keeps health and maximum health at `[god] value` (100000), so hits are undone
@@ -150,12 +158,12 @@ Tested on a Steam Frame through SteamVR's OpenXR runtime with an RTX 3080.
 - Depth 3D: around near things against far ones (the gun, a soldier against the sky) the gap the
   other eye would see behind them is filled from the background beside it, which can look like a
   soft halo. `bias -1` / `bias 1` in `depth3d.txt` keeps one eye exactly as the game drew it and
-  puts all the filling in the other; hybrid mode (Scroll Lock) alternates which eye is drawn.
+  puts all the filling in the other; hybrid mode (Ctrl + Scroll Lock) alternates which eye is drawn.
 - With the wide view, the sleeve near the shoulder can look stretched: that part of BF3's arm
   model is normally off screen.
 - Free hands: only the campaign's M16-type rifle is known (other guns get the game's own arms);
-  bullets still leave from where the game holds its gun, not the drawn muzzle; two-handed aiming
-  isn't done. A short piece of bare forearm shows under the left glove's cuff.
+  bullets still leave from where the game holds its gun, not the drawn muzzle. A short piece of
+  bare forearm shows under the left glove's cuff.
 - The muzzle flash and its smoke are drawn where the game holds its own gun (at the chest), not at
   the drawn gun.
 - A dark layer shows around the arms, glove and gun, plainest against bright light (being looked
@@ -215,12 +223,12 @@ and Y are on the left.
 | Delete | Wide field of view on / off (saved) |
 | Page Up / Page Down | With the wide view on: its angle, 5° a step. Otherwise: zoom of the headset image |
 | F1 | Flip which way the gun model follows the hand |
-| F4 / F2 | Flip head yaw / pitch direction |
+| Ctrl + F4 / Ctrl + F2 | Flip head yaw / pitch direction (saved; not needed: the direction is BF3's) |
 | F7 | Swap eyes |
 | F11 | How many frames old the head pose each eye image is shown with (0-3, default 1) |
 | Insert | Free hands on / off (the game's own arms) |
 | End | God mode on / off (saved) |
-| Scroll Lock | 3D method: depth 3D / hybrid (each frame from one eye, the other from its depth) / alternate eyes / mono / frozen |
+| Ctrl + Scroll Lock | 3D method: depth 3D / hybrid (each frame from one eye, the other from its depth) / alternate eyes / mono / frozen |
 | Pause | Skinning research hooks on / off (off by default: they cost frame rate) |
 
 `build\hands.txt`: gloves palette numbers ("0-23" left hand, "24-54" right hand, or "all") and
@@ -260,7 +268,7 @@ Finders and tests (needed once per setup; see the log for results):
 |---|---|
 | F10 | Camera finder (look around, turn and walk after the beeps) |
 | F6 / F5 | Cull hunt: with the arm held out so scenery is missing, tries one camera copy every 3 s / F5 saves the one that brings it back |
-| F3 | Look-angle finder |
+| Ctrl + F3 | Look-angle finder |
 | F12 | Gameplay skeleton finder (research: it turned out not to drive the drawn arms) |
 | F15, F13 / F14 | Draw hunt, driven by `tools/drawhunt.ps1` (keys no keyboard has): hides half the skinned draws at a time until the one asked about is found |
 
