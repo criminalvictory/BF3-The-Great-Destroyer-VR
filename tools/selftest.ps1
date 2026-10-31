@@ -215,6 +215,13 @@ if (Test-Path $collide) {
     Result 'Glove collision (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
 } else { Result 'Glove collision (offline)' 'SKIP' 'build\collidetest.exe not built' }
 
+# 8. The magazine from the pouch at the pelvis pushed into the well, offline (tools/magtest.cpp).
+$magtest = Join-Path $root 'build\magtest.exe'
+if (Test-Path $magtest) {
+    $out = & $magtest 2>&1
+    Result 'Magazine by hand (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
+} else { Result 'Magazine by hand (offline)' 'SKIP' 'build\magtest.exe not built' }
+
 $failed = @($results | Where-Object Status -eq 'FAIL').Count
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $report = Join-Path $root "screenshots\selftest_$stamp.txt"

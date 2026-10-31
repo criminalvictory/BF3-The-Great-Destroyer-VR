@@ -46,6 +46,7 @@ struct Gun {
 
 uintptr_t g_soldier = 0;  // the server's soldier the guns below belong to
 uintptr_t g_firing = 0;   // the gun in hand
+ULONGLONG g_firingSince = 0;  // when the gun in hand last changed (the old rifle is still drawn a while)
 std::unordered_map<uintptr_t, Gun> g_guns;
 
 uintptr_t ReadPointer(uintptr_t address) {
@@ -127,8 +128,10 @@ void Update() {
     if (!firing || !ReadRaw(firing, raw, spare))
         return;
     Gun& gun = g_guns[firing];
-    if (firing != g_firing)
+    if (firing != g_firing) {
         Log("Ammo: the gun in hand has %d rounds loaded, %d spare", raw - gun.hidden, spare);
+        g_firingSince = GetTickCount64();
+    }
     g_firing = firing;
     // The game's own reload (R held on X): its count up by a magazine without the mod writing it.
     // A magazine and the chambered round: its size, and the hidden round goes back on top.
@@ -190,7 +193,9 @@ int MagazineSize() {
 }
 
 bool RifleFiringInHand() {
-    if (!skin::RifleInHand() || !g_firing || g_firing != Firing())
+    // Just switched (to the launcher, or another gun while the rifle is still drawn half a second):
+    // not yet, so a magazine in the hand goes with the switch.
+    if (!skin::RifleInHand() || !g_firing || g_firing != Firing() || GetTickCount64() - g_firingSince < 1500)
         return false;
     // The launcher under it is seen with a round or two at most; the rifle's own with a magazine.
     auto it = g_guns.find(g_firing);

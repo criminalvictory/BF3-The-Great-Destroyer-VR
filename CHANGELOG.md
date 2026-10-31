@@ -69,6 +69,16 @@ self-test and the mod's own pictures, not yet in the headset.
     was, to place it from the first session.
   - The design came from three independent designs and a judge; a rifle magazine never goes into the
     grenade launcher's firing state.
+  - An offline test drives it with scripted hands at 72 Hz (`magtest.exe`, 50 checks, now in the
+    self-test). It and a three-way review found 15 problems, all fixed:
+    - a 6-degree turn of the wrist knocked the magazine off the well;
+    - a one-frame tracking jump threw it out;
+    - a one-frame loss of the right controller made it vanish;
+    - it could be caught coming down through the receiver;
+    - the other guns' pelvis reload could take the squeeze meant for the handguard;
+    - a dropped magazine fell from rest instead of at the hand's speed;
+    - a few smaller ones.
+    These fixes are tested offline only: the game couldn't be restarted (Battlelog had signed out).
 - `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
 - **The ACOG's reticle and red cable stand out more**: they're see-through, so they're drawn again on
   themselves (the reticle five more times, the cable three), the strongest of three levels the user

@@ -1609,6 +1609,7 @@ struct Drop {
     double landedAt = 0.0, updatedAt = 0.0;
     float held[kMagBones][12] = {};   // a magazine in the left hand's bones as last drawn there
     bool heldSeen[kMagBones] = {};
+    double heldAt[kMagBones] = {};    // ... when (Seconds()): a drop from the hand takes only what's fresh
 };
 std::mutex g_magMutex;
 Drop g_drop;
@@ -2033,32 +2034,43 @@ void UpdateDrop() {
 }
 
 // The magazine falls: out of the gun's well (fromHand false), or from the left hand where it was
-// last drawn (let go of).
-bool StartDrop(bool fromHand = false) {
+// last drawn (let go of), starting at velocityView (the view's space; turned into the arms').
+bool StartDrop(bool fromHand = false, const float* velocityView = nullptr) {
     float origin[3] = {};
+    float toArms[9] = {};  // the view's space -> the arms' (a turn only: for the hand's speed)
     {
         std::lock_guard lock(g_fpMutex);
         std::memcpy(origin, g_fpOrigin, sizeof(origin));
+        if (g_haveViewToArms)
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    toArms[i * 3 + j] = g_viewToArms[i * 4 + j];
     }
     std::lock_guard lock(g_magMutex);
     Drop& d = g_drop;
-    const bool* seen = fromHand ? d.heldSeen : d.seen;
-    if (!seen[0])
-        return false;  // not drawn there
-    std::memcpy(d.start, fromHand ? d.held : d.last, sizeof(d.start));
-    std::memcpy(d.started, seen, sizeof(d.started));
+    bool seen[kMagBones];
+    const double now = Seconds();
+    for (size_t i = 0; i < kMagBones; ++i)
+        seen[i] = fromHand ? d.heldSeen[i] && now - d.heldAt[i] < 0.1 : d.seen[i];
     if (fromHand)
         std::fill(std::begin(d.heldSeen), std::end(d.heldSeen), false);
+    if (!seen[0])
+        return false;  // not drawn there (lately)
+    std::memcpy(d.start, fromHand ? d.held : d.last, sizeof(d.start));
+    std::memcpy(d.started, seen, sizeof(d.started));
     const float* m = d.start[0];
     float cm[3] = {(kMagMin[0] + kMagMax[0]) / 2, (kMagMin[1] + kMagMax[1]) / 2, (kMagMin[2] + kMagMax[2]) / 2};
     for (int i = 0; i < 3; ++i)
         d.c0[i] = d.pos[i] = d.centre[i] = m[i * 4] * cm[0] + m[i * 4 + 1] * cm[1] + m[i * 4 + 2] * cm[2] + m[i * 4 + 3];
     // Out of the well along its own length (the model's -y), tumbling around the gun's sideways
-    // axis (the model's x); from the hand it just falls.
+    // axis (the model's x); from the hand at the hand's speed as it let go.
     float down[3] = {-m[1], -m[5], -m[9]};
     Normalize(down);
     for (int i = 0; i < 3; ++i)
-        d.vel[i] = fromHand ? 0.0f : down[i] * kEjectSpeed;
+        d.vel[i] = !fromHand      ? down[i] * kEjectSpeed
+                   : velocityView ? toArms[i * 3] * velocityView[0] + toArms[i * 3 + 1] * velocityView[1] +
+                                        toArms[i * 3 + 2] * velocityView[2]
+                                  : 0.0f;
     d.axis[0] = m[0], d.axis[1] = m[4], d.axis[2] = m[8];
     Normalize(d.axis);
     d.angle = 0.0f;
@@ -2310,12 +2322,15 @@ bool DrawGun(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT ba
                 if (kMagazineBones[i].pass == pass && d.started[i])
                     MoveBone(d.start[i], d, reinterpret_cast<float*>(t_dropped.data() + kMagazineBones[i].bone * 48));
         }
-        if (held)  // where it falls from if it's let go of
+        if (held) {  // where it falls from if it's let go of
+            const double now = Seconds();
             for (size_t i = 0; i < kMagBones; ++i)
                 if (kMagazineBones[i].pass == pass) {
                     std::memcpy(d.held[i], t_held.data() + kMagazineBones[i].bone * 48, sizeof(d.held[i]));
                     d.heldSeen[i] = true;
+                    d.heldAt[i] = now;
                 }
+        }
     }
     if (!(moved || out) ||
         !DrawWithPalette(which, ctx, count, start, base, u.resource, t_gun.data(), kGloveUploadSize)) {
@@ -3338,8 +3353,8 @@ bool MagazineOut() {
     return g_magOut.load();
 }
 
-bool DropHeldMagazine() {
-    if (!StartDrop(true))
+bool DropHeldMagazine(const float* velocityView) {
+    if (!StartDrop(true, velocityView))
         return false;
     Log("Magazine: let go of, falling from the hand");
     return true;

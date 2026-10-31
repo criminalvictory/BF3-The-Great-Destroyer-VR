@@ -36,6 +36,14 @@ constexpr float kMaxStep = 0.03f, kHome = 0.005f;
 constexpr int kHomeFrames = 2, kHeldFrames = 2;
 constexpr float kOffWider = 0.03f, kOffTurned = 20.0f * kDegree, kOffBelow = 0.08f;
 constexpr float kOffInWell = 0.12f, kOffInWellTurned = 60.0f * kDegree;
+// Off the line only after this many frames running (a tracking jump is a frame or two).
+constexpr int kOffFrames = 3;
+// The hand's middle in the gloves' bind space (the judge's fit: (0.045 -0.140 0.425) in the gun's
+// space with the magazine seated): inside the well the hand is measured there from the drawn glove,
+// not at the bind space's origin 1.24 m away (a 6 degree turn of the wrist moved that 12 cm).
+constexpr float kHandInGlove[3] = {0.5363f, 1.0976f, 0.2092f};
+// Above the mouth the funnel's last allowance (6 mm, 3 degrees) fades out over this much of the well.
+constexpr float kMouthFade = 0.01f;
 constexpr float kLost = 1.0f;  // s a lost hand keeps its magazine
 
 // ---- The pouch: in front of the lower belly, below the belly button and above the groin (the
@@ -64,6 +72,7 @@ bool g_haveBody = false;
 constexpr float kArm = 0.4f, kTake = 0.6f, kReachWindow = 0.15f;
 bool g_armed = true;
 float g_time = 0.0f, g_crossedAt = -1.0f;
+float g_crossedWhere[3] = {}, g_crossedSize = 0.0f;  // the open squeeze's crossing, for its one log line
 
 // The magazine in the left glove, from the gun's model space with it seated into the gloves' bind
 // space: its thin side against the palm, its top out above the thumb, its front along the fingers.
@@ -78,12 +87,20 @@ float g_hold[12] = {0.639f, -0.633f, 0.437f, 0.2336f,  //
 enum class State { kNone, kHand, kLine };
 State g_state = State::kNone;
 int g_heldFrames = 0, g_homeFor = 0;
+int g_offFor = 0;          // frames running the hand has been off the line
+bool g_fromAbove = false;  // the held magazine's top went above the mouth in the gun's way
 float g_along = 0.0f;       // the drawn magazine's s on the line
 float g_line[12] = {};      // its place in the gun's space there (as last drawn)
 float g_lostFor = 0.0f;
 bool g_wasEmpty = false;
 float g_gloveBlend = 0.0f;  // the glove drawn on the magazine on the line: 0-1
 float g_gloveInGun[12] = {};  // ... there, in the gun's space (it eases back to the hand from it)
+// The grip point over the last four frames held (room) and their lengths: the hand's speed when it
+// lets go, which the magazine falls with.
+XrVector3f g_gripAt[4] = {};
+float g_gripDt[4] = {};
+int g_gripNext = 0, g_gripCount = 0;
+constexpr float kMaxDropSpeed = 3.0f;  // m/s
 
 void Compose(const float* a, const float* b, float* out) {
     for (int i = 0; i < 3; ++i) {
@@ -92,6 +109,28 @@ void Compose(const float* a, const float* b, float* out) {
         out[i * 4 + 3] += a[i * 4 + 3];
     }
 }
+
+// A rotation | translation's rotation made exactly orthonormal (the hold's is written to 3 decimals:
+// its transpose was off its inverse by up to 0.3 mm at the magazine).
+void Tidy(float* m) {
+    float* r0 = m;
+    float* r1 = m + 4;
+    float* r2 = m + 8;
+    auto normalize = [](float* v) {
+        const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (n > 0.0f)
+            v[0] /= n, v[1] /= n, v[2] /= n;
+    };
+    normalize(r0);
+    const float d = r1[0] * r0[0] + r1[1] * r0[1] + r1[2] * r0[2];
+    for (int i = 0; i < 3; ++i)
+        r1[i] -= d * r0[i];
+    normalize(r1);
+    r2[0] = r0[1] * r1[2] - r0[2] * r1[1];
+    r2[1] = r0[2] * r1[0] - r0[0] * r1[2];
+    r2[2] = r0[0] * r1[1] - r0[1] * r1[0];
+}
+const bool g_holdTidy = (Tidy(g_hold), true);
 
 // A rotation | translation inverted (the rotation's transpose).
 void InvertRigid(const float* m, float* out) {
@@ -230,18 +269,19 @@ float Lateral(const float* top) {
 // line exactly.
 void OnLine(const float* held, const float* heldTop, float s, float* out) {
     const float h = kMouth - s;
-    if (h <= 0.0f) {
+    const float fade = h >= 0.0f ? 1.0f : std::max(1.0f + h / kMouthFade, 0.0f);
+    if (fade <= 0.0f) {
         const float onLine[12] = {1, 0, 0, 0, 0, 1, 0, s, 0, 0, 1, 0};
         std::memcpy(out, onLine, sizeof(onLine));
         return;
     }
     // The turn: the hand's, at most the funnel's angle (the same axis, less far round).
     const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-    const float angle = TurnAngle(held), most = FunnelAngle(h);
+    const float angle = TurnAngle(held), most = FunnelAngle(h) * fade;
     Blend(identity, held, angle > most && angle > 0.0f ? most / angle : 1.0f, out);
     // The top off the line by the hand's offset, at most the funnel's radius.
     float off[2] = {heldTop[0], heldTop[2] - kTop[2]};
-    const float lateral = std::sqrt(off[0] * off[0] + off[1] * off[1]), radius = FunnelRadius(h);
+    const float lateral = std::sqrt(off[0] * off[0] + off[1] * off[1]), radius = FunnelRadius(h) * fade;
     if (lateral > radius)
         off[0] *= radius / lateral, off[1] *= radius / lateral;
     const float top[3] = {off[0], kTop[1] + s, kTop[2] + off[1]};
@@ -270,36 +310,41 @@ Result Update(const Frame& f) {
                                  (where[2] / g_zone[4]) * (where[2] / g_zone[4]));
     const bool inside = g_zoneOn && f.left && (f.forceInside || size <= 1.0f);
     const bool atPouch = g_zoneOn && f.left && (f.forceInside || size <= kPutBack);
-    // The squeeze: armed, crossed, and reaching the pouch within 0.15 s of crossing.
-    bool crossed = false;
+    // The squeeze: armed, crossed, and reaching the pouch within 0.15 s of crossing. Logged once, when
+    // it's settled: reached (where the hand came in), or not (where it crossed).
     if (f.squeeze < kArm)
         g_armed = true;
     if (f.left && g_armed && f.squeeze > kTake) {
         g_armed = false;
         g_crossedAt = g_time;
-        crossed = true;
+        std::memcpy(g_crossedWhere, where, sizeof(where));
+        g_crossedSize = size;
     }
-    if (g_crossedAt >= 0.0f && (g_time - g_crossedAt > kReachWindow || f.squeeze <= kTake))
+    bool missed = false;
+    if (g_crossedAt >= 0.0f && (g_time - g_crossedAt > kReachWindow || f.squeeze <= kTake)) {
         g_crossedAt = -1.0f;
+        missed = true;
+    }
     if (g_crossedAt >= 0.0f && inside) {
         r.reached = true;
         g_crossedAt = -1.0f;
     }
-    if (crossed || r.reached) {
-        const float distance = std::sqrt(where[0] * where[0] + where[1] * where[1] + where[2] * where[2]);
+    if (missed || r.reached) {
+        const float* at = r.reached ? where : g_crossedWhere;
+        const float distance = std::sqrt(at[0] * at[0] + at[1] * at[1] + at[2] * at[2]);
         if (distance < kLogNear || r.reached) {
             r.squeezed = true;
-            std::memcpy(r.fromMiddle, where, sizeof(where));
-            r.size = f.forceInside ? 0.0f : size;
+            std::memcpy(r.fromMiddle, at, sizeof(r.fromMiddle));
+            r.size = f.forceInside ? 0.0f : r.reached ? size : g_crossedSize;
         }
     }
     const bool wentIn = g_wasEmpty && !f.wellEmpty;
     g_wasEmpty = f.wellEmpty;
 
-    // The glove eases back to the hand from the line (after a seat, or pulled off it).
+    // The glove eases back to the hand from the line (after a seat, or let go of on it).
     if (g_state != State::kLine && g_gloveBlend > 0.0f) {
         g_gloveBlend = std::max(g_gloveBlend - 0.35f, 0.0f);
-        if (f.gun) {
+        if (f.gun && f.gunTracked) {
             Compose(f.gunPose, g_gloveInGun, r.glove);
             r.gloveBlend = g_gloveBlend;
         }
@@ -319,6 +364,7 @@ Result Update(const Frame& f) {
         // A squeeze at the pouch: a magazine if the hand and the gun can take one.
         r.note = !f.handFree               ? "the hand is busy"
                  : !f.gun                  ? "no gun the pouch knows (its own reload)"
+                 : !f.gunTracked           ? "the gun not tracked this frame"
                  : f.guardDistance < 0.10f ? "too near the handguard"
                  : !f.wellEmpty && !f.dry  ? "the magazine is in and has rounds: X first"
                  : !f.spare                ? "no rounds left for it"
@@ -328,20 +374,24 @@ Result Update(const Frame& f) {
         g_state = State::kHand;
         g_heldFrames = 0;
         g_lostFor = 0.0f;
+        g_fromAbove = false;
+        g_gripCount = 0;
         r.took = true;
         r.note = "took a magazine";
     }
 
-    // The hand lost: its magazine kept (not drawn in the hand; on the line where it was) for a second.
-    if (!f.left) {
+    // The hand lost, or the gun (the right controller): the magazine kept (not drawn in the hand; on the
+    // line where it was, with the gun seen) for a second.
+    if (!f.left || !f.gunTracked) {
         g_lostFor += dt;
-        if (g_lostFor > kLost) {
+        g_gripCount = 0;
+        if (g_lostFor > kLost || f.squeeze < kArm) {  // lost a second, or let go of while lost: gone
             Clear();
             r.cancelled = true;
             return r;
         }
         r.holding = true;
-        if (g_state == State::kLine) {
+        if (g_state == State::kLine && f.gunTracked) {
             Compose(f.gunPose, g_line, r.magPose);
             r.mag = true;
         }
@@ -349,17 +399,26 @@ Result Update(const Frame& f) {
     }
     g_lostFor = 0.0f;
     ++g_heldFrames;
+    g_gripAt[g_gripNext] = f.leftGrip, g_gripDt[g_gripNext] = dt;
+    g_gripNext = (g_gripNext + 1) % 4, g_gripCount = std::min(g_gripCount + 1, 4);
 
     float held[12], inGun[12], top[3];
     AsHeld(f, held, inGun, top);
     const float s = top[1] - kTop[1], h = kMouth - s, turned = TurnAngle(inGun), lateral = Lateral(top);
     if (g_state == State::kHand) {
         // Caught in the funnel: below the mouth, near enough the line, turned little enough.
-        if (f.wellEmpty && g_heldFrames >= kHeldFrames && h >= 0.0f && h <= kFunnelDepth && lateral <= FunnelRadius(h) &&
-            turned <= FunnelAngle(h)) {
+        // Top first from below or the side, not down through the receiver: once above the mouth in
+        // the gun's way, not caught until it's been below the funnel or well to the side of it.
+        if (h > kFunnelDepth || lateral > FunnelRadius(kFunnelDepth) + kOffWider)
+            g_fromAbove = false;
+        else if (h < 0.0f)
+            g_fromAbove = true;
+        if (!g_fromAbove && f.wellEmpty && g_heldFrames >= kHeldFrames && h >= 0.0f && h <= kFunnelDepth &&
+            lateral <= FunnelRadius(h) && turned <= FunnelAngle(h)) {
             g_state = State::kLine;
             g_along = std::min(s, 0.0f);
             g_homeFor = 0;
+            g_offFor = 0;
             r.caught = true;
         }
     } else {
@@ -370,21 +429,29 @@ Result Update(const Frame& f) {
         float gloveHere[12], gunInverse[12];
         InvertRigid(f.gunPose, gunInverse);
         Compose(gunInverse, f.glove, gloveHere);
-        const float apart = std::sqrt((gloveHere[3] - gloveInGun[3]) * (gloveHere[3] - gloveInGun[3]) +
-                                      (gloveHere[7] - gloveInGun[7]) * (gloveHere[7] - gloveInGun[7]) +
-                                      (gloveHere[11] - gloveInGun[11]) * (gloveHere[11] - gloveInGun[11]));
+        float here[3], drawn[3];
+        Transform(gloveHere, kHandInGlove, here);
+        Transform(gloveInGun, kHandInGlove, drawn);
+        const float apart = std::sqrt((here[0] - drawn[0]) * (here[0] - drawn[0]) + (here[1] - drawn[1]) * (here[1] - drawn[1]) +
+                                      (here[2] - drawn[2]) * (here[2] - drawn[2]));
         const bool off = kMouth - g_along > 0.0f
                              ? lateral > FunnelRadius(h) + kOffWider || turned > FunnelAngle(h) + kOffTurned || h > kOffBelow
                              : apart > kOffInWell || turned > kOffInWellTurned;
-        if (off) {
+        g_offFor = off ? g_offFor + 1 : 0;
+        if (g_offFor >= kOffFrames) {
             g_state = State::kHand;
             r.offLine = true;
+            g_gloveBlend = 0.0f;  // back in the hand as it's held: the glove with its magazine, no ease to the line
         }
     }
     if (g_state == State::kLine) {
         // Along the line as far as the hand pushes it, at most 3 cm a frame, never past home.
-        g_along = std::clamp(std::min(s, 0.0f), g_along - kMaxStep, g_along + kMaxStep);
-        OnLine(inGun, top, g_along, g_line);
+        // ... and held where it is while the hand is off the line (a tracking jump moves and seats nothing).
+        if (g_offFor == 0) {
+            g_along = std::clamp(std::min(s, 0.0f), g_along - kMaxStep, g_along + kMaxStep);
+            OnLine(inGun, top, g_along, g_line);
+            g_homeFor = g_along >= -kHome ? g_homeFor + 1 : 0;
+        }
         Compose(f.gunPose, g_line, r.magPose);
         r.mag = true;
         GloveOn(g_line, g_gloveInGun);
@@ -392,7 +459,6 @@ Result Update(const Frame& f) {
         Compose(f.gunPose, g_gloveInGun, r.glove);
         r.gloveBlend = g_gloveBlend;
         // Home for two frames: seated (before any letting go this frame).
-        g_homeFor = g_along >= -kHome ? g_homeFor + 1 : 0;
         if (g_homeFor >= kHomeFrames) {
             g_state = State::kNone;
             r.seated = true;
@@ -405,12 +471,24 @@ Result Update(const Frame& f) {
     }
     r.holding = true;
     if (f.squeeze < kArm) {
-        // Let go of: back in the pouch if let go at it, otherwise it falls from where it's drawn.
+        // Let go of: back in the pouch if let go at it, otherwise it falls from where it's drawn, at the
+        // hand's speed over its last three frames (at most 3 m/s).
         g_state = State::kNone;
         r.holding = false;
         r.mag = false;
         r.putBack = atPouch;
         r.letGo = !atPouch;
+        if (r.letGo && g_gripCount == 4) {
+            const XrVector3f &now = g_gripAt[(g_gripNext + 3) % 4], &then = g_gripAt[g_gripNext];
+            const float span = g_gripDt[(g_gripNext + 1) % 4] + g_gripDt[(g_gripNext + 2) % 4] + g_gripDt[(g_gripNext + 3) % 4];
+            if (span > 0.0f) {
+                const float v[3] = {(now.x - then.x) / span, (now.y - then.y) / span, (now.z - then.z) / span};
+                const float speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                const float k = speed > kMaxDropSpeed ? kMaxDropSpeed / speed : 1.0f;
+                for (int i = 0; i < 3; ++i)
+                    r.dropVelocity[i] = v[i] * k;
+            }
+        }
     }
     return r;
 }
@@ -421,6 +499,7 @@ bool Holding() {
 
 void Clear() {
     g_state = State::kNone;
+    g_gloveBlend = 0.0f;  // gone: the glove doesn't ease back towards where it was
     g_homeFor = 0;
     g_lostFor = 0.0f;
 }
@@ -433,6 +512,7 @@ void SetZone(const float* zone, bool on) {
 
 void SetHold(const float* hold) {
     std::memcpy(g_hold, hold, sizeof(g_hold));
+    Tidy(g_hold);
 }
 
 void GloveFor(const float* magPose, float* glove) {

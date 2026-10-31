@@ -25,6 +25,8 @@ struct Frame {
     // In the view's space (hands.cpp's): the gun's body (its model space into the view's) and the left
     // glove as its controller holds it (the gloves' bind space into the view's).
     bool gun = false;  // the gun the pouch knows (the M416), its own firing state, its magazine's seat known
+    bool gunTracked = true;  // gunPose is this frame's (the right controller seen): without it the magazine's
+                             // kept a second, as with a lost hand
     float gunPose[12] = {};
     float glove[12] = {};
     float guardDistance = 1.0f;  // the left palm from the handguard's line (metres)
@@ -47,9 +49,11 @@ struct Result {
     bool caught = false;   // caught in the funnel under the well
     bool offLine = false;  // pulled off the well's line: back in the hand as it's held
     bool seated = false;   // pushed home: the game is told
-    bool letGo = false;    // let go of: it falls from where it was drawn last
+    bool letGo = false;    // let go of: it falls from where it was drawn last ...
+    float dropVelocity[3] = {};  // ... at the hand's speed then (room, m/s, at most 3)
     bool putBack = false;  // let go of at the pouch: gone back in it
-    bool cancelled = false;  // gone without a fall (another magazine went in, the hand lost a second)
+    bool cancelled = false;  // gone without a fall (another magazine went in, the gun went, the hand or the
+                             // gun lost a second, or let go of while lost)
     // A fresh squeeze near the pouch (within 40 cm), for the log: where the grip point was in the
     // pouch's axes from its middle (right, up, forward; metres), how far out (1 its edge), and why
     // nothing was taken if it wasn't.

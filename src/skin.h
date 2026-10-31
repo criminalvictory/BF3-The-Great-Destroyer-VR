@@ -54,8 +54,9 @@ bool EjectMagazine();
 void InsertMagazine();
 bool MagazineOut();
 // A magazine held in the left hand (HandTargets::mag) let go of: it falls from where it was last
-// drawn in the hand. False if it hasn't been drawn there.
-bool DropHeldMagazine();
+// drawn in the hand (this last tenth of a second), starting at velocityView (m/s in the view's space;
+// none: from rest). False if it hasn't been drawn there lately.
+bool DropHeldMagazine(const float* velocityView = nullptr);
 // Whether the magazine's seat in the gun (each of its bones' offset from the gun's body, as the game
 // draws it in the well) is known: until then a magazine can't be drawn in the hand.
 bool MagazineSeatKnown();

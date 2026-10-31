@@ -604,9 +604,10 @@ void PollHotkeys() {
     // End: god mode on/off.
     if (KeyPressed(VK_END))
         god::Toggle();
-    // F16 (sent by tools/drawhunt.ps1): the X button's magazine eject / insert.
+    // F16 (sent by tools/drawhunt.ps1): the X button's magazine eject / insert. It inserts even with
+    // pouch.txt "xinsert 0", so a scripted run can always put the magazine back.
     if (KeyPressed(VK_F16))
-        input::MagazineTap();
+        input::MagazineTap(true);
     // F17 (tools/drawhunt.ps1): 3 s of turning as the stick does, to measure how even it is.
     if (KeyPressed(VK_F17))
         input::StartTurnTest();

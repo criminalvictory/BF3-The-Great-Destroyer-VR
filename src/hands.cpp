@@ -662,7 +662,8 @@ void Update(const XrPosef& head) {
         // The rifle the pouch knows, its own firing state (not the launcher under it), its
         // magazine's seat in the gun learned.
         const bool knownGun = skin::RifleInHand();
-        f.gun = t.gun && knownGun && ammo::RifleFiringInHand() && skin::MagazineSeatKnown();
+        f.gun = knownGun && ammo::RifleFiringInHand() && skin::MagazineSeatKnown();
+        f.gunTracked = t.gun;  // the right controller this frame (without it the magazine is kept a second)
         std::memcpy(f.gunPose, t.gunPose, sizeof(f.gunPose));
         std::memcpy(f.glove, tracked, sizeof(f.glove));
         if (t.gun && trackedLeft) {
@@ -712,7 +713,14 @@ void Update(const XrPosef& head) {
         // there is its reload (the user: ammo from the pelvis for whatever gun is in hand). The real
         // hand only, at most once every 1.5 s.
         static ULONGLONG s_otherReload = 0;
-        if (magazine.reached && !knownGun && f.handFree && !testing && g_anyGunReload &&
+        // A squeeze the handguard would take (Support: the palm within kGuardReach of its line, the
+        // hands more than kHandsTogether apart) stays the handguard's, as before the pouch.
+        bool guardWouldTake = false;
+        if (t.gun && trackedLeft) {
+            const float apart[3] = {palm[0] - t.rightWrist[0], palm[1] - t.rightWrist[1], palm[2] - t.rightWrist[2]};
+            guardWouldTake = f.guardDistance < kGuardReach && Length(apart) > kHandsTogether;
+        }
+        if (magazine.reached && !knownGun && f.handFree && !testing && g_anyGunReload && !guardWouldTake &&
             GetTickCount64() - s_otherReload > 1500 && ammo::Get(loaded, spare)) {
             s_otherReload = GetTickCount64();
             g_freshSqueeze = false;
@@ -726,9 +734,15 @@ void Update(const XrPosef& head) {
         if (magazine.putBack)
             Log("Pouch: the magazine put back");
         if (magazine.cancelled)
-            Log("Pouch: the magazine in the hand is gone (another went in, or the hand was lost a second)");
-        if (magazine.letGo)
-            skin::DropHeldMagazine();
+            Log("Pouch: the magazine in the hand is gone (another went in, the gun went, the hand or the gun was "
+                "lost a second, or it was let go of while lost)");
+        if (magazine.letGo) {
+            float v[3];  // the hand's speed as it let go, from the room into the view's space
+            for (int i = 0; i < 3; ++i)
+                v[i] = toView[i * 3] * magazine.dropVelocity[0] + toView[i * 3 + 1] * magazine.dropVelocity[1] +
+                       toView[i * 3 + 2] * magazine.dropVelocity[2];
+            skin::DropHeldMagazine(v);
+        }
         if (magazine.seated) {
             Log("Pouch: the magazine pushed home");
             ammo::Insert();
@@ -796,11 +810,15 @@ void Update(const XrPosef& head) {
         collide::Reset(g_collide);
     const bool touching = free && KeepOutOfGun(t, fingers, touch);
     // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's
-    // space. A hand carrying a magazine doesn't grab the handle or slap, nor does the push that just
-    // seated one (for 0.3 s: the bolt release is right by the well).
+    // space. Only a tracked hand works them: without the left controller's place the palm is still
+    // HandTargets' zero (the middle of the head), even while the glove is drawn on the handguard (and
+    // the pouch test's glove is never tracked). A hand carrying a magazine doesn't grab the handle or
+    // slap, nor does the push that just seated one (for 0.3 s: the bolt release is right by the well):
+    // no palm then, which blocks both. The trigger stays the real one, so a trigger held through that
+    // time isn't a fresh press when it ends.
     const bool busy = holding || GetTickCount64() - g_seatedAt < 300;
-    reload::Update(t.gun ? t.gunPose : nullptr, t.left && !busy && !testing ? palm : nullptr,
-                   busy ? 0.0f : input::LeftTrigger(), touching ? touch : nullptr);
+    reload::Update(t.gun ? t.gunPose : nullptr, trackedLeft && !busy ? palm : nullptr, input::LeftTrigger(),
+                   touching ? touch : nullptr);
     // Round the magazine (the judge's fit: no finger into it), easing in and out like the handle's.
     g_magFingers += ((holding ? 1.0f : 0.0f) - g_magFingers) * 0.35f;
     if (t.left && g_magFingers > 0.001f) {

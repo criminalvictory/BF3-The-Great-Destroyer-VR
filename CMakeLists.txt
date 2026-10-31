@@ -91,6 +91,12 @@ target_compile_definitions(gunshape PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_executable(collidetest tools/collidetest.cpp src/collide.cpp src/gunshape.cpp src/handpose.cpp src/log.cpp)
 target_compile_definitions(collidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
+# A magazine from the pouch at the pelvis pushed into the rifle's well by the left hand (src/pouch.cpp)
+# on scripted frames at 72 Hz: the zone, the squeeze, the body's heading, the funnel, the seat, letting go.
+add_executable(magtest tools/magtest.cpp src/pouch.cpp)
+target_compile_definitions(magtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the headers only, no loader
+
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)
 target_compile_definitions(sampler PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

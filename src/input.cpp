@@ -970,14 +970,14 @@ void SetTapInsert(bool on) {
     g_tapInsert = on;
 }
 
-void MagazineTap() {
+void MagazineTap(bool fromScript) {
     if (!skin::RifleInHand()) {
         PressR(true);
         g_rUntil = GetTickCount64() + 150;  // the game reads the keys once a frame
         return;
     }
     if (skin::MagazineOut()) {
-        if (!g_tapInsert.load(std::memory_order_relaxed)) {
+        if (!fromScript && !g_tapInsert.load(std::memory_order_relaxed)) {
             Log("Input: X with the magazine out: take one from the pouch at the pelvis (pouch.txt xinsert 1 brings "
                 "the tap back)");
             return;
