@@ -19,12 +19,15 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ammo.h"
 #include "collide.h"
 #include "handpose.h"
 #include "input.h"
 #include "log.h"
+#include "pouch.h"
 #include "reload.h"
 #include "skin.h"
+#include "sounds.h"
 
 namespace {
 
@@ -61,6 +64,14 @@ float g_leftWidth = 1.15f;
 // whatever the controller says, to check the poses in the game.
 bool g_fingersFixed = false;
 float g_fixedFingers[3] = {};
+// The pouch at the pelvis (pouch.cpp), tuned in build\pouch.txt (not grip.txt: that's rewritten whole
+// when the glove is lined up): "test 1" (pictures with nobody in the headset: see Update), "anygun 0"
+// (other guns don't reload from it), "xinsert 0" (X with the magazine out doesn't put one in).
+int g_pouchTest = 0;
+float g_pouchTestAlong = -0.05f;
+bool g_anyGunReload = true;
+ULONGLONG g_seatedAt = 0;  // when a magazine from the pouch last seated: the push isn't a bolt slap
+float g_magFingers = 0.0f;  // the glove's fingers round a magazine: 0-1
 
 // Row-major 3x3 from a quaternion (x, y, z, w).
 void QuatToMatrix(const XrQuaternionf& q, float* m) {
@@ -179,6 +190,65 @@ void ReadTuning() {
         "%.2f, palm %.2f wide",
         g_gunGrip[0], g_gunGrip[1], g_gunGrip[2], g_leftAnchor[0], g_leftAnchor[1], g_leftAnchor[2], g_leftTurn[0],
         g_leftTurn[1], g_leftTurn[2], g_spread, g_leftWidth);
+}
+
+// build\pouch.txt, re-read when it changes (pouch.cpp): "zone down forward across up depth" (metres:
+// the pouch's middle below the neck and in front of it, its half sizes), "pouch off", "hold" and 12
+// numbers (the magazine in the glove), "test 1" / "test 2 -0.05" (pictures with nobody in the
+// headset), "anygun 0" (other guns don't reload from it), "xinsert 0" (X doesn't put a magazine in).
+void ReadPouchTuning() {
+    static FILETIME lastWrite{};
+    static ULONGLONG lastCheck = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastCheck < 300)
+        return;
+    lastCheck = now;
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadPouchTuning), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"pouch.txt");
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    const bool exists = GetFileAttributesExW(path, GetFileExInfoStandard, &info) != 0;
+    if (CompareFileTime(&info.ftLastWriteTime, &lastWrite) == 0)
+        return;
+    lastWrite = info.ftLastWriteTime;
+    int test = 0, anyGun = 1, tapInsert = 1;
+    float along = -0.05f;
+    bool on = true;
+    FILE* f = nullptr;
+    if (exists && _wfopen_s(&f, path, L"r") == 0 && f) {
+        char line[512];
+        while (fgets(line, sizeof(line), f)) {
+            float v[12];
+            if (std::strncmp(line, "zone", 4) == 0 &&
+                sscanf_s(line + 4, "%f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4]) == 5)
+                pouch::SetZone(v, true);
+            else if (std::strncmp(line, "pouch off", 9) == 0)
+                on = false;
+            else if (std::strncmp(line, "hold", 4) == 0 &&
+                     sscanf_s(line + 4, "%f %f %f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4],
+                              &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) == 12)
+                pouch::SetHold(v);
+            else if (std::strncmp(line, "test", 4) == 0)
+                sscanf_s(line + 4, "%d %f", &test, &along);
+            else if (std::strncmp(line, "anygun", 6) == 0)
+                sscanf_s(line + 6, "%d", &anyGun);
+            else if (std::strncmp(line, "xinsert", 7) == 0)
+                sscanf_s(line + 7, "%d", &tapInsert);
+        }
+        fclose(f);
+    }
+    pouch::SetZone(nullptr, on);
+    g_pouchTest = test;
+    g_pouchTestAlong = along;
+    g_anyGunReload = anyGun != 0;
+    input::SetTapInsert(tapInsert != 0);
+    Log("Pouch: %s; other guns %s from it; X %s a magazine with it out%s", on ? "on" : "off",
+        g_anyGunReload ? "reload" : "don't reload", tapInsert ? "puts" : "doesn't put",
+        test ? " (a test's hand)" : "");
 }
 
 // The free left glove can't go into the gun (the user: the hand went through the gun when it
@@ -450,6 +520,7 @@ void MakeLeftOffset() {
 
 void Update(const XrPosef& head) {
     ReadTuning();
+    ReadPouchTuning();
     if (!g_on) {
         skin::SetHands(nullptr);
         return;
@@ -565,8 +636,117 @@ void Update(const XrPosef& head) {
     float tracked[12];
     std::memcpy(tracked, t.leftPose, sizeof(tracked));
     const bool trackedLeft = t.left;
+    // A magazine from the pouch at the pelvis (pouch.cpp), worked out before the handguard: the
+    // squeeze that takes one there doesn't also take the handguard.
+    pouch::Result magazine;
+    XrPosef standIn;
+    const bool testing = g_pouchTest && !trackedLeft && input::StandInLeftPose(standIn);
+    {
+        static LARGE_INTEGER s_frequency{}, s_last{};
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (!s_frequency.QuadPart)
+            QueryPerformanceFrequency(&s_frequency);
+        const float dt = s_last.QuadPart ? std::fmin(static_cast<float>(now.QuadPart - s_last.QuadPart) /
+                                                         static_cast<float>(s_frequency.QuadPart),
+                                                     0.1f)
+                                         : 0.0f;
+        s_last = now;
+        pouch::Frame f;
+        f.dt = dt;
+        f.head = head;
+        XrPosef leftGrip{};
+        f.left = trackedLeft && input::HandPose(0, leftGrip);
+        f.leftGrip = leftGrip.position;
+        f.squeeze = input::LeftSqueeze();
+        // The rifle the pouch knows, its own firing state (not the launcher under it), its
+        // magazine's seat in the gun learned.
+        const bool knownGun = skin::RifleInHand();
+        f.gun = t.gun && knownGun && ammo::RifleFiringInHand() && skin::MagazineSeatKnown();
+        std::memcpy(f.gunPose, t.gunPose, sizeof(f.gunPose));
+        std::memcpy(f.glove, tracked, sizeof(f.glove));
+        if (t.gun && trackedLeft) {
+            float inverse[12], at[3];
+            InvertRigid(t.gunPose, inverse);
+            Transform(inverse, palm, at);
+            f.guardDistance = FromGuard(at);
+        }
+        f.handFree = !g_supporting && !g_lining && !reload::HandleHeld() && g_gripBlend == 0.0f;
+        f.wellEmpty = skin::MagazineOut();
+        f.dry = reload::BoltBack();
+        int loaded = 0, spare = 0;
+        f.spare = ammo::Get(loaded, spare) && spare > 0;
+        // pouch.txt "test": a stand-in left hand (with nobody in the headset) takes one as if
+        // squeezed in the pouch once the magazine is out and holds it upright 20 cm below the well;
+        // "test 2" pushes it up the well's line from below the mouth at 10 cm/s ("test 2 -0.05" stops
+        // 5 cm from home).
+        static int s_testFrames = 0;
+        static float s_testAlong = 0.0f;
+        if (testing) {
+            f.left = true;
+            f.leftGrip = standIn.position;
+            s_testFrames = f.wellEmpty ? s_testFrames + 1 : 0;
+            f.squeeze = s_testFrames > 1 ? 1.0f : 0.0f;
+            f.forceInside = true;
+            f.handFree = true;
+            f.guardDistance = 1.0f;
+            const bool up = g_pouchTest == 2 && pouch::Holding();
+            s_testAlong = up ? std::fmin(s_testAlong + 0.1f * dt, g_pouchTestAlong) : -0.12f;
+            const float place[12] = {1, 0, 0, 0, 0, 1, 0, up ? s_testAlong : -0.20f, 0, 0, 1, up ? 0.0f : 0.06f};
+            float at[12];
+            Compose(t.gunPose, place, at);
+            pouch::GloveFor(at, f.glove);
+        } else {
+            s_testFrames = 0;
+        }
+        magazine = pouch::Update(f);
+        if (magazine.squeezed)
+            Log("Pouch: the left grip squeezed %.0f cm right, %.0f cm up, %.0f cm forward of the pouch's middle "
+                "(%.2f of its size; %s): %s",
+                magazine.fromMiddle[0] * 100.0f, magazine.fromMiddle[1] * 100.0f, magazine.fromMiddle[2] * 100.0f,
+                magazine.size, testing ? "a test's hand" : "tracked",
+                !magazine.reached ? "outside it" : *magazine.note ? magazine.note : "nothing taken");
+        if (magazine.took)
+            g_freshSqueeze = false;  // not the handguard's as well
+        // Any other gun (the launchers too) reloads from the pouch as the game does: a fresh squeeze
+        // there is its reload (the user: ammo from the pelvis for whatever gun is in hand). The real
+        // hand only, at most once every 1.5 s.
+        static ULONGLONG s_otherReload = 0;
+        if (magazine.reached && !knownGun && f.handFree && !testing && g_anyGunReload &&
+            GetTickCount64() - s_otherReload > 1500 && ammo::Get(loaded, spare)) {
+            s_otherReload = GetTickCount64();
+            g_freshSqueeze = false;
+            Log("Pouch: the game's own reload for the gun in hand");
+            input::MagazineTap();
+        }
+        if (magazine.caught)
+            Log("Pouch: the magazine caught under the well");
+        if (magazine.offLine)
+            Log("Pouch: the magazine pulled off the well's line");
+        if (magazine.putBack)
+            Log("Pouch: the magazine put back");
+        if (magazine.cancelled)
+            Log("Pouch: the magazine in the hand is gone (another went in, or the hand was lost a second)");
+        if (magazine.letGo)
+            skin::DropHeldMagazine();
+        if (magazine.seated) {
+            Log("Pouch: the magazine pushed home");
+            ammo::Insert();
+            skin::InsertMagazine();
+            sounds::Play("mag_in");
+            g_seatedAt = GetTickCount64();
+        }
+        t.mag = magazine.mag;
+        std::memcpy(t.magPose, magazine.magPose, sizeof(t.magPose));
+        if (testing && magazine.holding) {  // the test's glove, holding it
+            std::memcpy(t.leftPose, f.glove, sizeof(t.leftPose));
+            Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+            t.left = true;
+        }
+    }
+    const bool holding = magazine.holding;
     // Both hands on the gun: it points from the right hand to the left, the glove on the handguard.
-    if (t.gun && t.left && !g_lining) {
+    if (t.gun && t.left && !g_lining && !holding) {
         Support(t, gunTurn, anchor, headTurn, aim.orientation);
     } else {
         // Without the left controller's place the hold stays (the gun goes by the right hand, the
@@ -599,14 +779,37 @@ void Update(const XrPosef& head) {
         Transform(t.leftPose, g_leftAnchor, t.leftWrist);
         t.left = true;
     }
-    // The free glove stays out of the gun, and where it touches the gun is felt (the bolt release).
+    // A magazine caught on the well's line: the glove goes with it (it stops at home), easing in and
+    // back out to the hand.
+    if (magazine.gloveBlend > 0.0f && t.left) {
+        float blended[12];
+        Blend(t.leftPose, magazine.glove, magazine.gloveBlend, blended);
+        std::memcpy(t.leftPose, blended, sizeof(blended));
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+    }
+    // The free glove stays out of the gun, and where it touches the gun is felt (the bolt release);
+    // not while it carries a magazine up into the well.
     float touch[3];
-    const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld();
+    const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld() &&
+                      !holding && !testing;
     if (!free)
         collide::Reset(g_collide);
     const bool touching = free && KeepOutOfGun(t, fingers, touch);
-    // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's space.
-    reload::Update(t.gun ? t.gunPose : nullptr, t.left ? palm : nullptr, input::LeftTrigger(), touching ? touch : nullptr);
+    // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's
+    // space. A hand carrying a magazine doesn't grab the handle or slap, nor does the push that just
+    // seated one (for 0.3 s: the bolt release is right by the well).
+    const bool busy = holding || GetTickCount64() - g_seatedAt < 300;
+    reload::Update(t.gun ? t.gunPose : nullptr, t.left && !busy && !testing ? palm : nullptr,
+                   busy ? 0.0f : input::LeftTrigger(), touching ? touch : nullptr);
+    // Round the magazine (the judge's fit: no finger into it), easing in and out like the handle's.
+    g_magFingers += ((holding ? 1.0f : 0.0f) - g_magFingers) * 0.35f;
+    if (t.left && g_magFingers > 0.001f) {
+        constexpr float kOnMag[4] = {0.50f, 0.35f, 0.35f, 0.35f}, kOnMagThumb = 0.30f, kOnMagSpread = 0.15f;
+        for (int i = 0; i < 4; ++i)
+            fingers.curl[i] += (kOnMag[i] - fingers.curl[i]) * g_magFingers;
+        fingers.thumb += (kOnMagThumb - fingers.thumb) * g_magFingers;
+        fingers.spread += (kOnMagSpread - fingers.spread) * g_magFingers;
+    }
     if (t.left) {
         OnTheLever(t, fingers);
         handpose::Pose(fingers, g_leftWidth, t.leftFingers);
@@ -652,8 +855,10 @@ bool AimOrientation(XrQuaternionf& out) {
 
 void Toggle() {
     g_on = !g_on;
-    if (!g_on)
+    if (!g_on) {
         skin::SetHands(nullptr);
+        pouch::Clear();
+    }
     Log("Hands: %s", g_on ? "free (the gun in the right hand, the left hand on its own)" : "the game's own");
     Beep(g_on ? 1200 : 440, 200);
 }

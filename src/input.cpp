@@ -964,6 +964,12 @@ bool StandInOn() {
     return g_standIn.load(std::memory_order_relaxed);
 }
 
+std::atomic<bool> g_tapInsert{true};
+
+void SetTapInsert(bool on) {
+    g_tapInsert = on;
+}
+
 void MagazineTap() {
     if (!skin::RifleInHand()) {
         PressR(true);
@@ -971,6 +977,11 @@ void MagazineTap() {
         return;
     }
     if (skin::MagazineOut()) {
+        if (!g_tapInsert.load(std::memory_order_relaxed)) {
+            Log("Input: X with the magazine out: take one from the pouch at the pelvis (pouch.txt xinsert 1 brings "
+                "the tap back)");
+            return;
+        }
         ammo::Insert();
         skin::InsertMagazine();
         sounds::Play("mag_in");

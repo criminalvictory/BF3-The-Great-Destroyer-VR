@@ -20,6 +20,10 @@ void Update();
 // That size: 1 for a gun loaded a round at a time (the SMAW, the grenade launcher).
 int MagazineSize();
 
+// The rifle the mod knows is in hand with its own firing state, not the grenade launcher under it
+// (which holds a round at a time): a rifle magazine may go in. Render thread.
+bool RifleFiringInHand();
+
 // Testing (weapon.txt "refill"): the gun in hand gets 300 spare rounds. Render thread.
 void Refill();
 

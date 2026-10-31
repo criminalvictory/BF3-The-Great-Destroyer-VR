@@ -53,6 +53,12 @@ void Probe();
 bool EjectMagazine();
 void InsertMagazine();
 bool MagazineOut();
+// A magazine held in the left hand (HandTargets::mag) let go of: it falls from where it was last
+// drawn in the hand. False if it hasn't been drawn there.
+bool DropHeldMagazine();
+// Whether the magazine's seat in the gun (each of its bones' offset from the gun's body, as the game
+// draws it in the well) is known: until then a magazine can't be drawn in the hand.
+bool MagazineSeatKnown();
 // Whether that gun is the one in hand (drawn in the last half second).
 bool RifleInHand();
 
@@ -115,6 +121,10 @@ struct HandTargets {
     // Each of the left glove's bones bent as its fingers are held, in the gloves' bind space
     // (handpose.cpp): the glove is drawn with leftPose composed with these.
     float leftFingers[handpose::kBones][12] = {};
+    // A magazine in the left hand or on its way into the well (pouch.cpp): where the gun's body
+    // would be with that magazine seated in it, so its bones are drawn at magPose times their seat.
+    bool mag = false;
+    float magPose[12] = {};
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

@@ -59,6 +59,7 @@ add_library(bf3vr SHARED
     src/pad.cpp
     src/gunshape.cpp
     src/collide.cpp
+    src/pouch.cpp
     src/overlay.cpp
     src/log.cpp)
 target_compile_definitions(bf3vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

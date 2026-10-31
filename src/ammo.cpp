@@ -189,6 +189,14 @@ int MagazineSize() {
     return Capacity();
 }
 
+bool RifleFiringInHand() {
+    if (!skin::RifleInHand() || !g_firing || g_firing != Firing())
+        return false;
+    // The launcher under it is seen with a round or two at most; the rifle's own with a magazine.
+    auto it = g_guns.find(g_firing);
+    return it != g_guns.end() && std::max(it->second.fullest, it->second.learned) > 2;
+}
+
 void Refill() {
     uintptr_t firing = Firing();
     int loaded = 0, spare = 0;

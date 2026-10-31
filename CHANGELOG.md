@@ -48,6 +48,27 @@ self-test and the mod's own pictures, not yet in the headset.
   own gun is. No measurable frame time (bursts at 15.4 and 15.7 ms a frame with it, 15.1 and 16.2
   without). weapon.txt `casings 0` leaves them where the game throws them; `casings 1 0.2 0.8` sets
   how near the port they're fully moved and how far out not at all. Not yet seen in the headset.
+- **Magazines from a pouch at the pelvis, pushed into the M416 by hand** (the user: "physically
+  picking up a magazine ... from the pelvis area and manually inserting it into the gun"). With the
+  magazine out (X ejects it), or the bolt locked back on an empty one, a fresh squeeze of the left
+  grip in front of the lower belly puts the gun's own magazine in the left glove. That's below the
+  belly button and above the groin, placed from the headset, and nothing is drawn there.
+  - Brought top first up under the magazine well, it's caught in a funnel below the well's mouth that
+    straightens it as it's pushed. It slides only along the well, the glove with it.
+  - It seats when pushed home (within 5 mm, two frames), and only then do the rounds go in, with the
+    magazine's sound.
+  - Let go of before that, it falls, or goes back in the pouch if let go there.
+  - The hold in the glove was fitted against the meshes so no finger goes into the magazine.
+  - Tested in the game with a scripted hand (pouch.txt `test 1`, `test 2`): taken, caught, seated,
+    30 rounds in. Not yet in the headset.
+  - X with the magazine out still puts one in for now; `xinsert 0` in build\pouch.txt turns that off.
+    Holding X is still the game's reload.
+  - Any other gun reloads with the game's own reload when the left hand squeezes at the pelvis
+    (`anygun 0` turns that off).
+  - `zone` in pouch.txt moves and sizes the pouch. Every squeeze near it is logged with where the hand
+    was, to place it from the first session.
+  - The design came from three independent designs and a judge; a rifle magazine never goes into the
+    grenade launcher's firing state.
 - `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
 - **The ACOG's reticle and red cable stand out more**: they're see-through, so they're drawn again on
   themselves (the reticle five more times, the cable three), the strongest of three levels the user
@@ -122,8 +143,8 @@ self-test and the mod's own pictures, not yet in the headset.
 - The ammo counter reads one more than the gun holds.
 - Looking along a forearm into its open elbow end shows a black disc (the depth pass's folded arm
   inside it); from the side nothing shows.
-- To come (the user's list): the muzzle flash at the gun, magazines taken from the hip and pushed
-  in by hand, wrist movement for the gloves.
+- To come (the user's list): the muzzle flash at the gun, wrist movement for the gloves, a pouch
+  reload of their own for the other guns and the launchers.
 
 ## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
 
