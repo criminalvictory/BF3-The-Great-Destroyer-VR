@@ -249,6 +249,17 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
         TurnAbout(kAlong, Lerp(kThumbRelaxed.across, fist.across, t), joint[0][0], across);
         TurnAbout(axis, Lerp(kThumbRelaxed.base, fist.base, t), joint[0][0], base);
         Compose(across, base, chain[0][0]);
+        if (fingers.thumbOut != 0.0f || fingers.thumbRoll != 0.0f) {
+            // Opposed: turned about its own length (its joints bending the way its pad then faces),
+            // then swung out at its base towards where the palm faces.
+            float outAxis[3], roll[12], out[12], m[12];
+            Cross(kDirection[0], kPalm, outAxis);
+            Normalize(outAxis);
+            TurnAbout(kDirection[0], fingers.thumbRoll, joint[0][0], roll);
+            TurnAbout(outAxis, fingers.thumbOut, joint[0][0], out);
+            Compose(chain[0][0], roll, m);
+            Compose(out, m, chain[0][0]);
+        }
         TurnAbout(axis, Lerp(kThumbRelaxed.knuckle, fist.knuckle, t), joint[0][1], knuckle);
         TurnAbout(axis, Lerp(kThumbRelaxed.last, fist.last, t), joint[0][2], last);
         Compose(chain[0][0], knuckle, chain[0][1]);

@@ -48,6 +48,7 @@ struct Input {
     float apart = 0.0f;       // metres between the hands
     float together = 0.10f;   // closer than this, the right hand alone points the gun
     float fullAngle = kFullAngle, noneAngle = kNoneAngle;  // radians: steered fully within, not at all past
+    float gate = 1.0f;        // 0-1: how far the left hand is where a handguard can be (hands.cpp, by the body)
     float dt = 0.0f;          // seconds since the last frame
 };
 
@@ -127,7 +128,8 @@ inline Output Update(const Input& in, State& state) {
         const float c = dot > 1.0f ? 1.0f : dot < -1.0f ? -1.0f : dot;
         const float full = in.fullAngle, none = in.noneAngle > in.fullAngle ? in.noneAngle : in.fullAngle + kDegree;
         out.angle = std::acos(c);
-        out.wanted = Smooth((in.apart - in.together) / kTogetherBlend) * (1.0f - Smooth((out.angle - full) / (none - full)));
+        out.wanted = Smooth((in.apart - in.together) / kTogetherBlend) * (1.0f - Smooth((out.angle - full) / (none - full))) *
+                     (in.gate > 0.0f ? (in.gate < 1.0f ? in.gate : 1.0f) : 0.0f);
     }
     if (!std::isfinite(out.wanted))
         out.wanted = 0.0f;

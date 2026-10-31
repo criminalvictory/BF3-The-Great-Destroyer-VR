@@ -4,6 +4,26 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, midday: the left hand aims, the thumb wraps the magazine (stage: pre-alpha, experimental)
+
+Both tried in the headset by the user and confirmed; the self-test passes.
+
+### Changed
+- **The left hand aims, the right hand levels** (the user: "the left hand needs to be the one that
+  helps with the aiming… the right hand should be just the leveler"). With both hands on the rifle,
+  the gun follows the line between the hands whenever that line points out ahead of the body (within
+  70 degrees of its heading, fading out by 100; not more than 50-75 degrees down) and the hands are
+  more than 3-8 cm apart. The right controller only takes over for a hand beside, below or behind the
+  body, or turned back past the wrist. The easing, rate limit and coast from the morning stay. The
+  first try made the gun point up when aiming far right: the hands came 9-12 cm apart there, and the
+  old 10 cm limit handed the aim back to the right controller ("Fixed" after lowering it). weapon.txt
+  `steer 35 65` returns to the morning's cone.
+- **The magazine held round its back edge** (the user: "I just need the thumb to be really wrapping
+  around that magazine"; they picked option A of three rendered grips, then "I love it" in the
+  headset): the back edge in the palm, the thumb flat along the far side, angled forward, the fingers
+  along the near side with their tips at the front edge. The thumb can now swing out and roll about
+  its length (`handpose` thumbOut, thumbRoll).
+
 ## 2026-10-31, morning: the gun stays in your hands, no lens-flare ring, a steady grip (stage: pre-alpha, experimental)
 
 From the user's headset session and videos this morning. The grip and wrist fixes were seen in the

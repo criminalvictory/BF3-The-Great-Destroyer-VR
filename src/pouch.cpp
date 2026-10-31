@@ -76,16 +76,26 @@ float g_time = 0.0f, g_crossedAt = -1.0f;
 float g_crossedWhere[3] = {}, g_crossedSize = 0.0f;  // the open squeeze's crossing, for its one log line
 
 // The magazine in the left glove, from the gun's model space with it seated into the gloves' bind
-// space: its thin side against the palm, its top out above the thumb, its front along the fingers.
-// Refitted 2026-10-31 on the meshes with the glove posed as the game poses it (palm width 1.15, the
-// fingers and thumb as hands.cpp sets them on a magazine): the thumb and the ball of the thumb along
-// its left side, the index, middle and ring round its front edge, the little finger under the base
-// plate; no glove point more than 0.8 mm into it (the judge's earlier fit had the thumb 11 mm in);
-// the glove 17 mm or more clear of the gun all the way up the well; the hand's middle at
-// (0.047 -0.139 0.430) in the gun's space with it seated.
-float g_hold[12] = {0.48852f, -0.73548f, 0.46948f, 0.20951f,  //
-                    0.84399f, 0.26178f,  -0.46813f, 1.29586f,  //
-                    0.22140f, 0.62493f,  0.74862f,  -0.03828f};
+// space: the palm on its left side, the fingers pointing to its front, the index at the top.
+// Refitted again 2026-10-31 (the user: the thumb wrapped round to the other side, the four fingers
+// really gripping; screenshots\maghold_ref) on the meshes with the glove posed as the game poses it
+// (palm width 1.15, the fingers and the opposed thumb as hands.cpp sets them on a magazine): all
+// four fingers curled round its front edge, their tips touching its right side; the thumb round its
+// back edge, its pad on the right side too; no glove point more than 0.6 mm into it. Then moved up to
+// its middle (the user, in the headset: held at the bottom looked awkward; the ring finger hovered,
+// the little finger did little): the fingers over y -0.073 to -0.144 of the 12.7 cm below the well's
+// mouth, as high as the glove can go and stay 15 mm clear of the gun all the way up the well (18.7 mm
+// at the index finger by the well's front, seated); the ring finger's tip 0.2 mm off it, the little
+// finger's 0.8 mm; the hand's middle at (0.052 -0.127 0.425) in the gun's space with it seated.
+// Then turned round its back edge (the user picked option A of screenshots\magfit2\options_AB.png,
+// "I just need the thumb to be really wrapping around that magazine"): the back edge in the thumb's
+// web and the palm's back, the wrist behind the magazine, the thumb flat along the right (far) face
+// angled forward and a little up (all three of its bones within 0.6 mm), the four fingers along the
+// left face with their tips at the front edge (the hand is too short to cover its 7 cm and wrap that
+// edge too); no glove point more than 0.61 mm into it, 16.5 mm clear of the gun (magab.exe).
+float g_hold[12] = {0.77207f, -0.57184f, 0.27731f, 0.32829f,  //
+                    0.34822f, 0.01563f,  -0.93728f, 1.44740f,  //
+                    0.53164f, 0.82022f,  0.21119f,  0.21821f};
 
 enum class State { kNone, kHand, kLine };
 State g_state = State::kNone;

@@ -16,6 +16,11 @@ struct Fingers {
     float thumb = 0.0f;   // 0 relaxed at the side, 1 folded across the fingers
     float spread = 0.0f;  // 0 side by side, 1 wide apart (less as they curl)
     float apart[4] = {};  // more degrees each turns towards the thumb at its knuckle (the lever's V)
+    // The thumb opposed (a magazine held across its thickness: hands.cpp), degrees, 0 unless asked
+    // for: thumbOut swings it out in front of the palm at its base, thumbRoll turns it about its own
+    // length (positive: its pad towards the fingers), so it reaches round to the far side of what the
+    // fingers hold.
+    float thumbOut = 0.0f, thumbRoll = 0.0f;
 };
 
 // Each bone's move in the gloves' bind space (3x4, rows: rotation | translation), the palm widened

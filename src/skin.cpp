@@ -747,8 +747,9 @@ void ReadWeaponSelection() {
     //   "tail"               log the next frame's draws to window-sized targets (effects.cpp)
     //   "viewdiff 60"        for 60 s, log where the two eye views' descriptions differ (views.cpp)
     //   "turnby 30"          the view turned 30 degrees right at once, -30 left (input.cpp)
-    //   "steer 35 65"        the left hand on the handguard steers the gun fully within 35 degrees of
-    //                        the right hand's line, not at all past 65 (hands.cpp, steer.h)
+    //   "steer 35 65"        the left hand on the handguard steers the gun only within 35 degrees of the
+    //                        right hand's line, not at all past 65 (without it: while out ahead of the
+    //                        body, the left hand aims and the right levels: hands.cpp, steer.h)
     //   "empty"              no rounds left in it: the game's reload (R) is then its empty one
     //   "dumpview"           log BF3's per-view constants once
     //   "eyetrace"           log the next 40 first-person view uploads and the eye each is given
@@ -789,7 +790,7 @@ void ReadWeaponSelection() {
     int keepCrosshair = 0;
     uint64_t flarePs[8] = {};
     int flarePsCount = 0;
-    float steerCone[2] = {35.0f, 65.0f};
+    float steerCone[2] = {-1.0f, -1.0f};  // the body decides (hands.cpp) unless "steer 35 65"
     float fingerTest = 0.0f;
     int casings = 1;
     float casingReach[2] = {0.2f, 0.8f};
