@@ -5,6 +5,10 @@
 // yellow, ring green, little blue, palm grey.
 // Usage: handview <dump folder> <out.bmp> [w=width] [z=zoom] [pose ...], a pose as
 // "index,middle,ring,little,thumb,spread" (default: relaxed, spread, half closed, fist).
+// "hand=r" draws the right glove instead (the bones 23-44), as made with its trigger finger bent:
+// each "trigger=degrees" a row, the index finger bent that much by handpose::BendRightIndex
+// (default 0, 20 and 45); "game=1" bends it from the game's own grip instead, as the gloves' depth
+// pass was drawn when dumped (build\mesh_7617_49995_bones.bin).
 
 #include <algorithm>
 #include <cmath>
@@ -24,21 +28,39 @@
 namespace {
 
 constexpr int kFirst = 15051, kCount = 13755, kOffset = 186288, kStride = 48;  // the gloves' draw
+constexpr int kPalette = 60;  // the gloves' draw's bones (both hands', by their numbers there)
 constexpr int kTile = 320;
 float g_scale = kTile / 0.30f;  // pixels a metre
 int g_cull = 0;  // "c=1" / "c=-1": skip triangles wound one way on screen, as the game culls their backs
 bool g_analyse = false;  // "a=1": list the glove's separate pieces and openings
 bool g_patch = true;     // "p=0": without skin.cpp's patch over the gloves' cracks
+bool g_right = false;    // "hand=r": the right glove, its trigger finger bent
+bool g_game = false;     // "game=1": ... from the game's own grip (the gloves' depth pass's dumped bones)
 // The hand's axes and middle in the bind space (as in handpose.cpp).
 constexpr float kAlong[3] = {0.437f, -0.544f, 0.716f};
 constexpr float kAcross[3] = {0.633f, -0.380f, -0.675f};
 constexpr float kPalm[3] = {-0.639f, -0.748f, -0.179f};
 constexpr float kMiddle[3] = {0.537f, 1.098f, 0.207f};
+// ... and the right hand's: the left's mirrored (x the other way), as the right glove is.
+constexpr float kRightAlong[3] = {-0.437f, -0.544f, 0.716f};
+constexpr float kRightAcross[3] = {-0.633f, -0.380f, -0.675f};
+constexpr float kRightPalm[3] = {0.639f, -0.748f, -0.179f};
+constexpr float kRightMiddle[3] = {-0.537f, 1.098f, 0.207f};
 float g_centre[3] = {kMiddle[0], kMiddle[1], kMiddle[2]};  // what the views look at
 // Each bone's finger, for the colours (as in handpose.cpp).
 constexpr int8_t kFinger[handpose::kBones] = {-1, -1, 0, 4, -1, -1, 2, 2, 1, 1, 3, 3, 3, 4, 4, 1, 4, 0, 0, 1, 3, 2, 2};
 constexpr float kColour[6][3] = {{0.6f, 0.6f, 0.6f}, {0.9f, 0.25f, 0.2f}, {0.95f, 0.55f, 0.15f},
                                  {0.9f, 0.85f, 0.2f}, {0.3f, 0.8f, 0.3f}, {0.3f, 0.5f, 0.95f}};
+
+// A bone's finger in the glove drawn (0 the thumb ... 4 the little finger, -1 the palm), or -2: a
+// bone of the other hand.
+int FingerOf(int bone) {
+    if (g_right)
+        return bone >= handpose::kRightFirst && bone < handpose::kRightFirst + handpose::kRightBones
+                   ? handpose::kRightFinger[bone - handpose::kRightFirst]
+                   : -2;
+    return bone >= 0 && bone < handpose::kBones ? kFinger[bone] : -2;
+}
 
 float Half(uint16_t h) {
     int s = (h >> 15) & 1, e = (h >> 10) & 0x1F, m = h & 0x3FF;
@@ -73,13 +95,31 @@ void Cross(const float* a, const float* b, float* out) {
 float Dot(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 // Each finger's bones from the palm out (thumb, index ... little), the segments between handpose's
-// joints.
+// joints; the right glove's as handpose.h's kRightFinger and kRightDepth have them.
 constexpr int kSegmentBone[5][3] = {{18, 17, 2}, {9, 19, 15}, {7, 21, 22}, {11, 20, 10}, {13, 16, 3}};
+constexpr int kRightSegmentBone[5][3] = {{35, 36, 39}, {26, 38, 31}, {25, 42, 43}, {27, 41, 40}, {29, 34, 33}};
 const char* const kFingerName[5] = {"thumb", "index", "middle", "ring", "little"};
 
 void Apply(const float* m, const float* p, float* out) {
     for (int k = 0; k < 3; ++k)
         out[k] = m[k * 4] * p[0] + m[k * 4 + 1] * p[1] + m[k * 4 + 2] * p[2] + m[k * 4 + 3];
+}
+
+// Affine 3x4 matrices (three rows: rotation | translation): a after b, and a turn with a shift undone.
+void Compose(const float* a, const float* b, float* out) {
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 4; ++j)
+            out[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j];
+        out[i * 4 + 3] += a[i * 4 + 3];
+    }
+}
+
+void InvertRigid(const float* m, float* out) {
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            out[i * 4 + j] = m[j * 4 + i];
+    for (int i = 0; i < 3; ++i)
+        out[i * 4 + 3] = -(out[i * 4] * m[3] + out[i * 4 + 1] * m[7] + out[i * 4 + 2] * m[11]);
 }
 
 // The closest distance between segments p1-q1 and p2-q2.
@@ -197,16 +237,19 @@ void DrawTriangle(Image& img, int tx, int ty, const View& view, const float* a, 
 }
 
 // The gloves' depth passes (their 16-byte vertices; each bone mapped to the gloves' as skin.cpp's
-// kGloveDepthLeft and kBodyDepthLeft): drawn first, they hide the glove's colour wherever their
-// surface stands out of the glove's, which shows as a hole.
+// kGloveDepthLeft and kBodyDepthLeft, and handpose.h's kGloveDepthRight and kBodyDepthRight): drawn
+// first, they hide the glove's colour wherever their surface stands out of the glove's, which shows
+// as a hole.
 struct DepthDraw {
     int count, first, offset;
-    std::vector<int8_t> map;
+    std::vector<int8_t> left, right;
 };
 const DepthDraw kDepthDraws[] = {
-    {7617, 49995, 406096, {-1, -1, 14, 13, 16, -1, 8, 9, 19, 15, 18, 17, 2}},
+    {7617, 49995, 406096, {-1, -1, 14, 13, 16, -1, 8, 9, 19, 15, 18, 17, 2},
+     {std::begin(handpose::kGloveDepthRight), std::end(handpose::kGloveDepthRight)}},
     {21189, 28806, 344880, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4,
-                            0,  1,  6,  7,  21, 22, 12, 11, 20, 10, 14, 13, 16, 3,  8,  9,  19, 15, 18, 17, 2}},
+                            0,  1,  6,  7,  21, 22, 12, 11, 20, 10, 14, 13, 16, 3,  8,  9,  19, 15, 18, 17, 2},
+     {std::begin(handpose::kBodyDepthRight), std::end(handpose::kBodyDepthRight)}},
 };
 
 std::vector<Vertex> LoadDepthVertices(const std::string& dir) {
@@ -217,6 +260,7 @@ std::vector<Vertex> LoadDepthVertices(const std::string& dir) {
         auto vb = ReadAll(dir + name + "vb0.bin"), ib = ReadAll(dir + name + "ib.bin");
         if (ib.size() < (d.first + d.count) * 2u)
             continue;
+        const std::vector<int8_t>& map = g_right ? d.right : d.left;
         std::vector<bool> seen(65536);
         for (int j = d.first; j < d.first + d.count; ++j) {
             uint16_t v;
@@ -228,17 +272,17 @@ std::vector<Vertex> LoadDepthVertices(const std::string& dir) {
             Vertex x{};
             uint16_t h[3];
             std::memcpy(h, o, 6);
-            bool left = true;
+            bool mine = true;  // only on this hand's bones
             for (int k = 0; k < 3; ++k)
                 x.pos[k] = Half(h[k]);
             for (int s = 0; s < 4; ++s) {
                 x.weight[s] = o[12 + s] / 255.0f;
                 int b = o[8 + s];
-                x.bone[s] = b < static_cast<int>(d.map.size()) ? d.map[b] : -1;
+                x.bone[s] = b < static_cast<int>(map.size()) ? map[b] : -1;
                 if (x.weight[s] > 0 && x.bone[s] < 0)
-                    left = false;
+                    mine = false;
             }
-            if (left)
+            if (mine)
                 out.push_back(x);
         }
     }
@@ -248,7 +292,7 @@ std::vector<Vertex> LoadDepthVertices(const std::string& dir) {
 void Skin(const Vertex& x, float (*bones)[12], float* out) {
     out[0] = out[1] = out[2] = 0;
     for (int s = 0; s < 4; ++s) {
-        if (x.weight[s] <= 0 || x.bone[s] < 0 || x.bone[s] >= handpose::kBones)
+        if (x.weight[s] <= 0 || x.bone[s] < 0 || x.bone[s] >= kPalette)
             continue;
         float p[3];
         Apply(bones[x.bone[s]], x.pos, p);
@@ -294,7 +338,8 @@ std::vector<float> DepthOut(const std::vector<Vertex>& depth, float (*bones)[12]
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: handview <dump folder> <out.bmp> [width] [index,middle,ring,little,thumb,spread ...]\n");
+        fprintf(stderr, "usage: handview <dump folder> <out.bmp> [width] [index,middle,ring,little,thumb,spread ...]\n"
+                        "       handview <dump folder> <out.bmp> hand=r [game=1] [trigger=degrees ...]\n");
         return 1;
     }
     std::string dir = argv[1];
@@ -303,8 +348,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "no gloves' mesh dump in %s\n", dir.c_str());
         return 1;
     }
-    float width = 1.0f;
+    float width = 1.0f, offset = 0.0f, aside = 0.0f;
     std::vector<handpose::Fingers> poses;
+    std::vector<float> triggers;  // the right glove's rows: its index finger bent this far (degrees)
     for (int i = 3; i < argc; ++i) {
         if (std::strncmp(argv[i], "w=", 2) == 0) {
             width = static_cast<float>(atof(argv[i] + 2));
@@ -317,9 +363,15 @@ int main(int argc, char** argv) {
         } else if (std::strncmp(argv[i], "p=", 2) == 0) {
             g_patch = atoi(argv[i] + 2) != 0;
         } else if (std::strncmp(argv[i], "o=", 2) == 0) {  // the view's centre, this far along the fingers
-            float o = static_cast<float>(atof(argv[i] + 2));
-            for (int k = 0; k < 3; ++k)
-                g_centre[k] += kAlong[k] * o;
+            offset = static_cast<float>(atof(argv[i] + 2));
+        } else if (std::strncmp(argv[i], "s=", 2) == 0) {  // ... and this far across towards the little finger
+            aside = static_cast<float>(atof(argv[i] + 2));
+        } else if (std::strncmp(argv[i], "hand=", 5) == 0) {
+            g_right = argv[i][5] == 'r' || argv[i][5] == 'R';
+        } else if (std::strncmp(argv[i], "trigger=", 8) == 0) {
+            triggers.push_back(static_cast<float>(atof(argv[i] + 8)));
+        } else if (std::strncmp(argv[i], "game=", 5) == 0) {
+            g_game = atoi(argv[i] + 5) != 0;
         } else if (const char* colon = std::strchr(argv[i], ':')) {  // handpose::Tune: "name:1,2,3"
             std::string name(argv[i], static_cast<size_t>(colon - argv[i]));
             float v[4];
@@ -341,13 +393,22 @@ int main(int argc, char** argv) {
         half.thumb = 0.5f, fist.thumb = 1.0f;
         poses = {relaxed, spread, half, fist};
     }
-    // The left hand's triangles: every corner weighted only to its bones.
+    if (triggers.empty())
+        triggers = {0.0f, 20.0f, 45.0f};
+    // The hand's axes and middle, the view's centre moved along the fingers ("o=") and across ("s=").
+    const float* along = g_right ? kRightAlong : kAlong;
+    const float* across = g_right ? kRightAcross : kAcross;
+    const float* palmOut = g_right ? kRightPalm : kPalm;
+    const float* middle = g_right ? kRightMiddle : kMiddle;
+    for (int k = 0; k < 3; ++k)
+        g_centre[k] = middle[k] + along[k] * offset + across[k] * aside;
+    // The hand's triangles: every corner weighted only to its bones.
     std::vector<Vertex> verts;
     std::vector<int> tris;
     std::vector<int> index(65536, -1);
     for (int j = kFirst; j + 2 < kFirst + kCount; j += 3) {
         int corner[3];
-        bool left = true;
+        bool mine = true;
         for (int c = 0; c < 3; ++c) {
             uint16_t v;
             std::memcpy(&v, &ib[2 * (j + c)], 2);
@@ -364,30 +425,31 @@ int main(int argc, char** argv) {
                     if (x.weight[s] > x.weight[best])
                         best = s;
                 }
-                x.finger = x.bone[best] < handpose::kBones ? kFinger[x.bone[best]] : -2;
+                x.finger = FingerOf(x.bone[best]);
                 index[v] = static_cast<int>(verts.size());
                 verts.push_back(x);
             }
             const Vertex& x = verts[index[v]];
             for (int s = 0; s < 4; ++s)
-                if (x.weight[s] > 0 && x.bone[s] >= handpose::kBones)
-                    left = false;
+                if (x.weight[s] > 0 && FingerOf(x.bone[s]) < -1)
+                    mine = false;
             corner[c] = index[v];
         }
-        if (left)
+        if (mine)
             tris.insert(tris.end(), corner, corner + 3);
     }
-    printf("%zu triangles of the left hand\n", tris.size() / 3);
-    // skin.cpp's patch over the gloves' three cracks, as the game draws it ("p=0": without).
-    if (g_patch) {
+    printf("%zu triangles of the %s hand\n", tris.size() / 3, g_right ? "right" : "left");
+    // skin.cpp's patch over the gloves' three cracks, as the game draws it ("p=0": without). They are
+    // the left glove's: the right is drawn as the game holds the gun, only its trigger finger bent.
+    if (g_patch && !g_right) {
         constexpr uint16_t kPatch[] = {7, 8, 1723, 7, 1723, 8, 9, 11, 1597, 9, 1597, 11, 13, 14, 1393, 13, 1393, 14};
         for (uint16_t v : kPatch)
             tris.push_back(index[v]);
     }
     // The mesh's open edges (one triangle only, corners welded by position): drawn cyan.
     std::vector<bool> openEdge(tris.size() / 3);
+    std::vector<int> weld(verts.size());  // each corner's first at its place
     {
-        std::vector<int> weld(verts.size());
         std::map<std::tuple<float, float, float>, int> at;
         for (size_t i = 0; i < verts.size(); ++i)
             weld[i] = at.emplace(std::make_tuple(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]),
@@ -446,13 +508,13 @@ int main(int argc, char** argv) {
                         if (verts[i].weight[s] > 0)
                             bones[verts[i].bone[s]] += verts[i].weight[s];
                 }
-                float d[3] = {c[0] - kMiddle[0], c[1] - kMiddle[1], c[2] - kMiddle[2]};
+                float d[3] = {c[0] - middle[0], c[1] - middle[1], c[2] - middle[2]};
                 std::vector<std::pair<float, int>> top;
                 for (const auto& [b, w] : bones)
                     top.push_back({w, b});
                 std::sort(top.rbegin(), top.rend());
-                printf("at along %5.1f across %5.1f palm %5.1f; bones", Dot(d, kAlong) * 100, Dot(d, kAcross) * 100,
-                       Dot(d, kPalm) * 100);
+                printf("at along %5.1f across %5.1f palm %5.1f; bones", Dot(d, along) * 100, Dot(d, across) * 100,
+                       Dot(d, palmOut) * 100);
                 for (size_t k = 0; k < top.size() && k < 4; ++k)
                     printf(" %d(%.0f%%)", top[k].second, 100 * top[k].first / members.size());
                 printf("\n");
@@ -504,19 +566,53 @@ int main(int argc, char** argv) {
     // seen from behind and above.
     float firstPerson[3], thumbUp[3];
     for (int i = 0; i < 3; ++i)
-        firstPerson[i] = kAlong[i] * 0.55f + kAcross[i] * 0.75f + kPalm[i] * 0.35f, thumbUp[i] = -kAcross[i];
-    const float back[3] = {kPalm[0], kPalm[1], kPalm[2]}, palm[3] = {-kPalm[0], -kPalm[1], -kPalm[2]},
-                side[3] = {kAcross[0], kAcross[1], kAcross[2]};
-    const View views[4] = {MakeView(back, kAlong), MakeView(palm, kAlong), MakeView(side, kAlong),
+        firstPerson[i] = along[i] * 0.55f + across[i] * 0.75f + palmOut[i] * 0.35f, thumbUp[i] = -across[i];
+    const float back[3] = {palmOut[0], palmOut[1], palmOut[2]}, palm[3] = {-palmOut[0], -palmOut[1], -palmOut[2]},
+                side[3] = {across[0], across[1], across[2]};
+    const View views[4] = {MakeView(back, along), MakeView(palm, along), MakeView(side, along),
                            MakeView(firstPerson, thumbUp)};
-    Image img(kTile * 4, kTile * static_cast<int>(poses.size()));
+    const size_t rows = g_right ? triggers.size() : poses.size();
+    Image img(kTile * 4, kTile * static_cast<int>(rows));
     std::vector<float> skinned(verts.size() * 3);
+    std::vector<bool> drawn(verts.size());  // the corners of the hand's triangles
+    for (int i : tris)
+        drawn[i] = true;
+    // Where the right glove's rows start: as made, or ("game=1") as the game last drew it, each of
+    // the gloves' depth pass's dumped bones put on the gloves' bone handpose.h's kGloveDepthRight
+    // gives it (which shows that map too: a wrong one tears the glove apart), its palm (32) kept
+    // where the mesh has it, so the views see the hand as they see it made.
+    float rowStart[kPalette][12] = {};
+    for (auto& m : rowStart)
+        m[0] = m[5] = m[10] = 1;
+    if (g_right && g_game) {
+        auto dumped = ReadAll(dir + "\\mesh_7617_49995_bones.bin");
+        const float* p = reinterpret_cast<const float*>(dumped.data());
+        const int8_t* map = handpose::kGloveDepthRight;
+        const int entries = static_cast<int>(std::size(handpose::kGloveDepthRight));
+        int palmEntry = -1;
+        for (int e = 0; e < entries; ++e)
+            if (map[e] == 32)
+                palmEntry = e;
+        if (palmEntry < 0 || dumped.size() < entries * 48u) {
+            fprintf(stderr, "no gloves' depth pass bones in %s\n", dir.c_str());
+            return 1;
+        }
+        float inverse[12];
+        InvertRigid(p + palmEntry * 12, inverse);
+        for (int e = 0; e < entries; ++e)
+            if (map[e] >= 0)
+                Compose(inverse, p + e * 12, rowStart[map[e]]);
+    }
     // Clipping: each finger segment as a capsule along its joints, as thick as half its vertices
     // reach, posed; how deep any vertex of one finger sinks into another's capsules (mm; below zero,
     // the gap between them), against the mesh as made. The webbing between the fingers' first
     // segments (their first 35%) and the thumb's palm bone aren't counted.
     float joints[5][4][3];
-    handpose::Joints(joints);
+    if (g_right)
+        handpose::RightJoints(joints);
+    else
+        handpose::Joints(joints);
+    const int(*segmentBone)[3] = g_right ? kRightSegmentBone : kSegmentBone;
     std::vector<int> mainBone(verts.size());
     for (size_t i = 0; i < verts.size(); ++i) {
         int best = 0;
@@ -532,7 +628,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<int, size_t>> owned[5];  // each finger's counted vertices (segment, index)
         for (int f = 0; f < 5; ++f)
             for (int k = 0; k < 3; ++k) {
-                const int bone = kSegmentBone[f][k];
+                const int bone = segmentBone[f][k];
                 float start[3], end[3];
                 Apply(bones[bone], joints[f][k], start);
                 Apply(bones[bone], joints[f][k + 1], end);
@@ -577,13 +673,26 @@ int main(int argc, char** argv) {
         printf("\n");
     };
     // The depth passes against the glove: how much further out of it each of their vertices stands
-    // than as made (mm), and on which bones.
+    // than as made (mm), and on which bones; and those made at a glove corner's place, how far from
+    // it they are posed (their bones mapped right: not at all).
     const std::vector<Vertex> depthVerts = LoadDepthVertices(dir);
     std::vector<float> depthBind;
+    std::vector<int> depthCorner(depthVerts.size(), -1);  // the glove corner at each one's place, if any
+    {
+        std::map<std::tuple<float, float, float>, int> corner;
+        for (size_t i = 0; i < verts.size(); ++i)
+            if (drawn[i])
+                corner.emplace(std::make_tuple(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]), static_cast<int>(i));
+        for (size_t i = 0; i < depthVerts.size(); ++i) {
+            auto it = corner.find(std::make_tuple(depthVerts[i].pos[0], depthVerts[i].pos[1], depthVerts[i].pos[2]));
+            if (it != corner.end())
+                depthCorner[i] = it->second;
+        }
+    }
     auto depthReport = [&](float (*bones)[12], const std::vector<float>& posed) {
         std::vector<float> out = DepthOut(depthVerts, bones, posed, tris);
-        float worst = 0;
-        int count = 0, byBone[handpose::kBones] = {};
+        float worst = 0, apart = 0;
+        int count = 0, atCorner = 0, byBone[kPalette] = {};
         for (size_t i = 0; i < out.size(); ++i) {
             float more = out[i] - depthBind[i];
             worst = std::max(worst, more);
@@ -595,16 +704,24 @@ int main(int argc, char** argv) {
                         best = s;
                 ++byBone[depthVerts[i].bone[best]];
             }
+            if (depthCorner[i] >= 0) {
+                float p[3];
+                Skin(depthVerts[i], bones, p);
+                const float* q = &posed[depthCorner[i] * 3];
+                const float d[3] = {p[0] - q[0], p[1] - q[1], p[2] - q[2]};
+                apart = std::max(apart, std::sqrt(Dot(d, d)));
+                ++atCorner;
+            }
         }
         printf("    depth passes: %d of %zu vertices over 0.5 mm further out, up to %.1f mm; bones", count, out.size(),
                worst);
-        for (int b = 0; b < handpose::kBones; ++b)
+        for (int b = 0; b < kPalette; ++b)
             if (byBone[b])
                 printf(" %d:%d", b, byBone[b]);
-        printf("\n");
+        printf("; the %d at a glove corner's place at most %.2f mm from it\n", atCorner, apart * 1000);
     };
     {
-        float identity[handpose::kBones][12] = {};
+        float identity[kPalette][12] = {};
         for (auto& m : identity)
             m[0] = m[5] = m[10] = 1;
         std::vector<float> bind(verts.size() * 3);
@@ -615,31 +732,110 @@ int main(int argc, char** argv) {
         float most = -1e9f, least = 1e9f;
         for (float d : depthBind)
             most = std::max(most, d), least = std::min(least, d);
-        printf("    depth passes: %zu vertices of the left hand, %.1f to %.1f mm out of the glove as made\n",
-               depthBind.size(), least, most);
+        printf("    depth passes: %zu vertices of the %s hand, %.1f to %.1f mm out of the glove as made\n",
+               depthBind.size(), g_right ? "right" : "left", least, most);
     }
-    for (size_t row = 0; row < poses.size(); ++row) {
-        float bones[handpose::kBones][12];
-        handpose::Pose(poses[row], width, bones);
+    // Every vertex moved by bones.
+    auto skinAll = [&](float (*bones)[12], std::vector<float>& out) {
         for (size_t i = 0; i < verts.size(); ++i) {
             const Vertex& x = verts[i];
-            float out[3] = {};
+            float p[3] = {};
             for (int s = 0; s < 4; ++s) {
-                if (x.weight[s] <= 0 || x.bone[s] >= handpose::kBones)
+                if (x.weight[s] <= 0 || x.bone[s] >= kPalette)
                     continue;
                 const float* m = bones[x.bone[s]];
                 for (int k = 0; k < 3; ++k)
-                    out[k] += x.weight[s] * (m[k * 4] * x.pos[0] + m[k * 4 + 1] * x.pos[1] + m[k * 4 + 2] * x.pos[2] +
-                                             m[k * 4 + 3]);
+                    p[k] += x.weight[s] * (m[k * 4] * x.pos[0] + m[k * 4 + 1] * x.pos[1] + m[k * 4 + 2] * x.pos[2] +
+                                           m[k * 4 + 3]);
             }
-            std::memcpy(&skinned[i * 3], out, sizeof(out));
+            std::memcpy(&out[i * 3], p, sizeof(p));
         }
+    };
+    std::vector<float> unbent(verts.size() * 3);  // the right glove where its rows start
+    skinAll(rowStart, unbent);
+    for (size_t row = 0; row < rows; ++row) {
+        float bones[kPalette][12];
+        std::memcpy(bones, rowStart, sizeof(bones));
         char name[64];
-        const handpose::Fingers& p = poses[row];
-        snprintf(name, sizeof(name), "%.1f,%.1f,%.1f,%.1f,%.1f,%.1f", p.curl[0], p.curl[1], p.curl[2], p.curl[3],
-                 p.thumb, p.spread);
+        if (g_right) {
+            // Its trigger finger pulled, as skin.cpp is to pull it where the game draws it.
+            handpose::BendRightIndex(bones, triggers[row]);
+            snprintf(name, sizeof(name), "trigger %g degrees%s", triggers[row], g_game ? " (game)" : "");
+        } else {
+            handpose::Pose(poses[row], width, bones);
+            const handpose::Fingers& p = poses[row];
+            snprintf(name, sizeof(name), "%.1f,%.1f,%.1f,%.1f,%.1f,%.1f", p.curl[0], p.curl[1], p.curl[2], p.curl[3],
+                     p.thumb, p.spread);
+        }
+        skinAll(bones, skinned);
         overlaps(bones, skinned, name);
         depthReport(bones, skinned);
+        // Tearing: corners made at one place pulled apart (their weights differ).
+        float torn = 0.0f;
+        for (size_t i = 0; i < verts.size(); ++i) {
+            if (!drawn[i])
+                continue;
+            const float *p = &skinned[i * 3], *q = &skinned[weld[i] * 3];
+            const float d[3] = {p[0] - q[0], p[1] - q[1], p[2] - q[2]};
+            torn = std::max(torn, std::sqrt(Dot(d, d)));
+        }
+        printf("    seams: corners made at one place at most %.2f mm apart\n", torn * 1000);
+        if (g_right) {
+            // Only the trigger finger moves, curling towards the palm: how far each finger's vertices
+            // went from where the row started, and where its tip went: towards the palm, back along
+            // the finger (from its tip to its knuckle), across the hand towards the little finger,
+            // and out of the plane it bends in (along handpose's axis, turned as its first bone is),
+            // all as the hand is posed where the row started.
+            float moved[6] = {};
+            for (size_t i = 0; i < verts.size(); ++i) {
+                if (!drawn[i])
+                    continue;
+                const float d[3] = {skinned[i * 3] - unbent[i * 3], skinned[i * 3 + 1] - unbent[i * 3 + 1],
+                                    skinned[i * 3 + 2] - unbent[i * 3 + 2]};
+                moved[verts[i].finger + 1] = std::max(moved[verts[i].finger + 1], std::sqrt(Dot(d, d)));
+            }
+            const int* bone = kRightSegmentBone[1];
+            const float *first = rowStart[bone[0]], *second = rowStart[bone[1]];
+            const float* palmBone = rowStart[24];  // the index finger's bone in the palm
+            float axes[5][3], bent[3], towards[3], acrossHand[3], knuckle[3], from[3], to[3], d[3], back[3];
+            handpose::RightAxes(axes);
+            for (int k = 0; k < 3; ++k) {
+                const float *r = first + k * 4, *q = palmBone + k * 4;
+                bent[k] = r[0] * axes[1][0] + r[1] * axes[1][1] + r[2] * axes[1][2];
+                towards[k] = q[0] * palmOut[0] + q[1] * palmOut[1] + q[2] * palmOut[2];
+                acrossHand[k] = q[0] * across[0] + q[1] * across[1] + q[2] * across[2];
+            }
+            Normalize(bent);
+            Normalize(towards);
+            Normalize(acrossHand);
+            Apply(first, joints[1][0], knuckle);
+            Apply(rowStart[bone[2]], joints[1][3], from);
+            Apply(bones[bone[2]], joints[1][3], to);
+            for (int k = 0; k < 3; ++k)
+                d[k] = to[k] - from[k], back[k] = knuckle[k] - from[k];
+            Normalize(back);
+            printf("    moved at most (mm): palm %.1f thumb %.1f index %.1f middle %.1f ring %.1f little %.1f\n"
+                   "    the index tip (mm): %.1f towards the palm, %.1f back along the finger, %.1f across the hand, "
+                   "%.1f out of its bend's plane\n",
+                   moved[0] * 1000, moved[1] * 1000, moved[2] * 1000, moved[3] * 1000, moved[4] * 1000,
+                   moved[5] * 1000, Dot(d, towards) * 1000, Dot(d, back) * 1000, Dot(d, acrossHand) * 1000,
+                   Dot(d, bent) * 1000);
+            // Its middle joint turned more than 10 degrees where the row starts (the game's grip): how
+            // far handpose's axis is from the one that turn is about (the bones either side of the
+            // joint, one undone from the other, in the bind space).
+            float turn[9], about[3];
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    turn[i * 3 + j] = first[i] * second[j] + first[4 + i] * second[4 + j] + first[8 + i] * second[8 + j];
+            about[0] = turn[7] - turn[5], about[1] = turn[2] - turn[6], about[2] = turn[3] - turn[1];
+            const float angle = std::acos(std::clamp((turn[0] + turn[4] + turn[8] - 1) / 2, -1.0f, 1.0f));
+            if (angle > 10.0f / 57.29578f) {
+                Normalize(about);
+                printf("    its middle joint turned %.0f degrees where it starts, about an axis %.1f degrees from "
+                       "handpose's\n",
+                       angle * 57.29578f, std::acos(std::min(1.0f, std::fabs(Dot(about, axes[1])))) * 57.29578f);
+            }
+        }
         constexpr float kMagenta[3] = {1.0f, 0.1f, 1.0f}, kCyan[3] = {0.1f, 1.0f, 1.0f};
         for (int v = 0; v < 4; ++v)
             for (size_t t = 0; t < tris.size(); t += 3) {

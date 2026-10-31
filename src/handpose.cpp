@@ -38,6 +38,29 @@ constexpr float kDirection[5][3] = {{-0.0373f, -0.2208f, 0.9746f},
 constexpr int8_t kFinger[handpose::kBones] = {-1, -1, 0, 4, -1, -1, 2, 2, 1, 1, 3, 3, 3, 4, 4, 1, 4, 0, 0, 1, 3, 2, 2};
 constexpr int8_t kDepth[handpose::kBones] = {0, 0, 3, 3, 0, 0, 0, 1, 0, 1, 3, 1, 0, 1, 0, 3, 2, 2, 1, 2, 2, 2, 3};
 constexpr bool IsCuff(int bone) { return bone == 0 || bone == 4 || bone == 5; }
+
+// The right glove's (handpose.h), bent from the game's own grip: so its fingers turn as the game's
+// rig turns them. That grip (the gloves' depth pass's dumped bones, build\mesh_7617_49995_bones.bin)
+// turns each finger's middle and last joints about one axis, and each joint about a line that stays
+// put (to 0.01 mm). Each joint is the point of its line nearest where the bones' weights blend in
+// the mesh (found as the left's above: within 9 mm, the index finger's within 6), the tip as the
+// left's: on the finger's middle line, as far out as it reaches (the index finger's line runs along
+// -0.473, -0.617, 0.629). Found the left's way, the axis (across that line and the palm, the left's
+// kPalm mirrored) was 10 degrees off the rig's: enough to bend the trigger finger slanting off the
+// game's own curl. The thumb, whose joints turn about three different axes, is the left's way.
+constexpr float kRightJoint[5][4][3] = {
+    {{-0.4890f, 1.1214f, 0.1899f}, {-0.4894f, 1.1168f, 0.2220f}, {-0.4798f, 1.0986f, 0.2628f}, {-0.4782f, 1.0904f, 0.3019f}},
+    {{-0.5372f, 1.0958f, 0.2449f}, {-0.5567f, 1.0701f, 0.2773f}, {-0.5695f, 1.0542f, 0.2933f}, {-0.5843f, 1.0392f, 0.3112f}},
+    {{-0.5486f, 1.0881f, 0.2345f}, {-0.5716f, 1.0595f, 0.2660f}, {-0.5850f, 1.0425f, 0.2855f}, {-0.5989f, 1.0254f, 0.3051f}},
+    {{-0.5599f, 1.0772f, 0.2129f}, {-0.5806f, 1.0512f, 0.2444f}, {-0.5925f, 1.0360f, 0.2635f}, {-0.6034f, 1.0196f, 0.2823f}},
+    {{-0.5645f, 1.0712f, 0.1934f}, {-0.5802f, 1.0518f, 0.2175f}, {-0.5888f, 1.0410f, 0.2299f}, {-0.5997f, 1.0275f, 0.2463f}},
+};
+// Each finger's axis (positive turns curl it towards the palm).
+constexpr float kRightAxis[5][3] = {{0.7683f, 0.6321f, 0.1012f},
+                                    {0.4704f, 0.4589f, 0.7538f},
+                                    {0.4783f, 0.4689f, 0.7425f},
+                                    {0.4969f, 0.4923f, 0.7146f},
+                                    {0.5063f, 0.5039f, 0.6998f}};
 // The fingers are moved apart on the widened palm and slimmed to this across, rather than widened
 // with it (the whole hand widened alike looked thick, "sausage-y": user 2026-10-30). The cracks this
 // opened in the glove are closed by skin.cpp's patch. handpose::Tune "slim".
@@ -133,6 +156,42 @@ void ScaleAlong(const float* axis, float s, const float* point, float* out) {
     }
 }
 
+// One finger of a posed hand bent further (degrees; negative opens it), spread over its three
+// joints (the middle one most), about where those joints are in that pose. at: its bones by how
+// many joints lie between each and the palm (1-3; null where the palette hasn't one), each from the
+// bind space to wherever the hand is drawn, changed in place; joint: its joints in the bind space,
+// axis the one it bends about there (unit; positive turns curl it towards the palm).
+void BendFinger(float* const at[4], const float (*joint)[3], const float* axis, float degrees) {
+    constexpr float kShare[3] = {0.35f, 0.4f, 0.25f};  // of the bend at the knuckle, middle and last joint
+    if (!at[1])
+        return;
+    // Its bending axis, turned into the pose as its first bone is.
+    float posedAxis[3];
+    const float* first = at[1];
+    for (int i = 0; i < 3; ++i)
+        posedAxis[i] = first[i * 4] * axis[0] + first[i * 4 + 1] * axis[1] + first[i * 4 + 2] * axis[2];
+    Normalize(posedAxis);
+    // Each joint where the pose has it (it moves with the bone just past it).
+    float turns[3][12];
+    for (int j = 0; j < 3; ++j) {
+        float posed[3];
+        Transform(at[j + 1] ? at[j + 1] : first, joint[j], posed);
+        TurnAbout(posedAxis, degrees * kShare[j], posed, turns[j]);
+    }
+    // A bone turns at every joint between it and the palm, the farthest first.
+    for (int d = 1; d <= 3; ++d) {
+        if (!at[d])
+            continue;
+        float m[12], turned[12];
+        std::memcpy(m, at[d], sizeof(m));
+        for (int j = d - 1; j >= 0; --j) {
+            Compose(turns[j], m, turned);
+            std::memcpy(m, turned, sizeof(m));
+        }
+        std::memcpy(at[d], m, sizeof(m));
+    }
+}
+
 }
 
 namespace handpose {
@@ -205,48 +264,48 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
 }
 
 void BendFurther(float bones[kBones][12], const float bend[5]) {
-    constexpr float kShare[3] = {0.35f, 0.4f, 0.25f};  // of the bend at the knuckle, middle and last joint
     for (int f = 0; f < 5; ++f) {
         if (bend[f] == 0.0f)
             continue;
-        // The finger's bones by how many joints lie between each and the palm (1-3).
-        int at[4] = {-1, -1, -1, -1};
+        // The finger's bones by how many joints lie between each and the palm (1-3), bent across its
+        // direction and the palm.
+        float* at[4] = {};
         for (int b = 0; b < kBones; ++b)
             if (kFinger[b] == f && kDepth[b] >= 1 && kDepth[b] <= 3)
-                at[kDepth[b]] = b;
-        if (at[1] < 0)
-            continue;
-        // Its bending axis, turned into the pose as its first bone is.
-        float axis[3], posedAxis[3];
+                at[kDepth[b]] = bones[b];
+        float axis[3];
         Cross(kDirection[f], kPalm, axis);
         Normalize(axis);
-        const float* first = bones[at[1]];
-        for (int i = 0; i < 3; ++i)
-            posedAxis[i] = first[i * 4] * axis[0] + first[i * 4 + 1] * axis[1] + first[i * 4 + 2] * axis[2];
-        Normalize(posedAxis);
-        // Each joint where the pose has it (it moves with the bone just past it).
-        float turns[3][12];
-        for (int j = 0; j < 3; ++j) {
-            float joint[3];
-            Transform(bones[at[j + 1] >= 0 ? at[j + 1] : at[1]], kJoint[f][j], joint);
-            TurnAbout(posedAxis, bend[f] * kShare[j], joint, turns[j]);
-        }
-        // A bone turns at every joint between it and the palm, the farthest first.
-        for (int d = 1; d <= 3; ++d) {
-            if (at[d] < 0)
-                continue;
-            float m[12], turned[12];
-            std::memcpy(m, bones[at[d]], sizeof(m));
-            for (int j = d - 1; j >= 0; --j) {
-                Compose(turns[j], m, turned);
-                std::memcpy(m, turned, sizeof(m));
-            }
-            std::memcpy(bones[at[d]], m, sizeof(m));
-        }
+        BendFinger(at, kJoint[f], axis, bend[f]);
     }
 }
 
+void BendRight(float palette[][12], const float bend[5], const int8_t* map, size_t count) {
+    // Each finger's bones by how many joints lie between each and the palm (1-3), where the palette
+    // has them: its own numbers, or the gloves' through map.
+    float* at[5][4] = {};
+    const size_t entries = map ? count : static_cast<size_t>(kRightFirst + kRightBones);
+    for (size_t k = 0; k < entries; ++k) {
+        const int b = (map ? map[k] : static_cast<int>(k)) - kRightFirst;
+        if (b < 0 || b >= kRightBones || kRightFinger[b] < 0 || kRightDepth[b] < 1)
+            continue;
+        at[kRightFinger[b]][kRightDepth[b]] = palette[k];
+    }
+    for (int f = 0; f < 5; ++f)
+        if (bend[f] != 0.0f)
+            BendFinger(at[f], kRightJoint[f], kRightAxis[f], bend[f]);
+}
+
+void BendRightIndex(float palette[][12], float degrees, const int8_t* map, size_t count) {
+    const float bend[5] = {0.0f, degrees, 0.0f, 0.0f, 0.0f};
+    BendRight(palette, bend, map, count);
+}
+
 void Joints(float out[5][4][3]) { std::memcpy(out, kJoint, sizeof(kJoint)); }
+
+void RightJoints(float out[5][4][3]) { std::memcpy(out, kRightJoint, sizeof(kRightJoint)); }
+
+void RightAxes(float out[5][3]) { std::memcpy(out, kRightAxis, sizeof(kRightAxis)); }
 
 void Tune(const char* name, const float* v, int count) {
     if (std::strcmp(name, "thumb") == 0 && count == 4)
