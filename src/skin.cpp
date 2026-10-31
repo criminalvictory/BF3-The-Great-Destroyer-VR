@@ -355,6 +355,10 @@ std::atomic<int> g_eyeTrace{0};
 // view's constants bound) that the mod leaves where the game put them, each kind logged once: the
 // ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
 std::atomic<int> g_fpProbeFrames{0};
+// weapon.txt "scopetrace": the next three frames' draws of the scope's mesh (its index buffer, as
+// the player's own scope body binds it), each with the bones it was drawn with and what became of it.
+std::atomic<int> g_scopeTraceFrames{0};
+std::atomic<ID3D11Buffer*> g_scopeIndices{nullptr};
 ID3D11Resource* g_armsViewBuffers[8] = {};  // buffers the first-person views were uploaded into
 int g_armsViewNext = 0;
 std::mutex g_fpProbeMutex;
@@ -589,6 +593,84 @@ std::atomic<UINT> g_shifted{0}, g_noCopy{0}, g_noSlot{0}, g_notSkinned{0};
 
 thread_local Upload t_upload;
 
+// The latest bones of each buffer that last held the player's own (PlayersOwn). The scope's
+// see-through parts (lens tint, fibre optic, reticle) are drawn in a later pass, and in the headset
+// (2026-10-31 01:40) their bones weren't this thread's latest upload ("someone else's bones"): left
+// where the game holds its gun, they floated in the sky and followed the aim (the user's video,
+// 02:08). Their own buffer, filled earlier in the frame (maybe on another thread), is found here.
+struct OwnPalette {
+    ID3D11Resource* resource = nullptr;
+    bool own = false;    // false: refilled since with someone else's bones
+    uint32_t frame = 0;  // g_frameSerial when it was filled
+    uint8_t bytes[kGloveUploadSize] = {};
+};
+constexpr size_t kOwnPaletteSlots = 96;
+std::mutex g_ownMutex;
+OwnPalette g_ownPalettes[kOwnPaletteSlots];
+size_t g_ownNext = 0;
+
+// Every whole bone upload while the hands are free (data: the copy already taken, not the mapped
+// memory, which is slow to read).
+void NoteOwnPalette(ID3D11Resource* resource, const uint8_t* data) {
+    const auto* first = reinterpret_cast<const float*>(data);
+    const bool own = std::fabs(first[3]) < kFirstPersonReach && std::fabs(first[7]) < kFirstPersonReach &&
+                     std::fabs(first[11]) < kFirstPersonReach;
+    std::lock_guard lock(g_ownMutex);
+    OwnPalette* slot = nullptr;
+    for (OwnPalette& p : g_ownPalettes)
+        if (p.resource == resource) {
+            slot = &p;
+            break;
+        }
+    if (!slot) {
+        if (!own)
+            return;
+        slot = &g_ownPalettes[g_ownNext];
+        g_ownNext = (g_ownNext + 1) % kOwnPaletteSlots;
+        slot->resource = resource;
+    }
+    slot->own = own;
+    slot->frame = g_frameSerial.load(std::memory_order_relaxed);
+    if (own)
+        std::memcpy(slot->bytes, data, kGloveUploadSize);
+}
+
+// What the scope trace says about a draw's own buffer (weapon.txt "scopetrace").
+struct BoundOwnInfo {
+    ID3D11Resource* buffer = nullptr;  // a bound buffer the cache knows, own or not
+    bool own = false;
+    uint32_t age = 0;  // frames since it was filled
+};
+
+// The player's own bones in a buffer bound to the vertex shader for this draw, filled this frame or
+// the one before (see OwnPalette).
+bool BoundOwnPalette(ID3D11DeviceContext* ctx, Upload& out, BoundOwnInfo* info = nullptr) {
+    ID3D11Buffer* bound[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+    ctx->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, bound);
+    bool found = false;
+    {
+        const uint32_t now = g_frameSerial.load(std::memory_order_relaxed);
+        std::lock_guard lock(g_ownMutex);
+        for (ID3D11Buffer* b : bound) {
+            for (const OwnPalette& p : g_ownPalettes) {
+                if (!b || found || p.resource != b)
+                    continue;
+                if (info && !info->buffer)
+                    *info = {p.resource, p.own, now - p.frame};
+                if (p.own && now - p.frame <= 1) {
+                    out.resource = p.resource;
+                    out.bytes.assign(p.bytes, p.bytes + kGloveUploadSize);
+                    found = true;
+                }
+            }
+        }
+    }
+    for (ID3D11Buffer* b : bound)
+        if (b)
+            b->Release();
+    return found;
+}
+
 // Bone selector, for working out which gloves bones belong to which hand: hands.txt next to the
 // DLL lists gloves palette numbers ("0-27, 40" or "all"); only those are shifted. Read by Probe.
 // Found with it (the user judging in the headset): bones 0-23 are the left hand, 24-54 the right;
@@ -713,6 +795,7 @@ void ReadWeaponSelection() {
     //                        (input.cpp; stays as set until "standin 0")
     //   "pull 30"            the charging handle held 30 mm back (reload.cpp), to see the cover
     //   "hudfix 1"           a HUD experiment (overlay.cpp)
+    //   "scopetrace"         log three frames' draws of the scope's mesh and what became of each
     float shift[3] = {}, floor = 0.0f, wcam[3] = {};
     bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
     UINT hideFx[4] = {};
@@ -724,6 +807,7 @@ void ReadWeaponSelection() {
     int hidePsCount = 0;
     float testPull = -1.0f;
     int flashMove = 0;
+    int zoomHold = 0;
     int hudFix = 0;
     int moveCount = 0;
     int hideCount = 0;
@@ -795,6 +879,12 @@ void ReadWeaponSelection() {
             line = next;
             continue;
         }
+        if (const char* zm = std::strstr(line, "zoom")) {
+            zoomHold = 1;
+            sscanf_s(zm + 4, "%d", &zoomHold);
+            line = next;
+            continue;
+        }
         if (const char* fm2 = std::strstr(line, "flashmove")) {
             sscanf_s(fm2 + 9, "%d", &flashMove);
             line = next;
@@ -863,6 +953,12 @@ void ReadWeaponSelection() {
             }
             g_fpProbeFrames = 3;
             Log("First-person probe: the next three frames' first-person draws the mod leaves in place");
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "scopetrace")) {
+            g_scopeTraceFrames = 3;
+            Log("Scope trace: the next three frames' draws of the scope's mesh");
             line = next;
             continue;
         }
@@ -950,6 +1046,7 @@ void ReadWeaponSelection() {
     effects::SetLift(flashLift);
     reload::TestPull(testPull);
     effects::SetFlashMove(flashMove != 0);
+    input::SetZoomHold(zoomHold != 0);
     overlay::SetHudFix(hudFix);
     if (g_wiggleBone.exchange(wiggle) != wiggle)
         Log("Weapon: %s", wiggle >= 0 ? "a bone slides to and fro (wiggle)" : "no bone wiggles");
@@ -1249,6 +1346,8 @@ void HandleUpload(const PendingMap& p) {
                 t_upload.serial = t_uploadSerial;
                 t_upload.bytes.assign(data, data + (whole ? p.size : kGunPrefix));
                 t_upload.bones = t_drawsSinceBones == 0 ? t_bones : BoneInfo{};
+                if (whole && g_handsActive.load(std::memory_order_relaxed))
+                    NoteOwnPalette(p.resource, t_upload.bytes.data());
             } else if (p.resource == t_upload.resource) {
                 t_upload.resource = nullptr;  // refilled with something else: the copy is stale
             }
@@ -1652,6 +1751,9 @@ struct ArmDraw {
     // numbering isn't the gloves' own (-1: none, moved with the glove's cuff).
     const int8_t* leftBones = nullptr;
     size_t leftBoneCount = 0;
+    // A gun part placed as another draw is (the scope's parts as its body): drawn only in a later
+    // pass, where its own offsets from the gun are never learned, it takes that draw's.
+    DrawKey placedLike{};
 };
 // Matched by vertices at the same place in the gloves' mesh dump and these depth passes', so the
 // fingers bend alike in every pass. The bare forearms share no vertices with the gloves: their 'L'
@@ -1681,12 +1783,23 @@ constexpr ArmDraw kArmDraws[] = {
 
 // The gun's other skinned model (the mesh dumps: 7848 + 1440 indices drawn in colour, the 9288 of
 // its depth pass; bones 0-2 near the gun's back end, the stock): it goes wherever the gun goes.
-// The scope is a rigid model (no bone weights) placed by the first matrix of a bone buffer of its
-// own, which has the gun's turn (the scope probe, 2026-10-30): it moves as a one-bone part.
+// The scope is a rigid model (no bone weights) placed by a matrix of a bone buffer of its own, which
+// has the gun's turn (the scope probe, 2026-10-30). Its body takes the first; its lens tint (108
+// from 9486: the dark circle that floated in the sky, found with the user hiding draws one by one,
+// 2026-10-31) stayed at the game's gun, and so did a red strip (the fibre optic?): parts placed by a
+// later matrix. Each scope part moves its first eight with the gun (a part ignores the ones it
+// doesn't use). The see-through parts are drawn in a later pass (OwnPalette): placed as the body is.
+constexpr DrawKey kScopeBody{9273, 12, 0};
 constexpr ArmDraw kGunPartDraws[] = {
-    {{7848, 0, 0}, "GG", -1},     {{1440, 7848, 0}, "G", -1},  {{9288, 9288, 0}, "GGG", -1},
-    {{9273, 12, 0}, "G", -1},     {{12, 0, 0}, "G", -1},       {{72, 9285, 0}, "G", -1},
-    {{129, 9357, 0}, "G", -1},    {{108, 9486, 0}, "G", -1},   {{9273, 9594, 0}, "G", -1},
+    {{7848, 0, 0}, "GG", -1},
+    {{1440, 7848, 0}, "G", -1},
+    {{9288, 9288, 0}, "GGG", -1},
+    {kScopeBody, "GGGGGGGG", -1},
+    {{12, 0, 0}, "GGGGGGGG", -1, nullptr, 0, kScopeBody},
+    {{72, 9285, 0}, "GGGGGGGG", -1, nullptr, 0, kScopeBody},
+    {{129, 9357, 0}, "GGGGGGGG", -1, nullptr, 0, kScopeBody},
+    {{108, 9486, 0}, "GGGGGGGG", -1, nullptr, 0, kScopeBody},
+    {{9273, 9594, 0}, "GGGGGGGG", -1, nullptr, 0, kScopeBody},
 };
 
 const ArmDraw* FindArmDraw(const DrawKey& key) {
@@ -1910,17 +2023,142 @@ bool DrawGun(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT ba
 
 // One of the first-person arms' draws with free hands on: each hand's bones moved with it, the
 // arms, sleeves and body folded away. False: draw as usual.
-bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, const ArmDraw& draw) {
+// A gun part whose bones are in the world, not the body's space: the scope's see-through parts
+// (lens tint, reticle, fibre optic, a ghost of its body) are drawn again in a later pass with world
+// placements, which PlayersOwn takes for another soldier's ("someone else's bones" for every scope
+// part, 2026-10-31): they floated in the sky where the game holds its gun (the user's pictures).
+// If its first bone is within a metre of the game's own gun in the world, it's ours: its bones are
+// moved with the gun's true move in the world (that pass is drawn with each eye's own view). The
+// 12-index draw from 0 is left out: the world's plants share its numbers.
+std::atomic<bool> g_worldPartsTold{false};
+
+bool DrawWorldPart(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, const ArmDraw& draw) {
     const Upload& u = t_upload;
+    if (!u.resource || u.bytes.size() != kGloveUploadSize || draw.key == DrawKey{12, 0, 0})
+        return false;
+    float world[16] = {}, gunWorld[3] = {}, gunArms[3] = {};
+    const bool haveMove = skin::GunDeltaWorld(world), haveGun = skin::GameGunPlaces(gunWorld, gunArms);
+    const auto* first = reinterpret_cast<const float*>(u.bytes.data());
+    const float off[3] = {first[3] - gunWorld[0], first[7] - gunWorld[1], first[11] - gunWorld[2]};
+    const bool atGun = off[0] * off[0] + off[1] * off[1] + off[2] * off[2] < 1.0f;
+    if (!haveMove || !haveGun || !atGun) {
+        static std::atomic<ULONGLONG> s_told{0};
+        if (const ULONGLONG now = GetTickCount64(); now - s_told.load() > 2000) {
+            s_told = now;
+            Log("Hands: gun part %u/%u not moved as a world part: its first bone at (%.2f %.2f %.2f), row lengths "
+                "%.2f %.2f %.2f; the game's gun at world (%.2f %.2f %.2f), arms (%.2f %.2f %.2f); move %s",
+                count, start, first[3], first[7], first[11],
+                std::sqrt(first[0] * first[0] + first[1] * first[1] + first[2] * first[2]),
+                std::sqrt(first[4] * first[4] + first[5] * first[5] + first[6] * first[6]),
+                std::sqrt(first[8] * first[8] + first[9] * first[9] + first[10] * first[10]), gunWorld[0],
+                gunWorld[1], gunWorld[2], gunArms[0], gunArms[1], gunArms[2], haveMove ? "known" : "not known");
+        }
+        return false;  // another soldier's gun after all, or nothing to move it by
+    }
+    thread_local std::vector<uint8_t> t_world;
+    t_world = u.bytes;
+    auto* bones = reinterpret_cast<float*>(t_world.data());
+    float delta[12];
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+            delta[r * 4 + c] = world[r * 4 + c];
+    for (size_t k = 0; draw.roles[k] && k < kPaletteBones; ++k)
+        if (draw.roles[k] == 'G') {
+            float moved[12];
+            Compose(delta, bones + k * 12, moved);
+            std::memcpy(bones + k * 12, moved, sizeof(moved));
+        }
+    if (!DrawWithPalette(which, ctx, count, start, base, u.resource, t_world.data(), kGloveUploadSize))
+        return false;
+    if (!g_worldPartsTold.exchange(true))
+        Log("Hands: a gun part with its bones in the world (%u indices from %u, %.2f m from the game's gun) "
+            "drawn moved with the gun",
+            count, start, std::sqrt(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]));
+    return true;
+}
+
+// weapon.txt "scopetrace": a line for a draw of the scope's mesh, with the bones it was drawn with
+// (this thread's latest upload, or its own buffer's) and what became of it.
+void TraceScopeDraw(ID3D11DeviceContext* ctx, const ArmDraw& draw, const Upload& used, bool fromBuffer,
+                    const BoundOwnInfo& info, const char* outcome) {
+    ID3D11Buffer* indices = nullptr;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    UINT indexOffset = 0;
+    ctx->IAGetIndexBuffer(&indices, &format, &indexOffset);
+    if (indices)
+        indices->Release();
+    const bool usedOwn = used.resource && used.bytes.size() == kGloveUploadSize && PlayersOwn(used.bytes);
+    if (draw.key == kScopeBody && usedOwn)
+        g_scopeIndices = indices;  // the player's own scope body names the scope's mesh
+    if (!indices || indices != g_scopeIndices.load())
+        return;
+    ID3D11Buffer* vertices = nullptr;
+    UINT stride = 0, vertexOffset = 0;
+    ctx->IAGetVertexBuffers(0, 1, &vertices, &stride, &vertexOffset);
+    if (vertices)
+        vertices->Release();
+    ID3D11DepthStencilState* depth = nullptr;
+    UINT ref = 0;
+    ctx->OMGetDepthStencilState(&depth, &ref);
+    if (depth)
+        depth->Release();
+    const Upload& latest = t_upload;
+    const auto* l = latest.bytes.size() >= 48 ? reinterpret_cast<const float*>(latest.bytes.data()) : nullptr;
+    const auto* b = used.bytes.size() >= 48 ? reinterpret_cast<const float*>(used.bytes.data()) : nullptr;
+    float gun[3] = {};
+    {
+        std::lock_guard lock(g_handsMutex);
+        gun[0] = g_gunBodyOrig[3], gun[1] = g_gunBodyOrig[7], gun[2] = g_gunBodyOrig[11];
+    }
+    char known[96] = "none";
+    if (info.buffer)
+        snprintf(known, sizeof(known), "%p, %s, filled %u frames ago", static_cast<void*>(info.buffer),
+                 info.own ? "the player's" : "someone else's since", info.age);
+    Log("Scope trace: %u/%u stride %u, stencil ref %u: latest upload %p (%s, first bone at %.2f %.2f %.2f); bound "
+        "buffer the cache knows: %s; drawn with %s, first bone at (%.2f %.2f %.2f), the game's gun body at (%.2f "
+        "%.2f %.2f): %s",
+        draw.key.indexCount, draw.key.startIndex, stride, ref, static_cast<void*>(latest.resource),
+        !latest.resource ? "none" : BoundSlot(ctx, latest.resource) < 0 ? "not bound" : "bound", l ? l[3] : 0.0f,
+        l ? l[7] : 0.0f, l ? l[11] : 0.0f, known, fromBuffer ? "its own buffer's bones" : "the latest upload",
+        b ? b[3] : 0.0f, b ? b[7] : 0.0f, b ? b[11] : 0.0f, gun[0], gun[1], gun[2], outcome);
+}
+
+bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, const ArmDraw& draw) {
     if (GetTickCount64() - g_rifleDrawn.load() > 500)  // the gun the mod knows isn't in hand
         return false;
+    // A gun part drawn without this thread's latest bones bound (a later pass, the scope's
+    // see-through parts): the bones in its own buffer, if they're the player's (OwnPalette).
+    const bool tracing = g_scopeTraceFrames.load(std::memory_order_relaxed) > 0;
+    thread_local Upload t_bound;
+    const Upload* use = &t_upload;
+    bool fromBuffer = false;
+    BoundOwnInfo info;
+    if (std::strchr(draw.roles, 'G') &&
+        (!t_upload.resource || t_upload.bytes.size() != kGloveUploadSize || !PlayersOwn(t_upload.bytes) ||
+         BoundSlot(ctx, t_upload.resource) < 0) &&
+        BoundOwnPalette(ctx, t_bound, tracing ? &info : nullptr)) {
+        use = &t_bound;
+        fromBuffer = true;
+    }
+    const Upload& u = *use;
+    auto trace = [&](const char* outcome) {
+        if (tracing)
+            TraceScopeDraw(ctx, draw, u, fromBuffer, info, outcome);
+    };
     if (!u.resource || u.bytes.size() != kGloveUploadSize || !PlayersOwn(u.bytes)) {
+        if (std::strchr(draw.roles, 'G') && DrawWorldPart(which, ctx, count, start, base, draw)) {
+            trace("moved as a world part");
+            return true;
+        }
         NoteUnmoved(draw.key, !u.resource || u.bytes.size() != kGloveUploadSize ? 0 : 1);
+        trace(!u.resource || u.bytes.size() != kGloveUploadSize ? "left in place: no whole bones"
+                                                                : "left in place: someone else's bones");
         return false;
     }
     thread_local std::vector<uint8_t> t_arms;
     t_arms = u.bytes;
     auto* bones = reinterpret_cast<float*>(t_arms.data());
+    bool placed = false;  // a gun part's bone put with the gun
     {
         std::lock_guard lock(g_handsMutex);
         if (!g_handsOn)
@@ -1976,10 +2214,20 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             case 'R':
             case 'G':  // a part of the gun: where its learned offset from the gun's body puts it
                 if (t.gun) {
-                    if (gunRef)
+                    if (gunRef && !fromBuffer)
                         Learn(learned, k, gunInverse, bone);
-                    if (learned.have[k])
-                        Compose(t.gunPose, learned.rel[k], bone);
+                    // Placed as another draw is (the scope's parts as its body): that draw's offsets,
+                    // learned every frame. The see-through parts are only drawn in a later pass, after
+                    // the gun's body: they never learned their own and stayed where the game put them,
+                    // floating in the sky (the scope trace, 2026-10-31 02:30).
+                    const Learned* rel = &learned;
+                    if (draw.placedLike.indexCount)
+                        if (auto it = g_learned.find(draw.placedLike); it != g_learned.end() && it->second.have[k])
+                            rel = &it->second;
+                    if (rel->have[k]) {
+                        Compose(t.gunPose, rel->rel[k], bone);
+                        placed = true;
+                    }
                 }
                 break;
             case 'l':
@@ -2002,6 +2250,9 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
         ++g_handsMovedDraws;
     else
         NoteUnmoved(draw.key, 2);
+    trace(!drawn    ? "left in place: BF3's buffer not bound"
+          : !placed ? "drawn, but no offset from the gun known: where the game put it"
+                    : fromBuffer ? "moved with its own buffer's bones" : "moved");
     return drawn;
 }
 
@@ -2758,6 +3009,8 @@ void Update() {
     ++g_frameSerial;
     if (int frames = g_fpProbeFrames.load(std::memory_order_relaxed); frames > 0)
         g_fpProbeFrames.store(frames - 1, std::memory_order_relaxed);
+    if (int frames = g_scopeTraceFrames.load(std::memory_order_relaxed); frames > 0)
+        g_scopeTraceFrames.store(frames - 1, std::memory_order_relaxed);
 }
 
 bool Watching() {

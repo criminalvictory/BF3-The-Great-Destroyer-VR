@@ -30,6 +30,8 @@ bool HandPose(int hand, XrPosef& out);
 // shift ("standin 1 45 0 -0.25 -0.15 0"): the hold moved (right, up, back; metres).
 void SetStandIn(bool on, float pitchDegrees = 0.0f, float yawDegrees = 0.0f, const float* shift = nullptr);
 float StandInPitch();  // radians
+// weapon.txt "zoom 1": the game's zoom (right mouse) held while it's set.
+void SetZoomHold(bool on);
 void StandIn(const XrPosef& head);
 bool StandingIn();
 // The stand-in is switched on (weapon.txt "standin 1"), whether or not it holds the gun now.

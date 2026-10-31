@@ -325,6 +325,7 @@ void SendKey(WORD scan, bool down) {
 // A click reaches the game and also the window under the pointer, so a press only goes with the
 // pointer on BF3's window (window.cpp): on the taskbar's "Show desktop" corner, every shot
 // minimised the game (2026-10-30). A release always goes, so a button never sticks down.
+std::atomic<bool> g_holdZoom{false};  // weapon.txt "zoom 1": the game's zoom (right mouse) held
 bool g_mouseDown[2] = {};  // left, right: as the game was last sent them
 
 void SendMouseButton(bool left, bool down) {
@@ -669,6 +670,10 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         // 2026-10-30).
         if (down && m.action == &g_ads && (hands::On() || g_leftSqueeze > 0.5f))
             down = false;
+        // weapon.txt "zoom 1": the game's zoom held (the Stinger locks only zoomed; a test before
+        // raising the tube to the eye does it, 2026-10-31).
+        if (m.action == &g_ads && g_holdZoom.load(std::memory_order_relaxed))
+            down = true;
         if (down != m.down) {
             Press(m, down);
             m.down = down;
@@ -844,6 +849,11 @@ void SetStandIn(bool on, float pitchDegrees, float yawDegrees, const float* shif
     const float yaw = -yawDegrees * 3.14159265f / 180.0f;  // given right positive
     if (g_standInYaw.exchange(yaw) != yaw)
         Log("Stand-in hand: aiming %.0f degrees right of the head", yawDegrees);
+}
+
+void SetZoomHold(bool on) {
+    if (g_holdZoom.exchange(on) != on)
+        Log("Input: the game's zoom %s (weapon.txt zoom)", on ? "held" : "let go");
 }
 
 float StandInPitch() {

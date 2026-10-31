@@ -25,6 +25,9 @@ self-test and the mod's own pictures, not yet in the headset.
   headset off the frame's work goes on headless. `standin 1 45` looks 45 degrees up (test shots into
   the sky only), more numbers turn the aim and move the hold.
 - `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
+- weapon.txt `scopetrace`: three frames of the scope's draws logged, each with the bones it was
+  drawn with and whether it moved with the gun. `zoom 1` holds the game's zoom (to test the
+  Stinger's lock-on, which only locks zoomed).
 - Research notes in `docs\research\`: FrostbiteVR and BC2VR (what works there, what applies to BF3),
   Overlord's lessons (ideas only), the mission's weapons, a 6DoF head plan, ten ranked next steps.
 
@@ -42,6 +45,11 @@ self-test and the mod's own pictures, not yet in the headset.
   move, so the flash still comes from where the game holds its gun.
 
 ### Fixed
+- **The ACOG's dark lens circle, red cable and red dot floated in the sky**, moving with the gun
+  (the user's video): they're drawn later in the frame than the rest of the gun, where the mod
+  never learned where they sit on it, so they stayed where the game holds its own gun. They now
+  take the scope body's place. When their placement isn't the latest upload, it's found in the
+  buffer bound to them. Confirmed in the headset by the user ("it seems to work just fine now").
 - **Squeezing the right grip threw a grenade** (it was bound to the game's G): the right grip is for
   holding the gun; the grenade is unbound until it gets its own gesture.
 - **The game could crash right after a load**: the look-angle search tried 24 of 163 matching
@@ -54,8 +62,7 @@ self-test and the mod's own pictures, not yet in the headset.
 - In the car ride at the mission's start the game turns the look itself (the seat's limits, the
   vehicle turning) and the mod writes its own back each frame: the picture follows the head, but
   the body doesn't turn with the vehicle yet. Needs a test in the headset before changing.
-- The ACOG's lens tint and reticle still float where the game holds its gun: their draws weren't
-  identified (the "12 indices from 0" draw left unmoved turned out to be the world's plants).
+- The ACOG's reticle and red cable look faint (the user would like them brighter).
 - The ammo counter reads one more than the gun holds.
 
 ## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
