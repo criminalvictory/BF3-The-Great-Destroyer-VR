@@ -433,6 +433,7 @@ struct TurnSteps {
     float lastYaw = 0.0f;
     bool haveLast = false;
     std::vector<float> steps;  // degrees
+    float net = 0.0f;          // the steps with their signs (degrees): which way it turned
     ULONGLONG lastLog = 0;
 };
 TurnSteps g_turnSteps[2] = {{"the game's camera"}, {"shown"}};
@@ -570,6 +571,8 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
     sync.activeActionSets = &active;
     if (xrSyncActions(session, &sync) != XR_SUCCESS) {  // also XR_SESSION_NOT_FOCUSED
         ReleaseAll();
+        g_handTracked[0] = g_handTracked[1] = false;  // not seen this frame (the stand-in may hold the gun)
+        g_standingIn = false;
         return;
     }
     // Which controller profile the runtime picked (it decides what each button does).
@@ -760,6 +763,7 @@ void NoteTurnStep(int which, float yaw) {
         else if (step < -kPi)
             step += 2.0f * kPi;
         t.steps.push_back(std::fabs(step) * 57.29578f);
+        t.net += step * 57.29578f;
     }
     t.lastYaw = yaw;
     t.haveLast = true;
@@ -778,8 +782,8 @@ void NoteTurnStep(int which, float yaw) {
         doubled += s > 1.75f * median;
     }
     Log("Turn (%s): %zu frames turning; the yaw moved %.3f degrees a frame (median), %.3f to %.3f; %d frames "
-        "without a step, %d with a double one",
-        t.name, t.steps.size(), median, sorted.front(), sorted.back(), none, doubled);
+        "without a step, %d with a double one; net %+.1f degrees",
+        t.name, t.steps.size(), median, sorted.front(), sorted.back(), none, doubled, t.net);
     if (none || doubled || sorted.back() > 1.25f * median || sorted.front() < 0.75f * median) {
         char text[512];
         int used = 0;
@@ -788,6 +792,7 @@ void NoteTurnStep(int which, float yaw) {
         Log("Turn (%s): steps%s", t.name, text);
     }
     t.steps.clear();
+    t.net = 0.0f;
 }
 
 bool AimPose(XrPosef& out) {
@@ -872,6 +877,10 @@ void StandIn(const XrPosef& head) {
 
 bool StandingIn() {
     return g_standingIn;
+}
+
+bool StandInOn() {
+    return g_standIn.load(std::memory_order_relaxed);
 }
 
 void MagazineTap() {

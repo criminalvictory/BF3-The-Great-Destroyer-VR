@@ -8,3 +8,6 @@ bld.txt
 screenshots/
 AmmoTest/
 bf3 codes.txt
+
+# Claude Code worktrees (background agents)
+.claude/worktrees/

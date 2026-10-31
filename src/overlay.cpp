@@ -331,13 +331,15 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
                     break;
                 }
         }
-    if (g_hudFix.load(std::memory_order_relaxed) == 1)
+    // "hudfix": 1 the left eye's copy without the depth-stencil view, 2 no left copy, 3 no right copy.
+    const int fix = g_hudFix.load(std::memory_order_relaxed);
+    if (fix == 1)
         DrawWithoutDepth(ctx, draw);
-    else
+    else if (fix != 2)
         draw();
     const bool reads = ReadsScene(ctx, static_cast<UINT>(viewport.Height));
-    const bool intoHalf = (eyeEffect || reads) && IntoRightHalf(ctx, draw);
-    if (!intoHalf)
+    const bool intoHalf = fix != 3 && (eyeEffect || reads) && IntoRightHalf(ctx, draw);
+    if (!intoHalf && fix != 3)
         DrawMovedRight(ctx, draw, viewport);
     if (g_logFrame.load(std::memory_order_relaxed) == 2)
         Log("Overlay: %u, %s viewport, %s%s, right eye's copy %s", count, window ? "window" : "eye",

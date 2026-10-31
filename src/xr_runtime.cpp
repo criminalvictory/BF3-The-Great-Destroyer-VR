@@ -869,7 +869,16 @@ void BuildProjection(FrameLayers& out) {
     out.count = 1;
 }
 
-void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime displayTime, FrameLayers& out) {
+// The eyes as last located, for the headless frames below.
+XrView g_lastViews[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+bool g_haveLastViews = false;
+
+// headless: the headset isn't asking for frames (taken off, asleep: the session never got past
+// synchronized), but the stand-in hand is on (weapon.txt "standin 1"): the frame's work is done as
+// usual from the eyes as last seen (or a default standing head), so the aim, the hands and the
+// self-test (tools/selftest.ps1) run overnight; nothing is handed to the headset.
+void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime displayTime, FrameLayers& out,
+                 bool headless = false) {
     XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
     locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     locate.displayTime = displayTime;
@@ -877,9 +886,23 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     XrViewState viewState{XR_TYPE_VIEW_STATE};
     XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
     uint32_t viewCount = 0;
-    if (!Check(xrLocateViews(g_session, &locate, &viewState, 2, &viewCount, views), "xrLocateViews") ||
-        !(viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
+    if (headless) {
+        if (g_haveLastViews) {
+            views[0] = g_lastViews[0], views[1] = g_lastViews[1];
+        } else {
+            for (int e = 0; e < 2; ++e) {
+                views[e].pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+                views[e].pose.position = {e == 0 ? -0.032f : 0.032f, 1.6f, 0.0f};
+                views[e].fov = {-0.87f, 0.87f, 0.87f, -0.87f};
+            }
+        }
+    } else if (!Check(xrLocateViews(g_session, &locate, &viewState, 2, &viewCount, views), "xrLocateViews") ||
+               !(viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
         return;
+    } else {
+        g_lastViews[0] = views[0], g_lastViews[1] = views[1];
+        g_haveLastViews = true;
+    }
 
     // Alternate eyes only work if the game builds exactly one camera between two Presents: with
     // none, this frame was built for the eye before; with two, one frame was never shown. Count.
@@ -970,7 +993,9 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     bool fromDepth = g_stereoTest == kTestDepth || (g_stereoTest == kTestViews && !perEye);
     bool hybrid = g_stereoTest == kTestHybrid;
     g_sideBySide = false;
-    if (perEye) {
+    if (headless) {
+        depth3d::SaveIfAsked(g_device, back, L"eye_both.bmp");
+    } else if (perEye) {
         // Both eyes are in this picture, side by side: the left eye's swapchain takes it whole and
         // each eye shows its half.
         if (!SubmitImage(back, desc, g_swapchains[kLeftEye]))
@@ -1090,7 +1115,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     g_posesKept = std::min(g_posesKept + 1, kPoseHistory);
 
     // Both eyes are needed for a projection layer; the very first frame shows nothing.
-    if (!g_eyeValid[kLeftEye] || !g_eyeValid[kRightEye])
+    if (headless || !g_eyeValid[kLeftEye] || !g_eyeValid[kRightEye])
         return;
     BuildProjection(out);
 }
@@ -1221,7 +1246,11 @@ void RenderFrame(IDXGISwapChain* swap) {
     if (g_recenterPending)
         Recenter(frame.predictedDisplayTime);
     input::Sync(g_session, g_space, frame.predictedDisplayTime);
-    input::UpdateTurn(g_turnDirect && frame.shouldRender && config::Get().mode == config::Mode::Stereo &&
+    // The headset not asking for frames, with the stand-in hand on: the frame's work goes on
+    // headless (BuildStereo), for testing with nobody in the headset.
+    const bool headless = !frame.shouldRender && g_scWidth && input::StandInOn() &&
+                          config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews;
+    input::UpdateTurn(g_turnDirect && (frame.shouldRender || headless) && config::Get().mode == config::Mode::Stereo &&
                       config::Get().headTracking);
     depth3d::Probe();
 
@@ -1233,6 +1262,9 @@ void RenderFrame(IDXGISwapChain* swap) {
             BuildTheater(back, desc, layers);
     } else if (g_scWidth && config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestDepth) {
         PreviewDepth3D(back, desc);
+    } else if (headless) {
+        BuildStereo(back, desc, frame.predictedDisplayTime, layers, true);
+        layers.count = 0;
     } else if (g_scWidth && config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews) {
         depth3d::SaveIfAsked(g_device, back, L"eye_both.bmp");  // with the headset idle too
     }

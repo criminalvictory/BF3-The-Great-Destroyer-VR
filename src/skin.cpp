@@ -351,6 +351,14 @@ std::atomic<bool> g_dumpView{false};
 // in, their place in it, the eye given and the thread (the right eye got ~6 more hand draws a frame
 // than the left, 2026-10-30: one pass of the left eye's taken for the right's?).
 std::atomic<int> g_eyeTrace{0};
+// weapon.txt "fpunknown": the next three frames' first-person draws (drawn with a first-person
+// view's constants bound) that the mod leaves where the game put them, each kind logged once: the
+// ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
+std::atomic<int> g_fpProbeFrames{0};
+ID3D11Resource* g_armsViewBuffers[8] = {};  // buffers the first-person views were uploaded into
+int g_armsViewNext = 0;
+std::mutex g_fpProbeMutex;
+std::unordered_set<uint64_t> g_fpProbeSeen;
 
 void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
     bool arms = size == 352 && offset == 176, world = size == 80 && offset == 0;
@@ -369,6 +377,11 @@ void NoteFirstPersonView(const float* m, UINT size, UINT offset) {
         std::find(std::begin(g_worldViewBuffers), std::end(g_worldViewBuffers), buffer) == std::end(g_worldViewBuffers)) {
         g_worldViewBuffers[g_worldViewNext] = buffer;
         g_worldViewNext = (g_worldViewNext + 1) % 4;
+    }
+    if (ID3D11Resource* buffer = t_uploadResource; arms && buffer &&
+        std::find(std::begin(g_armsViewBuffers), std::end(g_armsViewBuffers), buffer) == std::end(g_armsViewBuffers)) {
+        g_armsViewBuffers[g_armsViewNext] = buffer;
+        g_armsViewNext = (g_armsViewNext + 1) % 8;
     }
     float eyeArms[3];
     if (!SolveEye(g_fpArms, eyeArms))
@@ -828,6 +841,16 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "eyetrace")) {
             g_eyeTrace = 40;
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "fpunknown")) {
+            {
+                std::lock_guard lock(g_fpProbeMutex);
+                g_fpProbeSeen.clear();
+            }
+            g_fpProbeFrames = 3;
+            Log("First-person probe: the next three frames' first-person draws the mod leaves in place");
             line = next;
             continue;
         }
@@ -2091,6 +2114,71 @@ void CaptureMesh(ID3D11DeviceContext* ctx, const DrawKey& key) {
     }
 }
 
+// weapon.txt "fpunknown": logs this draw if a first-person view's constants are bound to it (and
+// it's the first of its kind since the command).
+void ProbeFirstPerson(ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
+    ID3D11Buffer* buffers[8] = {};
+    ctx->VSGetConstantBuffers(0, 8, buffers);
+    int slot = -1;
+    UINT sizes[8] = {};
+    {
+        std::lock_guard lock(g_fpMutex);
+        for (int i = 0; i < 8; ++i)
+            if (buffers[i] && slot < 0 &&
+                std::find(std::begin(g_armsViewBuffers), std::end(g_armsViewBuffers), buffers[i]) != std::end(g_armsViewBuffers))
+                slot = i;
+    }
+    for (int i = 0; i < 8; ++i)
+        if (buffers[i]) {
+            D3D11_BUFFER_DESC desc;
+            buffers[i]->GetDesc(&desc);
+            sizes[i] = desc.ByteWidth;
+            buffers[i]->Release();
+        }
+    if (slot < 0)
+        return;
+    const uint64_t id = (static_cast<uint64_t>(count) << 32) ^ (static_cast<uint64_t>(start) << 4) ^
+                        static_cast<uint32_t>(base);
+    {
+        std::lock_guard lock(g_fpProbeMutex);
+        if (!g_fpProbeSeen.insert(id).second)
+            return;
+    }
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
+    ctx->VSGetShader(&vs, nullptr, nullptr);
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    if (vs)
+        vs->Release();
+    if (ps)
+        ps->Release();
+    ID3D11DepthStencilState* depth = nullptr;
+    UINT ref = 0;
+    ctx->OMGetDepthStencilState(&depth, &ref);
+    if (depth)
+        depth->Release();
+    ID3D11BlendState* blend = nullptr;
+    FLOAT factor[4];
+    UINT mask = 0;
+    ctx->OMGetBlendState(&blend, factor, &mask);
+    bool blended = false;
+    if (blend) {
+        D3D11_BLEND_DESC desc;
+        blend->GetDesc(&desc);
+        blended = desc.RenderTarget[0].BlendEnable != FALSE;
+        blend->Release();
+    }
+    ID3D11Buffer* vb = nullptr;
+    UINT stride = 0, vbOffset = 0;
+    ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &vbOffset);
+    if (vb)
+        vb->Release();
+    Log("First-person probe: DrawIndexed %u from %u base %d: view constants in slot %d; VS buffers %u %u %u %u %u %u; "
+        "stride %u; VS %p PS %p; %s; stencil ref %u",
+        count, start, base, slot, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4], sizes[5], stride, vs, ps,
+        blended ? "blended" : "opaque", ref);
+}
+
 void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
     switch (effects::NoteDrawIndexed(ctx, count, start, base)) {
     case effects::kHide:
@@ -2128,6 +2216,8 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
             if (const ArmDraw* arms = FindArmDraw(key); arms && DrawArms(which, ctx, count, start, base, *arms))
                 return;
         }
+        if (g_fpProbeFrames.load(std::memory_order_relaxed) > 0)
+            ProbeFirstPerson(ctx, count, start, base);
         if (overlay::Draw(ctx, count, [&] { g_origDrawIndexed[which](ctx, count, start, base); }))
             return;
         g_origDrawIndexed[which](ctx, count, start, base);
@@ -2653,6 +2743,8 @@ bool RifleInHand() {
 void Update() {
     UpdateDrop();
     ++g_frameSerial;
+    if (int frames = g_fpProbeFrames.load(std::memory_order_relaxed); frames > 0)
+        g_fpProbeFrames.store(frames - 1, std::memory_order_relaxed);
 }
 
 bool Watching() {

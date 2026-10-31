@@ -27,6 +27,8 @@ bool HandPose(int hand, XrPosef& out);
 void SetStandIn(bool on);
 void StandIn(const XrPosef& head);
 bool StandingIn();
+// The stand-in is switched on (weapon.txt "standin 1"), whether or not it holds the gun now.
+bool StandInOn();
 
 // The left glove's fingers: how far the grip is squeezed (0-1, the middle, ring and little
 // fingers), how far the trigger is pulled (0-1, the index finger), and the thumb resting on the

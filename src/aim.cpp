@@ -382,6 +382,16 @@ bool LookYaw(float& radians, float& sign) {
 void Probe() {
     static ULONGLONG lastLog = 0;
     ULONGLONG now = GetTickCount64();
+    // weapon.txt "aimtest": the weapon camera (where the game fires) against the yaw written, ten
+    // times a second while the test turns the hand (tools/selftest.ps1: it must aim where the gun points).
+    static ULONGLONG lastTest = 0;
+    if (TestTurn() != 0.0f && now - lastTest >= 100) {
+        lastTest = now;
+        float written[4] = {}, cameraYaw = 0.0f, cameraPitch = 0.0f;
+        const uintptr_t at = g_yawAddress.load();
+        if (at && camera::SafeRead(at, written, sizeof(written)) && camera::GameWeaponAngles(cameraYaw, cameraPitch))
+            Log("Aim test: written %.4f, weapon camera %.4f", written[0], cameraYaw);
+    }
     if (now - lastLog < 1000)
         return;
     lastLog = now;
