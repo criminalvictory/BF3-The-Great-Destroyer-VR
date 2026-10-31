@@ -42,6 +42,8 @@ self-test and the mod's own pictures, not yet in the headset.
   move, so the flash still comes from where the game holds its gun.
 
 ### Fixed
+- **Squeezing the right grip threw a grenade** (it was bound to the game's G): the right grip is for
+  holding the gun; the grenade is unbound until it gets its own gesture.
 - **The game could crash right after a load**: the look-angle search tried 24 of 163 matching
   places in memory when the game's yaw happened to be near zero. It now never tries when that many
   match, and turns the view a little to look again.

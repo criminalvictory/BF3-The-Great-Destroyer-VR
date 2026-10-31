@@ -32,6 +32,9 @@ XrActionSet g_set = XR_NULL_HANDLE;
 XrAction g_aim = XR_NULL_HANDLE;
 XrAction g_fire = XR_NULL_HANDLE;
 XrAction g_ads = XR_NULL_HANDLE;
+// The game's grenade (G). Not bound to anything for now: it was on the right grip, which threw a
+// grenade when squeezed while holding the gun; the right grip is for holding the gun (user,
+// 2026-10-31). A grenade gets its own gesture later.
 XrAction g_grenade = XR_NULL_HANDLE;
 XrAction g_move = XR_NULL_HANDLE;
 XrAction g_turn = XR_NULL_HANDLE;
@@ -256,7 +259,6 @@ void SuggestBindings() {
             {{g_aim, "/user/hand/right/input/aim/pose"},
              {g_fire, "/user/hand/right/input/trigger/value"},
              {g_ads, "/user/hand/left/input/trigger/value"},
-             {g_grenade, "/user/hand/right/input/squeeze/value"},
              {g_move, "/user/hand/left/input/thumbstick"},
              {g_turn, "/user/hand/right/input/thumbstick"},
              {g_jump, "/user/hand/right/input/a/click"},
@@ -269,7 +271,6 @@ void SuggestBindings() {
             {{g_aim, "/user/hand/right/input/aim/pose"},
              {g_fire, "/user/hand/right/input/trigger/value"},
              {g_ads, "/user/hand/left/input/trigger/value"},
-             {g_grenade, "/user/hand/right/input/squeeze/value"},
              {g_move, "/user/hand/left/input/thumbstick"},
              {g_turn, "/user/hand/right/input/thumbstick"},
              {g_jump, "/user/hand/right/input/a/click"},
@@ -295,10 +296,8 @@ void SuggestBindings() {
     auto with = [&](bool squeeze, bool grip, bool view) {
         auto b = frame;
         if (squeeze) {
-            b.push_back({g_grenade, "/user/hand/right/input/squeeze/value"});
             b.push_back({g_squeeze, "/user/hand/left/input/squeeze/value"});
         } else if (grip) {
-            b.push_back({g_grenade, "/user/hand/right/input/grip/value"});
             b.push_back({g_squeeze, "/user/hand/left/input/grip/value"});
         }
         if (view) {
