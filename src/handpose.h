@@ -21,6 +21,9 @@ struct Fingers {
     // length (positive: its pad towards the fingers), so it reaches round to the far side of what the
     // fingers hold.
     float thumbOut = 0.0f, thumbRoll = 0.0f;
+    // How much of their width the fingers keep (1: all); 0 the gloves' own (Tune's "slim", 0.88). The
+    // bare hands of The Great Destroyer keep all of it, as the game draws them.
+    float slim = 0.0f;
 };
 
 // Each bone's move in the gloves' bind space (3x4, rows: rotation | translation), the palm widened

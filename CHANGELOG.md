@@ -4,7 +4,71 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
-## 2026-10-31, late afternoon: The Great Destroyer: free bare hands with real wrists (stage: pre-alpha, experimental)
+## 2026-10-31, evening: The Great Destroyer: real wrists, the pistol in both hands, a smooth suppression blur (stage: pre-alpha, experimental)
+
+Tried in the headset by the user: the wrists and forearms, the two-handed pistol, the fingers on
+the grip and the suppression blur all passed. The in-game self-test passes, except the look-angle
+check, which can't pass on the moving train.
+
+### Fixed
+- **The "candy wrapper" wrists.** The bare hands were placed by the thumb's last bone (45 and 19),
+  not the palm (41 and 15). The whole hand followed the game's thumb: the wrist twisted thin and
+  the left one sat crooked. They're placed by the palm now (the user: "a lot better, especially the
+  wrists"). The twist offset that had hidden it is gone.
+- **The wrung forearm with the palm up.** Each forearm now takes half the hand's roll at the elbow
+  end, 80% in the middle and all of it at the wrist; before, it was nothing, half and 95%. The user:
+  "a lot better ... this fixes everything". weapon.txt `bareshare E A B` changes the split.
+- **The pistol was off the hand.** Its grip was taken at the magazine's place in the unassembled
+  mesh, 13.6 cm off. The pistol and the hand holding it were drawn about 12 cm above and 7 cm behind
+  the real hand. The grip is the seated magazine now, and the held hand is drawn where the real hand
+  is.
+- **Learning the game's hold on the pistol.** Draws are paired by frame, since the game records them
+  on several threads. The hand taken is the one whose fist is on the grip, after the pistol's first
+  second in hand, and both hands come from one settled moment. A nearer pair replaces a wrong first
+  pick (not yet tried in the headset). If nothing is learned in 5 s, a hold fitted offline is used.
+  `barehands pistol` learns it again; that switch did nothing before.
+- **The square patches in the suppression blur.** They came from the mod's orange-marker remover, not
+  the game. It took its "before" picture before the blur, then pasted the unblurred picture back on a
+  32-pixel grid wherever the blur spread orange sparks or warm light. It now takes it after the blur
+  and the damage pass, and only cuts where the HUD's own pixel is orange. Each eye also keeps its own
+  blur: the right eye's blurred picture was drawn over the left eye too, which took away the depth
+  under fire. The user: "it's smooth".
+- **Free hands stuck off after a scripted moment.** The flag only cleared once the look angles were
+  found, which took a minute and a half after the dumpster. It now clears at every cutscene, and
+  after 1.5 s of quiet without the angles.
+- The rifle-only systems no longer act on the pistol. The M416's handguard hold and steer, its
+  collision and its charging handle had been running against an invisible M416 at the right hand.
+
+### New
+- **Two-handed pistol.** Bring the left hand to the pistol and squeeze the left grip: it goes into the
+  game's own two-handed M9 hold. Let go of the grip to free it (the user: "fabulous"). While the right
+  hand holds the pistol, the free left hand's fingers follow its controller.
+- **Fingers on the grip.** In one hand, the right middle, ring and little fingers open 25 degrees. With
+  both hands the middle eases to 8, because past about 12 degrees its tip comes out through the back of
+  the game's left hand (weapon.txt `pistolfingers`, `pistolfingers2`). The game's own pose has them 13-17
+  mm inside the grip; this halves the ring's and the little's.
+- **Mouse aim.** While the look angles aren't found, the view is steered with the mouse, so aiming works
+  at once after a load. After a cutscene it starts again from where the game left the view.
+- **Stereo on at once** when the player's soldier is in; the resume script no longer presses F8.
+- **Research tools.**
+  - `reloadrec N` records the game's own pistol and arm bones; it caught the magazine's path and the
+    slide's 4.5 cm travel.
+  - `build\psdump.txt` saves every pixel shader's bytecode.
+  - `pistoltest 1` puts the stand-in left hand on the pistol.
+  - The crash log keeps the code round the crash and the stack's first words.
+  - The camera watch says why it drops a camera.
+  - The self-test reads the forearm lines case-sensitively, so the bare arms' own lines no longer fail
+    it.
+
+### Known
+- **The view can jump ("teleporting").** It happens while the mod hunts for the look angles, after a
+  cutscene and in the interrogation room: two ways of turning the picture disagree. The fix is being
+  worked out.
+- **The forearm moves when only the wrist bends.** A lock is being worked out.
+- **An occasional crash** at bf3.exe+134E5F0, inside the game's own code (three times, all at scripted
+  moments). The crash log now saves more to find it.
+- **Only the M416 and the train pistol have hand support.** The shotgun picked up at the train's door
+  falls back to the game's own hands.
 
 Tried in the headset by the user, round by round; the offline tests pass. The in-game self-test
 wasn't run (the user was in the headset).

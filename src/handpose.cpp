@@ -206,12 +206,13 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
     float joint[5][4][3];   // its joints there
     float chain[5][3][12];  // its moves after one, two, three joints from the palm
     float bendAxis[5][3];
+    const float slim = fingers.slim > 0.0f ? fingers.slim : g_slim;
     for (int f = 0; f < 5; ++f) {
         Cross(kDirection[f], kPalm, bendAxis[f]);
         Normalize(bendAxis[f]);
         float base[3];
         Transform(widen, kJoint[f][0], base);
-        ScaleAlong(bendAxis[f], f == 0 ? 1.0f : g_slim, kJoint[f][0], fit[f]);
+        ScaleAlong(bendAxis[f], f == 0 ? 1.0f : slim, kJoint[f][0], fit[f]);
         for (int i = 0; i < 3; ++i)
             fit[f][i * 4 + 3] += base[i] - kJoint[f][0][i];
         for (int j = 0; j < 4; ++j)

@@ -5,7 +5,9 @@
 #include <MinHook.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <unordered_map>
 
@@ -44,13 +46,35 @@ uint64_t Checksum(const void* code, SIZE_T size) {
     return c ? c : 1;
 }
 
+// build\psdump.txt present at start: each pixel shader's bytecode is written to build\ps\<checksum>.dxbc as
+// the game creates it (once each), to read what a post-process pass does (fxc /dumpbin): the suppression
+// blur's square patches (2026-10-31).
+bool g_dumpCode = false;
+wchar_t g_dumpDir[MAX_PATH] = {};
+
+void SaveCode(uint64_t checksum, const void* code, SIZE_T size) {
+    wchar_t path[MAX_PATH];
+    swprintf_s(path, L"%s%016llx.dxbc", g_dumpDir, static_cast<unsigned long long>(checksum));
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
+        return;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"wb") != 0 || !f)
+        return;
+    fwrite(code, 1, size, f);
+    fclose(f);
+}
+
 HRESULT STDMETHODCALLTYPE HookedCreatePixelShader(ID3D11Device* device, const void* code, SIZE_T size,
                                                   ID3D11ClassLinkage* linkage, ID3D11PixelShader** out) {
     const HRESULT hr = g_origCreate(device, code, size, linkage, out);
     if (SUCCEEDED(hr) && out && *out && code && size) {
         const uint64_t c = Checksum(code, size);
-        std::lock_guard lock(g_mutex);
-        g_checksums[*out] = c;  // a pointer the driver hands out again gets its new shader's
+        {
+            std::lock_guard lock(g_mutex);
+            g_checksums[*out] = c;  // a pointer the driver hands out again gets its new shader's
+        }
+        if (g_dumpCode)
+            SaveCode(c, code, size);
     }
     return hr;
 }
@@ -60,6 +84,24 @@ HRESULT STDMETHODCALLTYPE HookedCreatePixelShader(ID3D11Device* device, const vo
 namespace shaders {
 
 bool InstallHook(void* createPixelShader) {
+    {
+        wchar_t path[MAX_PATH] = {};
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&InstallHook), &self);
+        GetModuleFileNameW(self, path, MAX_PATH);
+        if (wchar_t* slash = wcsrchr(path, L'\\')) {
+            slash[1] = 0;
+            wchar_t flag[MAX_PATH];
+            swprintf_s(flag, L"%spsdump.txt", path);
+            if (GetFileAttributesW(flag) != INVALID_FILE_ATTRIBUTES) {
+                swprintf_s(g_dumpDir, L"%sps\\", path);
+                CreateDirectoryW(g_dumpDir, nullptr);
+                g_dumpCode = true;
+                Log("Shaders: each pixel shader's bytecode is saved to build\\ps (psdump.txt)");
+            }
+        }
+    }
     if (!createPixelShader ||
         MH_CreateHook(createPixelShader, &HookedCreatePixelShader, reinterpret_cast<void**>(&g_origCreate)) != MH_OK) {
         Log("Shaders: CreatePixelShader could not be hooked (the lens flare stays)");

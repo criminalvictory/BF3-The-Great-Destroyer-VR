@@ -365,7 +365,119 @@ std::atomic<ULONGLONG> g_bareMovedAt{0};  // when the bare arms were last drawn 
 // from the controllers (DrawBareArms).
 std::atomic<bool> g_bareOn{true};
 std::atomic<bool> g_bareRelearn{false};
+std::atomic<bool> g_bareRelearnPistol{false};  // weapon.txt "barehands pistol": its hold learned again
 std::atomic<bool> g_bareWrist{true};   // weapon.txt "barewrist 0": the bare forearms whole with their hands
+// weapon.txt "baretwist L R" (degrees). None by default: the right's -55 was tuned while each hand was
+// placed by its thumb's last bone (kBarePalm), and made no difference once the pistol was held (16:34).
+std::atomic<float> g_bareTwist[2] = {0.0f, 0.0f};
+// weapon.txt "bareshare E A B": the share of the hand's roll each bare forearm frame takes (the elbow end with
+// the stub past the elbow, twist bone A, twist bone B at the wrist). 0, 0.5, 0.95 left the forearm wrung like
+// a rope with the palm up, the twist at its 150 degree clamp (the user's video 17:53; the arm study measured
+// 8-13% thinning at 90-120 degrees, 2-3% with these). The user, 18:25: "a lot better ... this fixes
+// everything". The elbow end not past half: it swings the stub past the elbow round.
+std::atomic<float> g_bareShare[3] = {0.5f, 0.8f, 1.0f};
+// The right palm from the pistol's frame as the game holds it, learned from adjacent draws in one eye.
+float g_barePistolHand[12] = {};
+std::atomic<bool> g_haveBarePistolHand{false};
+// The left palm from it alike, the game's own two-handed M9 hold, and its fingers as the left glove's bones
+// (handpose.cpp's 0-22) relative to that palm: the left hand takes them while it holds the pistol (hands.cpp).
+float g_barePistolLeft[12] = {};
+float g_barePistolLeftFingers[handpose::kBones][12] = {};
+std::atomic<bool> g_haveBarePistolLeft{false};
+ULONGLONG g_barePistolLearnedAt = 0;  // the first pair taken: a nearer one is looked for 1.5 s from it
+float g_barePistolLearnedFrom = 0.0f;  // the kept pair's right palm from the grip (m)
+// weapon.txt "pistolfingers 25 25 25": degrees the middle, ring and little fingers of the right hand are opened
+// on the pistol's grip from the game's own, holding it in one hand (they went into it: the user, 16:50).
+// "pistolfingers2 8 25 25": the same with the left hand on it too, blended as the left hand takes it. The game's
+// own grip has them 13-17 mm inside (its hand is posed for a pistol 17% bigger than an M9, the clip study
+// 2026-10-31: screenshots\wf_clip_1730): 8 took off only 2-3 mm, and nothing up to 25 clears them, as BendRight
+// gives the knuckle a third of the bend; 25 halves the ring's and little's, which wrap round the grip. In both
+// hands the middle's tip comes out through the back of the game's left hand from 12 degrees: 8 there.
+std::atomic<float> g_pistolOpen[3] = {25.0f, 25.0f, 25.0f};
+std::atomic<float> g_pistolOpen2[3] = {8.0f, 25.0f, 25.0f};
+// weapon.txt "pistoltest 1": the stand-in left hand (nobody in the headset) holds the pistol in both hands,
+// to see the two-handed hold without a squeeze (hands.cpp PistolSupport); "pistoltest 0" lets go.
+std::atomic<bool> g_pistolTest{false};
+// weapon.txt "reloadrec 6": for 6 s, every train pistol draw's and bare arm draw's own bones (the game's, before
+// the mod moves them) go to build\reloadrec.bin with the frame, eye, pass and the ammo: to read the game's own
+// pistol reload (the magazine's way out and in, the slide, the left hand's poses) for manual reloads (the user,
+// 18:45: the magazine from the pelvis, a flat palm to push it home, the slide racked by hand). Each record:
+// kind (0 pistol, 1 arms), frame, eye, pass (eye*4 + PS + stencil 32 * 2), ammo loaded, spare, ms since the
+// start, the bone count, then that many 3x4 matrices.
+std::mutex g_recMutex;
+FILE* g_recFile = nullptr;
+std::atomic<ULONGLONG> g_recFrom{0}, g_recUntil{0};
+std::atomic<uint32_t> g_recCount{0};
+
+void Record(uint32_t kind, int eye, int pass, const std::vector<uint8_t>& bytes, uint32_t bones) {
+    const ULONGLONG now = GetTickCount64();
+    if (now >= g_recUntil.load(std::memory_order_relaxed)) {
+        std::lock_guard lock(g_recMutex);
+        if (g_recFile) {
+            fclose(g_recFile);
+            g_recFile = nullptr;
+            Log("Reload recording: done, %u records in build\\reloadrec.bin", g_recCount.load());
+        }
+        g_recUntil = 0;
+        return;
+    }
+    if (bytes.size() < bones * 48u)
+        return;
+    int loaded = -1, spare = -1;
+    ammo::Get(loaded, spare);
+    const int32_t head[8] = {static_cast<int32_t>(kind), static_cast<int32_t>(g_frameSerial.load(std::memory_order_relaxed)),
+                             eye, pass, loaded, spare, static_cast<int32_t>(now - g_recFrom.load()),
+                             static_cast<int32_t>(bones)};
+    std::lock_guard lock(g_recMutex);
+    if (!g_recFile)
+        return;
+    fwrite(head, sizeof(head), 1, g_recFile);
+    fwrite(bytes.data(), 48, bones, g_recFile);
+    g_recCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void StartRecording(int seconds) {
+    wchar_t path[MAX_PATH] = {};
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&StartRecording), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"reloadrec.bin");
+    std::lock_guard lock(g_recMutex);
+    if (g_recFile)
+        fclose(g_recFile);
+    g_recFile = nullptr;
+    if (_wfopen_s(&g_recFile, path, L"wb") != 0 || !g_recFile) {
+        g_recFile = nullptr;
+        Log("Reload recording: build\\reloadrec.bin could not be opened");
+        return;
+    }
+    g_recCount = 0;
+    g_recFrom = GetTickCount64();
+    g_recUntil = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
+    Log("Reload recording: the pistol's and the bare arms' own bones for %d s", seconds);
+}
+
+// The draw's pass the way DrawBareArms keys it: eye*4 + a pixel shader bound + stencil reference 32 * 2.
+int DrawPass(ID3D11DeviceContext* ctx, int eye) {
+    int view = eye >= 0 && eye <= 1 ? eye + 1 : 0;
+    ID3D11PixelShader* ps = nullptr;
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    ID3D11DepthStencilState* state = nullptr;
+    UINT ref = 0;
+    ctx->OMGetDepthStencilState(&state, &ref);
+    view = view * 4 + (ps ? 1 : 0) + (ref == 32 ? 2 : 0);
+    if (ps)
+        ps->Release();
+    if (state)
+        state->Release();
+    return view;
+}
+std::atomic<ULONGLONG> g_barePistolAt{0};  // when the pistol was last drawn moved
+float g_barePistolFrame[3][12] = {};  // the game's pistol frame per eye (none, left, right) and its frame
+uint32_t g_barePistolFrameNo[3] = {};
+ULONGLONG g_pistolSince = 0;  // when the pistol came into hand (DrawBarePistol): its holds are learned a second on
 std::atomic<bool> g_bareElbow{true};   // weapon.txt "bareelbow 0": the forearms' elbow end left as drawn
 std::atomic<bool> g_bareLearn{false};  // weapon.txt "barehands learn": offsets learned from the game's own arms
 // weapon.txt "barehands learn 5": for 5 s the game's own arms are shown, then each hand's offset from its
@@ -585,6 +697,10 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx, int* eyeOut = nullpt
                 Compose(v, t.bareForearm[side][k], pose);
                 std::memcpy(t.bareForearm[side][k], pose, sizeof(pose));
             }
+    if (t.gun) {
+        Compose(v, t.pistolPose, pose);
+        std::memcpy(t.pistolPose, pose, sizeof(pose));
+    }
     if (t.right) {
         Compose(v, t.rightPose, pose);
         std::memcpy(t.rightPose, pose, sizeof(pose));
@@ -1065,6 +1181,21 @@ void ReadWeaponSelection() {
             line = next;
             continue;
         }
+        if (const char* ma = std::strstr(line, "mouseaim")) {  // the view steered with the mouse (aim.cpp)
+            int on = 1;
+            sscanf_s(ma + 8, "%d", &on);
+            aim::SetMouseAim(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* bt = std::strstr(line, "baretwist")) {  // the bare forearms' roll offset, degrees
+            float l = 0.0f, r = 0.0f;
+            sscanf_s(bt + 9, "%f %f", &l, &r);
+            g_bareTwist[0] = l, g_bareTwist[1] = r;
+            Log("Bare hands: the forearms' roll offset %+.0f (left) %+.0f (right) degrees", l, r);
+            line = next;
+            continue;
+        }
         if (const char* bw = std::strstr(line, "barewrist")) {  // the bare forearms solved from their hands
             int on = 1;
             sscanf_s(bw + 9, "%d", &on);
@@ -1081,6 +1212,16 @@ void ReadWeaponSelection() {
             line = next;
             continue;
         }
+        if (const char* bs = std::strstr(line, "bareshare")) {  // the bare forearms' shares of the hand's roll
+            float e = 0.0f, a = 0.5f, b = 0.95f;
+            sscanf_s(bs + 9, "%f %f %f", &e, &a, &b);
+            g_bareShare[0] = std::clamp(e, 0.0f, 1.0f), g_bareShare[1] = std::clamp(a, 0.0f, 1.0f);
+            g_bareShare[2] = std::clamp(b, 0.0f, 1.0f);
+            Log("Bare hands: the forearms take %.2f (elbow end), %.2f (middle) and %.2f (wrist end) of the hand's roll", e,
+                a, b);
+            line = next;
+            continue;
+        }
         if (const char* bh = std::strstr(line, "barehands")) {  // the bare arms on the controllers
             if (const char* ln = std::strstr(bh, "learn")) {
                 float seconds = 5.0f;
@@ -1088,6 +1229,9 @@ void ReadWeaponSelection() {
                 g_bareLearn = true;
                 g_bareLineUpAt = GetTickCount64() + static_cast<ULONGLONG>(seconds * 1000.0f);
                 Log("Bare hands: the game's own arms shown for %.0f s, then the hands lined up with them", seconds);
+            } else if (std::strstr(bh, "pistol")) {
+                g_bareRelearnPistol = true;
+                Log("Bare hands: the pistol's holds (both hands) learned again");
             } else if (std::strstr(bh, "glove")) {
                 g_bareLearn = false;
                 Log("Bare hands: placed as the left glove's line-up (the right mirrored)");
@@ -1097,6 +1241,41 @@ void ReadWeaponSelection() {
                 g_bareOn = on != 0;
                 Log("Bare hands: %s", on ? "on" : "off (the game's own arms)");
             }
+            line = next;
+            continue;
+        }
+        if (const char* rr = std::strstr(line, "reloadrec")) {  // the game's own pistol reload recorded
+            int seconds = 6;
+            sscanf_s(rr + 9, "%d", &seconds);
+            StartRecording(std::clamp(seconds, 1, 30));
+            line = next;
+            continue;
+        }
+        if (const char* pt = std::strstr(line, "pistoltest")) {  // the stand-in left hand on the pistol
+            int on = 1;
+            sscanf_s(pt + 10, "%d", &on);
+            g_pistolTest = on != 0;
+            Log("Bare hands: the stand-in left hand %s", on ? "holds the pistol (two-handed test)" : "lets go of the pistol");
+            line = next;
+            continue;
+        }
+        if (const char* pf = std::strstr(line, "pistolfingers2")) {  // the same, the left hand on the pistol too
+            float m = 8.0f, r = 25.0f, l = 25.0f;
+            sscanf_s(pf + 14, "%f %f %f", &m, &r, &l);
+            g_pistolOpen2[0] = m, g_pistolOpen2[1] = r, g_pistolOpen2[2] = l;
+            Log("Bare hands: on the pistol in both hands the middle, ring and little fingers opened %.0f, %.0f and %.0f "
+                "degrees",
+                m, r, l);
+            line = next;
+            continue;
+        }
+        if (const char* pf = std::strstr(line, "pistolfingers")) {  // the right hand's last three fingers opened
+            float m = 25.0f, r = 25.0f, l = 25.0f;
+            sscanf_s(pf + 13, "%f %f %f", &m, &r, &l);
+            g_pistolOpen[0] = m, g_pistolOpen[1] = r, g_pistolOpen[2] = l;
+            Log("Bare hands: on the pistol in one hand the middle, ring and little fingers opened %.0f, %.0f and %.0f "
+                "degrees",
+                m, r, l);
             line = next;
             continue;
         }
@@ -2595,7 +2774,7 @@ void TraceScopeDraw(ID3D11DeviceContext* ctx, const ArmDraw& draw, const Upload&
 // no gun; the user: free hands there, but not in the interrogation and its QTEs). The bare arms are
 // one draw, 18108 indices from 16053 in every launch, with the skin shader (code 090cf267a0729457),
 // stencil 32, bones in the body's space like the gloves': 26-50 the left forearm and hand, 0-24 the
-// right, each laid out alike (45 and 19 the wrist's palm bone, 46-50 and 20-24 the forearm). Their
+// right, each laid out alike (41 and 15 the palm, 46-50 and 20-24 the forearm: kBarePalm). Their
 // rest pose is the gloves' (the left hand's middle at x +0.554 in the vertex buffer, the gloves'
 // kLeftPalm +0.537; the right mirrored): taken the other way round at first, the left controller
 // moved the right arm a metre off (the user's video, 14:30). Each arm moves whole with its
@@ -2619,9 +2798,25 @@ constexpr DrawKey kBareBody[] = {{5604, 0, 0},     {7545, 5604, 0},  {26346, 341
                                  {7815, 60507, 0}, {3492, 3492, 0},  {222, 13149, 0},
                                  // The chain and its open cuff (kBareChain) for now: moved with the hand they jittered
                                  // whichever palm they went by (the user: "still absolutely jittery", 15:23; set aside).
-                                 {3492, 0, 0}};
+                                 {3492, 0, 0},
+                                 // The pistol's depth-only copy, left where the game holds it (a black pistol).
+                                 {11970, 11970, 0}};
 constexpr uint64_t kSkinShader = 0x090cf267a0729457ull;
-constexpr int kBarePalm[2] = {45, 19};  // left, right
+// The palms: 41 (left) and 15 (right), the gloves' 1 and 32 by their vertices at the same rest place
+// (screenshotsbonematch.ps1: 79 and 80 vertices within 8 mm), the bone the gloves' hand is placed by.
+// 45 and 19, taken for them at first by their vertex count, are the THUMB'S LAST BONES (the gloves' 2
+// and 39, 115 vertices within 4.5 mm): the whole hand went where the game's thumb went, rolled and
+// pulled off its wrist (the user's thin, twisted "candy wrapper" wrist, and the pistol learned from a
+// thumb, its fingers through the grip; 2026-10-31 15:52-16:36).
+constexpr int kBarePalm[2] = {41, 15};  // left, right
+// Each bare arm bone as the gloves' (bonematch.ps1, the vertices at the same rest place): the right hand's
+// 0-20 the right glove's 23-44, the left's 26-46 the left glove's 0-22, -1 the bare forearms' own (and the
+// upper arms'). So handpose.cpp's fingers work on the bare hands: BendRight with this as its map, and the
+// left glove's poses put on the bare left hand.
+constexpr int kBareBones = 52;
+inline constexpr int8_t kBareGlove[kBareBones] = {
+    27, 41, 43, 40, 33, 42, 31, 25, 26, 38, 23, 28, 29, 35, 36, 32, 24, 30, 34, 39, 37, -1, -1, -1, -1, -1,
+    11, 20, 10, 21, 22, 7,  9,  19, 15, 6,  8,  12, 13, 18, 17, 1,  14, 16, 3,  2,  0,  -1, -1, -1, -1, -1};
 // Each side's palette entries, first and last (left, right): 51 and 25 with them, the upper arm's, which a few
 // elbow-end vertices lean on; left in place they stretched a white sheet of skin and sleeve from the moved
 // arm back to where the game holds it (the user's "piece of my uniform", 15:07).
@@ -2636,6 +2831,12 @@ bool g_haveBareDelta[2] = {};
 // log, 15:13): one kept for both, the chain took the other eye's and jittered, doubled (the user).
 float g_bareGamePalm[12][12] = {};  // by view and pass (BarePass)
 float g_bareGameWrist[12][12] = {}; // the right forearm's wrist end (20, twist B) alike: the cuff goes by it
+// The game's bones in its last four arm draws, both hands (the pistol learns its holds from them).
+float g_barePalmRing[4][kBareBones][12] = {};
+uint32_t g_barePalmFrame[4] = {};  // each one's frame (g_frameSerial)
+int g_barePalmEye[4] = {-2, -2, -2, -2};
+thread_local uint64_t t_drawSerial = 0;  // the draws so far (DrawIndexed)
+int g_barePalmNext = 0;
 bool g_haveBareGamePalm[12] = {};
 std::atomic<uint32_t> g_bareDraws{0};
 
@@ -2647,6 +2848,23 @@ bool SkinShaderBound(ID3D11DeviceContext* ctx) {
     const bool skin = shaders::ChecksumOf(ps) == kSkinShader;
     ps->Release();
     return skin;
+}
+
+void LearnPistolHand(const float* frame, const float* game);
+bool PistolLearning();
+float FistToGrip(const float* frame, const float* root, bool left = false);
+// The game's right fist within this of the pistol's grip: the hand that holds it (the other pass's arms, or
+// the pistol on its way up, are further). An estimate from offline fits (about 2 cm in a closed hand).
+constexpr float kFistReach = 0.08f;
+// Two draws of one frame (or the next): BF3 records on several threads, each with its own draw count
+// (t_drawSerial), so draws are paired by the frames shown (g_frameSerial) instead.
+inline bool FramesNear(uint32_t a, uint32_t b) {
+    return (a > b ? a - b : b - a) <= 1;
+}
+
+// The pistol in the right hand (its hold learned and the pistol drawn moved a moment ago).
+bool PistolHeld() {
+    return g_haveBarePistolHand.load(std::memory_order_acquire) && GetTickCount64() - g_barePistolAt.load() <= 300;
 }
 
 bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, bool cuff,
@@ -2696,6 +2914,8 @@ bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, I
             if (state)
                 state->Release();
         }
+        if (g_recUntil.load(std::memory_order_relaxed))  // weapon.txt "reloadrec": the game's own bones
+            Record(1, eye, view, u.bytes, kBareBones);
         if (g_bareRelearn.exchange(false))
             g_haveBareOffset[0] = g_haveBareOffset[1] = false;
         for (int side = 0; side < 2; ++side) {
@@ -2741,6 +2961,16 @@ bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, I
                     std::memcpy(g_bareGamePalm[view], palm, sizeof(g_bareGamePalm[view]));
                     g_haveBareGamePalm[view] = true;
                     std::memcpy(g_bareGameWrist[view], bones + 20 * 12, sizeof(g_bareGameWrist[view]));
+                    // The game's own bones, both hands (the left side's are already moved in t_bare).
+                    const float* game = reinterpret_cast<const float*>(u.bytes.data());
+                    std::memcpy(g_barePalmRing[g_barePalmNext], game, sizeof(g_barePalmRing[0]));
+                    g_barePalmFrame[g_barePalmNext] = g_frameSerial.load(std::memory_order_relaxed);
+                    g_barePalmEye[g_barePalmNext] = eye;
+                    if (const int s = eye >= 0 && eye <= 1 ? eye + 1 : 0;
+                        g_barePistolFrameNo[s] && FramesNear(g_barePalmFrame[g_barePalmNext], g_barePistolFrameNo[s]) &&
+                        PistolLearning() && FistToGrip(g_barePistolFrame[s], game + kBarePalm[1] * 12) < kFistReach)
+                        LearnPistolHand(g_barePistolFrame[s], game);
+                    g_barePalmNext = (g_barePalmNext + 1) % 4;
                 }
                 float inverse[12], target[12];
                 if (learn && !g_haveBareOffset[side]) {
@@ -2796,6 +3026,28 @@ bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, I
                 Collapse(bones + end * 12, point);
                 Collapse(bones + (side == 0 ? 51 : 25) * 12, point);  // the upper arm's, with it
             }
+            // The fingers, handpose.cpp's through kBareGlove. While the right hand holds the pistol the left's
+            // are as the controller holds them, blended into the game's own two-handed hold as the left hand
+            // takes the pistol (hands.cpp: the user, "use this left-hand model ... for two-handed mode only",
+            // 16:55); and the right's middle, ring and little fingers open a little on the grip (they went
+            // into it: the user, 16:50).
+            if (!cuff && side == 0 && t.bareLeftOn) {
+                const float* palm = bones + kBarePalm[0] * 12;
+                for (int k = kBareSide[0][0]; k <= kBareSide[0][1]; ++k)
+                    if (kBareGlove[k] > 1)  // not the palm (1) nor the forearm's wrist end (0)
+                        Compose(palm, t.bareLeftFingers[kBareGlove[k]], bones + k * 12);
+            }
+            if (!cuff && side == 1 && PistolHeld()) {
+                // One hand's opening, easing to both hands' as the left hand takes the pistol (hands.cpp).
+                const float both = std::clamp(t.pistolTwoHanded, 0.0f, 1.0f);
+                auto opening = [both](int i) {
+                    const float one = g_pistolOpen[i].load(std::memory_order_relaxed),
+                                two = g_pistolOpen2[i].load(std::memory_order_relaxed);
+                    return -(one + (two - one) * both);
+                };
+                const float open[5] = {0.0f, 0.0f, opening(0), opening(1), opening(2)};
+                handpose::BendRight(reinterpret_cast<float(*)[12]>(bones), open, kBareGlove, kBareBones);
+            }
             moved = true;
         }
     }
@@ -2811,6 +3063,221 @@ bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, I
 }
 
 // The body's draws while the bare arms are on the controllers: left out (their bones the player's own).
+// The pistol Blackburn picks up in the train (11970 from 0: 0 magazine, 1 hammer, 2 trigger, 3 frame,
+// 4 slide; one draw an eye), one-handed: held in the bare right hand as the game holds it. Its frame
+// bone from the game's right palm (kBarePistolHold) is learned once, from the arm draw whose palm sits
+// at the pistol's grip (each eye has two arm draws, their palms up to 67 cm apart: the nearer one is
+// the hand that holds it), then the pistol is put at the right hand's place times that and every bone
+// moved as the frame was. The user, 2026-10-31: the gun in the right hand first, two-handed after.
+constexpr DrawKey kBarePistol{11970, 0, 0};
+// The grip in the frame bone's (3) bind space: the seated magazine's middle. (-0.0001 -0.1514 0.1001), taken
+// for it at first, is the magazine's middle where its vertices lie apart in the vertex buffer, 13.6 cm off
+// below and ahead of the gun (bone 0 seats it: 16 degrees about x, 13.8 cm up; the slide's vertices lie 30
+// cm ahead too. The arm and grip study, screenshots\wf_pistol_grip\pistol_assembled.png, 2026-10-31).
+constexpr float kPistolGripRest[3] = {-0.0001f, -0.0354f, 0.0299f};
+// Each fist's middle in the arms' bind space: the hand root's (15; the left's 41 mirrored) vertices' middle,
+// 4 cm out of the palm. A grip sits about 2 cm from it in a closed hand (the study's offline fits).
+constexpr float kRightFistRest[3] = {-0.5045f, 1.0692f, 0.1936f};
+constexpr float kLeftFistRest[3] = {0.5045f, 1.0692f, 0.1936f};
+// The game's left hand round the right (its two-handed hold): its fist 4.9 cm from the grip; 21-26 cm while
+// the pistol comes up, before the left hand joins it (the log, 17:10:38), and 9.4 cm on its way in.
+constexpr float kLeftFistReach = 0.07f;
+bool g_barePistolFitted = false;  // the hold is the offline fit's (nothing learned in 5 s): still looked for
+
+float FistToGrip(const float* frame, const float* root, bool left) {
+    float grip[3], fist[3];
+    TransformPoint(frame, kPistolGripRest, grip);
+    TransformPoint(root, left ? kLeftFistRest : kRightFistRest, fist);
+    return Length3(fist[0] - grip[0], fist[1] - grip[1], fist[2] - grip[2]);
+}
+
+// Still learning: no hold yet (or only the offline fit), or within 1.5 s of it (pairs then are logged, and
+// the left hand's hold taken from one that agrees with the right's if the first had the left hand off the
+// pistol); never in the pistol's first second in hand (it's picked up or raised then, as the M416's hold
+// waits: HoldIsNormal). weapon.txt "barehands pistol" starts again. Under g_handsMutex.
+bool PistolLearning() {
+    const ULONGLONG now = GetTickCount64();
+    if (g_bareRelearnPistol.exchange(false)) {
+        g_haveBarePistolHand = g_haveBarePistolLeft = false;
+        g_barePistolFitted = false;
+        g_barePistolLearnedAt = 0;
+        g_pistolSince = now;
+        Log("Bare hands: the pistol's holds forgotten: learned again in a second");
+    }
+    if (!g_pistolSince || now - g_pistolSince < 1000)
+        return false;
+    // Until both hands are learned from one pair, up to 10 s (the game's left hand joins the pistol after
+    // the right: 0.45 s later at 17:10:38).
+    return !g_haveBarePistolHand || g_barePistolFitted ||
+           now - g_barePistolLearnedAt < (g_haveBarePistolLeft ? 1500u : 10000u);
+}
+
+// The game's hands on the pistol, from its frame and an arm draw's bones (game: all the game's, one pose).
+// The right hand root's hold is kept from the first pair with its fist on the grip; the left palm and its
+// fingers with it if the left hand is at the grip too, the game's two-handed hold.
+void LearnPistolHand(const float* frame, const float* game) {
+    auto apart = [](const float* a, const float* b) { return Length3(a[0] - b[0], a[1] - b[1], a[2] - b[2]); };
+    const float* palm = game + kBarePalm[1] * 12;
+    const float* left = game + kBarePalm[0] * 12;
+    float inverse[12];
+    const float d = FistToGrip(frame, palm), dl = FistToGrip(frame, left, true);
+    static ULONGLONG s_logged = 0;
+    if (d > kFistReach || !Invert(frame, inverse)) {
+        if (GetTickCount64() - s_logged > 2000) {
+            s_logged = GetTickCount64();
+            Log("Bare hands: the pistol's hand not learned: the game's fist %.1f cm from its grip", d * 100.0f);
+        }
+        return;
+    }
+    float hold[12], leftHold[12];
+    Compose(inverse, palm, hold);
+    Compose(inverse, left, leftHold);
+    // A pair that agreed with the kept hold at least 150 ms before: the pose has settled when neither fist
+    // has moved 2 mm on the pistol since (the game's right fist still came 1 cm in over the first 0.1 s and
+    // the left hand joins after, 17:10:38; one frame's pairs, both eyes, are alike and prove nothing).
+    static float s_ref[12] = {}, s_refLeft[12] = {};
+    static ULONGLONG s_refAt = 0;
+    static bool s_haveRef = false;
+    bool agrees = true, settled = false;
+    if (g_haveBarePistolHand && !g_barePistolFitted && d < g_barePistolLearnedFrom - 0.01f) {
+        // A pair whose fist sits a centimetre nearer the grip than the kept one's: the kept one was the other
+        // pass's (its fist 3.4-3.9 cm off, the holding pass's 1.5-2.3: 19:04, when the first pair taken was the
+        // other pass's, every later one 4 cm off it, and the two-handed hold never settled). Taken instead.
+        std::memcpy(g_barePistolHand, hold, sizeof(hold));
+        Log("Bare hands: the right hand's hold on the pistol taken again from a nearer pair (the game's fist %.1f cm "
+            "from its grip, the kept one's %.1f cm)",
+            d * 100.0f, g_barePistolLearnedFrom * 100.0f);
+        g_barePistolLearnedFrom = d;
+        s_haveRef = false;
+    }
+    if (g_haveBarePistolHand && !g_barePistolFitted) {
+        // A later pair: the same pose as the kept one if its fist sits within 1.5 cm of the kept one's on the
+        // pistol (each eye draws the arms in two passes: the other's fist is 4.5-5 cm off it).
+        float kept[3], now[3];
+        TransformPoint(g_barePistolHand, kRightFistRest, kept);
+        TransformPoint(hold, kRightFistRest, now);
+        agrees = apart(kept, now) < 0.015f;
+        if (agrees && s_haveRef && GetTickCount64() - s_refAt >= 150) {
+            float ref[3], refLeft[3], nowLeft[3];
+            TransformPoint(s_ref, kRightFistRest, ref);
+            TransformPoint(s_refLeft, kLeftFistRest, refLeft);
+            TransformPoint(leftHold, kLeftFistRest, nowLeft);
+            settled = apart(ref, now) < 0.002f && apart(refLeft, nowLeft) < 0.002f;
+            s_haveRef = false;  // this pair is the next reference
+        }
+        static int s_pairs = 0;
+        if (s_pairs < 16) {
+            ++s_pairs;
+            Log("Bare hands: a later pistol pair: the right fist %.1f cm from the grip, the left %.1f cm; it %.1f cm "
+                "from the kept hold's",
+                d * 100.0f, dl * 100.0f, apart(kept, now) * 100.0f);
+        }
+    } else {
+        std::memcpy(g_barePistolHand, hold, sizeof(hold));
+        g_barePistolLearnedAt = GetTickCount64();
+        g_barePistolLearnedFrom = d;
+        g_haveBarePistolHand = true;
+        g_barePistolFitted = false;
+        s_haveRef = false;
+        Log("Bare hands: the right hand's hold on the pistol learned (the game's fist %.1f cm from its grip; its left "
+            "fist %.1f cm)",
+            d * 100.0f, dl * 100.0f);
+    }
+    if (agrees && !s_haveRef) {
+        std::memcpy(s_ref, hold, sizeof(hold));
+        std::memcpy(s_refLeft, leftHold, sizeof(leftHold));
+        s_refAt = GetTickCount64();
+        s_haveRef = true;
+    }
+    // Both hands from this one pair, once the game's left hand is on the pistol and the pose has settled: the
+    // right's hold taken again with the left's, so the two hands sit on it as the game holds them together.
+    if (g_haveBarePistolLeft || !settled || dl > kLeftFistReach)
+        return;
+    float palmInverse[12];
+    if (!Invert(left, palmInverse))
+        return;
+    std::memcpy(g_barePistolHand, hold, sizeof(hold));
+    g_barePistolLearnedFrom = d;
+    std::memcpy(g_barePistolLeft, leftHold, sizeof(leftHold));
+    for (int b = 0; b < handpose::kBones; ++b) {  // the gloves' bones the bare hand hasn't (4, 5) left as the palm
+        std::memset(g_barePistolLeftFingers[b], 0, sizeof(g_barePistolLeftFingers[b]));
+        g_barePistolLeftFingers[b][0] = g_barePistolLeftFingers[b][5] = g_barePistolLeftFingers[b][10] = 1.0f;
+    }
+    for (int k = kBareSide[0][0]; k <= kBareSide[0][1]; ++k)
+        if (kBareGlove[k] >= 0)
+            Compose(palmInverse, game + k * 12, g_barePistolLeftFingers[kBareGlove[k]]);
+    g_haveBarePistolLeft = true;
+    Log("Bare hands: both hands' hold on the pistol learned from one settled pair (the game's right fist %.1f cm from "
+        "its grip, the left %.1f cm)",
+        d * 100.0f, dl * 100.0f);
+}
+
+bool DrawBarePistol(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
+    if (!g_bareOn.load(std::memory_order_relaxed) || !g_bareAllowed.load(std::memory_order_relaxed))
+        return false;
+    const Upload& u = t_upload;
+    if (!u.resource || u.bytes.size() != kGloveUploadSize || !PlayersOwn(u.bytes))
+        return false;
+    thread_local std::vector<uint8_t> t_pistol;
+    t_pistol = u.bytes;
+    auto* bones = reinterpret_cast<float*>(t_pistol.data());
+    const float* frame = bones + 3 * 12;
+    {
+        std::lock_guard lock(g_handsMutex);
+        if (!g_handsOn)
+            return false;
+        skin::HandTargets t = g_hands;
+        int eye = -1;
+        if (!ToArms(t, ctx, &eye) || !t.gun)
+            return false;
+        // The game's hands on it: learned from an arm draw of the same eye and frame (or the next: this one
+        // before an arm draw, DrawBareArms), so both are of one pose; of that eye's two arm passes, the one
+        // whose right fist is on the grip.
+        const ULONGLONG now = GetTickCount64();
+        if (g_recUntil.load(std::memory_order_relaxed))  // weapon.txt "reloadrec": the game's own bones
+            Record(0, eye, DrawPass(ctx, eye), u.bytes, 5);
+        if (!g_pistolSince || now - g_barePistolAt.load() > 1000)
+            g_pistolSince = now;  // just picked up, or back after a while
+        const int slot = eye >= 0 && eye <= 1 ? eye + 1 : 0;
+        std::memcpy(g_barePistolFrame[slot], frame, sizeof(g_barePistolFrame[slot]));
+        g_barePistolFrameNo[slot] = g_frameSerial.load(std::memory_order_relaxed);
+        if (PistolLearning()) {
+            int best = -1;
+            float nearest = kFistReach;
+            for (int k = 0; k < 4; ++k)
+                if (g_barePalmEye[k] == eye && FramesNear(g_barePalmFrame[k], g_barePistolFrameNo[slot]))
+                    if (const float d = FistToGrip(frame, g_barePalmRing[k][kBarePalm[1]]); d < nearest)
+                        nearest = d, best = k;
+            if (best >= 0)
+                LearnPistolHand(frame, g_barePalmRing[best][0]);
+        }
+        // Nothing learned 5 s after it came into hand: the offline fit's hold (the study's fit_s3: the fist
+        // on the grip, the index finger 1.3-1.5 cm from the trigger), so the hand never floats beside it. A
+        // pair found later still takes over.
+        if (!g_haveBarePistolHand && now - g_pistolSince > 5000) {
+            static constexpr float kFitHold[12] = {0.32383f,  -0.93555f, -0.14136f, 1.18636f, 0.71319f,  0.14262f,
+                                                   0.68577f,  0.04766f,  -0.62155f, -0.32352f, 0.71374f, -0.06254f};
+            std::memcpy(g_barePistolHand, kFitHold, sizeof(kFitHold));
+            g_haveBarePistolHand = true;
+            g_barePistolFitted = true;
+            Log("Bare hands: the pistol's hold not learned in 5 s: the offline fit used (still looked for)");
+        }
+        g_barePistolAt = now;
+        // Its frame bone put where the right controller holds it (hands.cpp pistolPose: aimed as the
+        // M416 is, its grip at the hand's grip point), every bone moved as the frame was, so its slide,
+        // hammer, trigger and magazine keep the game's animation. Learned from the game's own hand
+        // instead, the pairing of the pistol with its arm draw failed or took the other pass's pose: the
+        // game's own pistol was left, moving against the hand ("inverted", the user, 15:46 and 15:51).
+        float inverse[12], delta[12];
+        if (!Invert(frame, inverse))
+            return false;
+        Compose(t.pistolPose, inverse, delta);
+        for (int k = 0; k < static_cast<int>(kPaletteBones); ++k)
+            MoveBy(delta, bones + k * 12);
+    }
+    return DrawWithPalette(which, ctx, count, start, base, u.resource, t_pistol.data(), kGloveUploadSize);
+}
+
 bool HideBareBody() {
     return GetTickCount64() - g_bareMovedAt.load(std::memory_order_relaxed) < 250 && t_upload.resource &&
            PlayersOwn(t_upload.bytes);
@@ -3295,6 +3762,7 @@ void ProbeFirstPerson(ID3D11DeviceContext* ctx, UINT count, UINT start, INT base
 }
 
 void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
+    ++t_drawSerial;
     switch (effects::NoteDrawIndexed(ctx, count, start, base)) {
     case effects::kHide:
         return;  // weapon.txt "hidefx" / "hideps"
@@ -3320,6 +3788,8 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
         DrawKey key{count, start, base};
         if (g_dumpWanted.load(std::memory_order_acquire) && key == g_dumpKey)
             CaptureMesh(ctx, key);
+        if (key == kBarePistol && DrawBarePistol(which, ctx, count, start, base))
+            return;
         if ((key == kBareArms || key == kBareCuff) &&
             DrawBareArms(which, ctx, count, start, base, key != kBareArms))
             return;
@@ -3608,6 +4078,36 @@ void WriteDump() {
 }
 
 namespace skin {
+
+float BareTwist(int side) {
+    return g_bareTwist[side & 1].load(std::memory_order_relaxed);
+}
+
+void BareShares(float* share) {
+    for (int i = 0; i < 3; ++i)
+        share[i] = g_bareShare[i].load(std::memory_order_relaxed);
+}
+
+bool PistolTest() {
+    return g_pistolTest.load(std::memory_order_relaxed);
+}
+
+bool BarePistolHand(float* hold) {
+    if (!g_haveBarePistolHand.load(std::memory_order_acquire) || GetTickCount64() - g_barePistolAt.load() > 300)
+        return false;
+    std::lock_guard lock(g_handsMutex);
+    std::memcpy(hold, g_barePistolHand, sizeof(g_barePistolHand));
+    return true;
+}
+
+bool BarePistolLeft(float* hold, float (*fingers)[12]) {
+    if (!g_haveBarePistolLeft.load(std::memory_order_acquire) || GetTickCount64() - g_barePistolAt.load() > 300)
+        return false;
+    std::lock_guard lock(g_handsMutex);
+    std::memcpy(hold, g_barePistolLeft, sizeof(g_barePistolLeft));
+    std::memcpy(fingers, g_barePistolLeftFingers, sizeof(g_barePistolLeftFingers));
+    return true;
+}
 
 bool BareWrist() {
     return g_bareWrist.load(std::memory_order_relaxed);

@@ -46,7 +46,9 @@ float Orange(float3 c) { return min(c.r - c.g, c.g - c.b); }
 float Mark(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     int3 p = int3(pos.xy, 0);
     float4 b = before.Load(p), a = after.Load(p);
-    return Orange(a.rgb) - Orange(b.rgb) > 0.06 && a.r > b.r + 0.03 ? 1 : 0;
+    // The HUD's own pixel orange too: a white or grey icon over the teal scene is "more orange" than the scene
+    // and was cut out as a square (the blur study, 2026-10-31).
+    return Orange(a.rgb) > 0.05 && Orange(a.rgb) - Orange(b.rgb) > 0.06 && a.r > b.r + 0.03 ? 1 : 0;
 }
 float4 PutBack(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     int3 p = int3(pos.xy, 0);
@@ -946,15 +948,25 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
         if (FirstTextureSize(ctx, &format) == (128u << 16 | 64u) && format == DXGI_FORMAT_BC3_UNORM)
             return true;
     }
-    if (!eyeEffect)
-        TakeBefore(ctx);  // the picture before the HUD, once a frame (the orange markers)
+    const bool reads = ReadsScene(ctx, static_cast<UINT>(viewport.Height));
+    // The second view's own pass over its whole picture: the depth of field, the suppression blur (a
+    // window-wide quad reading its eye's blurred scene, PS checksum 2b2ca40a51aa1b4d). The first view drew its
+    // own over the left eye between the pictures (the blur study: with all of this phase left out the left eye
+    // is blurred, fine detail 0.02-0.12 against the sharp right eye's 1.7-33). Drawn at the left too, under fire
+    // the left eye showed the right eye's blurred picture (correlation 0.98-1.00 at no shift: no depth): only
+    // into the right half.
+    const bool viewPass = window && reads && !eyeEffect;
+    // The picture before the HUD, once a frame (the orange markers), after the blur and the damage passes:
+    // taken before them, the blur's spreading of orange sparks and warm light counted as the HUD's orange
+    // and the sharp picture went back round it, square patches in the blur (the user, 17:20).
+    if (!eyeEffect && !viewPass)
+        TakeBefore(ctx);
     // "hudfix": 1 the left eye's copy without the depth-stencil view, 2 no left copy, 3 no right copy.
     const int fix = g_hudFix.load(std::memory_order_relaxed);
     if (fix == 1)
         DrawWithoutDepth(ctx, draw);
-    else if (fix != 2)
+    else if (fix != 2 && !viewPass)
         draw();
-    const bool reads = ReadsScene(ctx, static_cast<UINT>(viewport.Height));
     const bool intoHalf = fix != 3 && (eyeEffect || reads) && IntoRightHalf(ctx, draw);
     if (!intoHalf && fix != 3)
         DrawMovedRight(ctx, draw, viewport);

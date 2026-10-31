@@ -682,6 +682,65 @@ void Support(skin::HandTargets& t, const float* gunTurn, const float* anchor, co
     }
 }
 
+// The train pistol of The Great Destroyer in both hands. The user, 2026-10-31: the game's own M9 hold,
+// its left hand round the right, is "the perfect hand model for a two-handed mode ... only for two-handed
+// mode". The left grip squeezed with the left palm within kPistolReach of where the game's left palm sits
+// on the pistol takes hold; only the grip let go lets go, as the handguard (Support). The left hand eases
+// onto the game's hold and back over 5 frames, its fingers with it (Update: t.bareLeftFingers); the right
+// hand alone points the pistol. The controllers can't overlap as the game's hands do: 22 cm takes hold
+// with them touching.
+constexpr float kPistolReach = 0.22f;
+bool g_pistolSupport = false;
+float g_pistolBlend = 0.0f;  // 0 the left hand where its controller is, 1 on the pistol
+float g_pistolLeftHold[12] = {};  // the game's left palm from the pistol's frame (skin::BarePistolLeft)
+float g_pistolLeftFingers[handpose::kBones][12] = {};
+bool g_havePistolLeft = false;
+
+// pistol: the pistol in the right hand; tracked: the left hand as its controller holds it.
+void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const float* tracked) {
+    g_havePistolLeft = pistol && skin::BarePistolLeft(g_pistolLeftHold, g_pistolLeftFingers);
+    const float squeeze = input::LeftSqueeze();
+    if (squeeze < 0.4f)
+        g_freshSqueeze = true;
+    float hold[12] = {};
+    if (g_havePistolLeft)
+        Compose(t.pistolPose, g_pistolLeftHold, hold);
+    // weapon.txt "pistoltest 1": the stand-in left hand (no left controller) holds it, with no squeeze.
+    static bool s_byTest = false;
+    const bool test = !trackedLeft && skin::PistolTest();
+    if (!g_pistolSupport && g_havePistolLeft && test) {
+        g_pistolSupport = s_byTest = true;
+        Log("Hands: the stand-in left hand took hold of the pistol (pistoltest)");
+    } else if (!g_pistolSupport && g_havePistolLeft && trackedLeft && squeeze > 0.6f && g_freshSqueeze) {
+        float at[3];
+        Transform(hold, g_leftAnchor, at);
+        const float d[3] = {at[0] - t.leftWrist[0], at[1] - t.leftWrist[1], at[2] - t.leftWrist[2]};
+        if (Length(d) < kPistolReach) {
+            g_pistolSupport = true;
+            s_byTest = false;
+            Log("Hands: the left hand took hold of the pistol (%.0f mm from the game's left hand on it, the grip at %.2f)",
+                Length(d) * 1000.0f, squeeze);
+        }
+    } else if (g_pistolSupport && (!g_havePistolLeft || (s_byTest ? !test : squeeze < 0.4f))) {
+        g_pistolSupport = false;
+        g_freshSqueeze = false;
+        Log("Hands: the left hand let go of the pistol (%s)",
+            !g_havePistolLeft ? "no pistol" : s_byTest ? "pistoltest off" : "the grip let go");
+    }
+    g_pistolBlend = g_pistolSupport ? std::fmin(g_pistolBlend + kGripBlendStep, 1.0f)
+                                    : std::fmax(g_pistolBlend - kGripBlendStep, 0.0f);
+    if (g_pistolBlend > 0.0f && g_havePistolLeft) {
+        float blended[12];
+        if (trackedLeft)
+            BlendAbout(tracked, hold, g_pistolBlend, g_leftAnchor, blended);
+        else
+            std::memcpy(blended, hold, sizeof(blended));  // the left controller not tracked: held as it is
+        std::memcpy(t.leftPose, blended, sizeof(blended));
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+        t.left = true;
+    }
+}
+
 // Once a second while the left hand holds on: how far the hands' line strayed from where the right
 // hand points the gun, how far apart the hands were, the left grip's reading and how much the left hand
 // steered (steer.h's cone is set from these: 35/65 degrees until the user's own aiming is seen; and a
@@ -935,7 +994,24 @@ void PlaceBareForearms(skin::HandTargets& t, const float* fromHead, const float*
             s_state[side] = armik::State{};
             continue;
         }
-        const float* hand = side == 0 ? t.leftPose : t.rightPose;
+        // The hand turned back about the forearm's line by weapon.txt "baretwist" before it's solved
+        // (only for the solve; the hand is drawn where it is): the forearms rolled 70-90 degrees with the
+        // hands relaxed, a candy-wrapper wrist (the user, 15:59), so the solver's no-roll may be off by a
+        // fixed amount per arm.
+        float turned[12];
+        std::memcpy(turned, side == 0 ? t.leftPose : t.rightPose, sizeof(turned));
+        if (const float off = skin::BareTwist(side); off != 0.0f) {
+            const float sx = side == 0 ? 1.0f : -1.0f;
+            const float e[3] = {armik::kElbow[0] * sx, armik::kElbow[1], armik::kElbow[2]};
+            const float w[3] = {armik::kWrist[0] * sx, armik::kWrist[1], armik::kWrist[2]};
+            float ew[3], ww[3];
+            Transform(turned, e, ew);
+            Transform(turned, w, ww);
+            float axis[3] = {ww[0] - ew[0], ww[1] - ew[1], ww[2] - ew[2]};
+            armik::detail::Normalize(axis);
+            armik::detail::TurnPlacement(turned, axis, -off * armik::kDeg, ww);
+        }
+        const float* hand = turned;
         float out[3], shoulder[3], wrist[3];
         for (int i = 0; i < 3; ++i) {
             out[i] = side == 0 ? left[i] : -left[i];
@@ -954,6 +1030,11 @@ void PlaceBareForearms(skin::HandTargets& t, const float* fromHead, const float*
         // user: "when I'm bending my wrist, my whole forearm is moving", 15:27).
         armik::Params params = g_armParams[side];
         params.flex = 100.0f, params.ext = 95.0f, params.radial = 45.0f, params.ulnar = 60.0f;
+        // The forearm takes nearly all of the hand's roll, its wrist end 95% and its middle half (the
+        // gloves' 0, 1/3, 2/3 left a third to the wrist joint itself: the right wrist, rolled some 90
+        // degrees, pinched thin between the cuff and the hand, the user's picture 15:52). weapon.txt
+        // "bareshare 0.5 0.8 1" to try the arm study's (less thinning along the forearm at 90-120 degrees).
+        skin::BareShares(params.share);
         armik::Result r;
         armik::Solve(hand, shoulder, out, up, back, side == 1, params, s_state[side], r);
         std::memcpy(t.bareForearm[side], r.frame, sizeof(r.frame));
@@ -1035,6 +1116,7 @@ void Update(const XrPosef& head) {
 
     skin::HandTargets t;
     handpose::Fingers fingers;  // the left glove's, as the controller says
+    bool pistolHeld = false;    // The Great Destroyer's train pistol in the right hand (its hold learned)
     XrPosef aim, grip, rightGrip{};
     float gunTurn[9], anchor[3];  // the gun as the right hand alone holds it (view space), its grip
     if (input::AimPose(aim) && input::HandPose(1, grip)) {
@@ -1071,6 +1153,24 @@ void Update(const XrPosef& head) {
         mirrored[4] = -mirrored[4], mirrored[8] = -mirrored[8];
         Compose(controller, mirrored, hand);
         Compose(fromHead, hand, t.rightPose);
+        // The train pistol of The Great Destroyer, aimed as the M416 is (the game fires along the aim pose),
+        // its grip (the seated magazine's middle in its frame bone's space; the magazine's middle where its
+        // vertices lie apart, 13.6 cm off below the gun, was taken for it at first) at the hand's grip point:
+        // skin.cpp draws it there. Holding it, the right palm sits on it as the game's does (the user: "I'm not
+        // holding the gun", 15:59), and the pistol goes where the empty hand's grip point would be at the
+        // controller's, so the hand holding it stays where the real hand is.
+        float pistolGrip[3] = {-0.0001f, -0.0354f, 0.0299f};
+        float hold[12];
+        pistolHeld = skin::BarePistolHand(hold);  // the arms' bind space -> the pistol frame's (hand root 15)
+        if (pistolHeld) {
+            float fromGrip[12];
+            InvertRigid(mirrored, fromGrip);  // the controller's grip space -> the arms' bind space
+            const float origin[3] = {fromGrip[3], fromGrip[7], fromGrip[11]};
+            Transform(hold, origin, pistolGrip);
+        }
+        PlaceAt(gunTurn, pistolGrip, t.rightWrist, t.pistolPose);
+        if (pistolHeld)
+            Compose(t.pistolPose, hold, t.rightPose);
         t.right = true;
         // The right controller itself moving more than 4 cm in a frame in the room (tracking), and the
         // head (the user: the bare hands jump swaying left and right, 15:06).
@@ -1191,7 +1291,7 @@ void Update(const XrPosef& head) {
             Transform(inverse, palm, at);
             f.guardDistance = FromGuard(at);
         }
-        f.handFree = !g_supporting && !g_lining && !reload::HandleHeld() && g_gripBlend == 0.0f;
+        f.handFree = !g_supporting && !g_lining && !reload::HandleHeld() && g_gripBlend == 0.0f && g_pistolBlend == 0.0f;
         f.wellEmpty = skin::MagazineOut();
         f.dry = reload::BoltBack();
         int loaded = 0, spare = 0;
@@ -1279,14 +1379,15 @@ void Update(const XrPosef& head) {
     }
     const bool holding = magazine.holding;
     // Both hands on the gun: the hold (Support) and the lines the steer turns the gun by, the glove on
-    // the handguard.
-    if (t.gun && t.left && !g_lining && !holding) {
+    // the handguard. Not with the train pistol in hand (The Great Destroyer: PistolSupport below): the
+    // M416's handguard, unseen, would take the left hand and steer the aim.
+    if (t.gun && t.left && !g_lining && !holding && !pistolHeld) {
         Support(t, gunTurn, anchor, headTurn);
     } else {
         // Without the left controller's place the hold stays (the gun stays as the hands last had it
         // for a moment, then eases back to the right hand's aim; the glove on the handguard); its grip
         // button still lets go. Without the gun, nothing to hold.
-        if (g_supporting && (!t.gun || g_lining)) {
+        if (g_supporting && (!t.gun || g_lining || pistolHeld)) {
             Log("Hands: the left hand let go of the handguard (no gun)");
             g_supporting = false;
         } else if (g_supporting && input::LeftSqueeze() < 0.4f) {
@@ -1347,6 +1448,10 @@ void Update(const XrPosef& head) {
         Transform(t.leftPose, g_leftAnchor, t.leftWrist);
         t.left = true;
     }
+    // The train pistol in both hands (The Great Destroyer): the left hand onto the game's own left hand on
+    // it and off it, as onto the handguard.
+    PistolSupport(t, pistolHeld, trackedLeft, tracked);
+    t.pistolTwoHanded = pistolHeld ? g_pistolBlend : 0.0f;  // the right fingers' opening on the grip (skin.cpp)
     // A magazine caught on the well's line: the glove goes with it (it stops at home), easing in and
     // back out to the hand.
     if (magazine.gloveBlend > 0.0f && t.left) {
@@ -1359,7 +1464,7 @@ void Update(const XrPosef& head) {
     // not while it carries a magazine up into the well.
     float touch[3];
     const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld() &&
-                      !holding && !testing;
+                      !holding && !testing && !pistolHeld;  // not the M416's shape round the train pistol
     if (!free)
         collide::Reset(g_collide);
     const bool touching = free && KeepOutOfGun(t, fingers, touch);
@@ -1371,8 +1476,9 @@ void Update(const XrPosef& head) {
     // no palm then, which blocks both. The trigger stays the real one, so a trigger held through that
     // time isn't a fresh press when it ends.
     const bool busy = holding || GetTickCount64() - g_seatedAt < 300;
-    reload::Update(t.gun ? t.gunPose : nullptr, trackedLeft && !busy ? palm : nullptr, input::LeftTrigger(),
-                   touching ? touch : nullptr);
+    // Not the M416's charging handle and bolt release with the train pistol in hand.
+    reload::Update(t.gun && !pistolHeld ? t.gunPose : nullptr, trackedLeft && !busy ? palm : nullptr,
+                   input::LeftTrigger(), touching ? touch : nullptr);
     // Round the magazine, easing out like the handle's; on the magazine at once the frame it's taken
     // (eased in, the squeezed fist went through it for 4 frames). Refitted again 2026-10-31 on the
     // meshes at the user's palm width 1.15, with pouch.cpp's g_hold (the user: the thumb wrapped round
@@ -1431,6 +1537,29 @@ void Update(const XrPosef& head) {
         handpose::Pose(relaxed, g_leftWidth, t.leftFingers);
         t.left = true;
         standInLeft = true;
+    }
+    // The bare left hand while the right holds the train pistol (The Great Destroyer): its fingers as the
+    // controller holds them (the glove's pose, all of the fingers' width as the game draws them), going into
+    // the game's own two-handed hold as the hand takes the pistol (PistolSupport). skin.cpp puts them on the
+    // bare palm. The user: the game's left hand there "only for two-handed mode" (2026-10-31).
+    if (t.left && pistolHeld) {
+        handpose::Fingers bare = fingers;
+        bare.slim = 1.0f;
+        float posed[handpose::kBones][12], palmInverse[12];
+        handpose::Pose(bare, 1.0f, posed);
+        InvertRigid(posed[1], palmInverse);
+        for (int b = 0; b < handpose::kBones; ++b) {
+            float own[12];
+            Compose(palmInverse, posed[b], own);
+            if (g_pistolBlend > 0.0f && g_havePistolLeft) {
+                float pivot[3];
+                handpose::Pivot(b, pivot);  // each bone blended about its own joint
+                BlendAbout(own, g_pistolLeftFingers[b], g_pistolBlend, pivot, t.bareLeftFingers[b]);
+            } else {
+                std::memcpy(t.bareLeftFingers[b], own, sizeof(own));
+            }
+        }
+        t.bareLeftOn = true;
     }
     // The left forearm solved from the hand (build\arms.txt "on"; otherwise nothing changes).
     PlaceForearms(t, fromHead, toView, standInLeft);

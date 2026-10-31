@@ -19,6 +19,9 @@ void Reset();
 // hold something else, and writing there crashed the game 2 s after the jump (2026-10-31).
 void Forget();
 
+// weapon.txt "mouseaim 0/1": the view steered with the mouse while the look angles aren't found (on by default).
+void SetMouseAim(bool on);
+
 // Whether the game is turning the look yaw itself (a scripted moment): nothing written meanwhile.
 bool Scripted();
 

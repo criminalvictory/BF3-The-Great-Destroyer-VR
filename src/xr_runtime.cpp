@@ -545,6 +545,20 @@ bool KeyPressed(int vk) {
 }
 
 void PollHotkeys() {
+    // Into the headset's view by itself the moment the player's soldier exists (once a launch; F8 still
+    // toggles it): pressed after the menu by a script, the game's own hands showed some 5 s more after
+    // every load (the user, 2026-10-31: "it's not right away"). Not in the menu: there the doubled window
+    // threw the menu's clicks off.
+    static bool s_autoStereo = false;
+    if (!s_autoStereo && god::PlayerClientSoldier()) {
+        s_autoStereo = true;
+        config::Settings& s = config::Mutable();
+        if (s.mode != config::Mode::Stereo) {
+            s.mode = config::Mode::Stereo;
+            ResetEyes();
+            Log("Mode -> stereo (the player's soldier is in: the headset's view at once)");
+        }
+    }
     if (KeyPressed(VK_F8)) {
         config::Settings& s = config::Mutable();
         s.mode = s.mode == config::Mode::Stereo ? config::Mode::Theater : config::Mode::Stereo;
@@ -1129,17 +1143,28 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
         }
         // The bare arms of The Great Destroyer follow the controllers only once the game has left the
-        // view to the player for 3 s: no cutscene picture, no scripted turn, the look angles found
+        // view to the player for 3 s: no cutscene picture, no scripted turn
         // (the user: free hands, but not in the interrogation and its QTEs).
         {
             static ULONGLONG s_calmSince = 0;
             const ULONGLONG now = GetTickCount64();
-            const bool calm = !g_unturnedLogged && g_turnDirect && !aim::Scripted();
+            // Without waiting for the aim: the free arms came 5-10 s after a load, the game's own arms shown
+            // meanwhile (the user, 16:08), and on the moving train its search failed for minutes (15:55).
+            // Cutscenes and scripted turns still switch them off, which keeps them out of the QTEs.
+            // Half a second after a cutscene's picture or a load (the game's own hands showed 3 s longer:
+            // "it's not right away", 16:25); 3 s after a scripted turn, which the QTE fight is made of.
+            static bool s_afterScripted = false;
+            const bool calm = !g_unturnedLogged && !aim::Scripted();
+            if (aim::Scripted())
+                s_afterScripted = true;
+            else if (g_unturnedLogged)
+                s_afterScripted = false;
             if (!calm)
                 s_calmSince = 0;
             else if (!s_calmSince)
                 s_calmSince = now;
-            skin::SetBareHandsAllowed(calm && now - s_calmSince > 3000);
+            const bool allowed = calm && now - s_calmSince > (s_afterScripted ? 3000u : 500u);
+            skin::SetBareHandsAllowed(allowed);
         }
         // The picture takes the hand's turn back out of the game's camera, which follows the hand
         // only while the look angles are written. Until they are (a new level, a checkpoint), the

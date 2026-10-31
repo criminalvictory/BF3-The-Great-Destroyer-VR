@@ -234,7 +234,8 @@ else {
     }
     $lines = @(Since $from)
     $readings = @(); $unread = 0
-    foreach ($l in @($lines | Where-Object { $_ -match 'Arms: left' })) {
+    # Case-sensitive: The Great Destroyer's "Bare arms: left wrist bent ..." lines aren't the gloves' readings.
+    foreach ($l in @($lines | Where-Object { $_ -cmatch 'Arms: left' })) {
         if ($l -match 'Arms: left reach ([\d.]+)/[\d.]+ bend ([\d.]+) \(flexion ([-+]?[\d.]+) ulnar ([-+]?[\d.]+)\) twist ([-+]?[\d.]+)') {
             $readings += [pscustomobject]@{ reach = [double]$matches[1]; flexion = [double]$matches[3]; ulnar = [double]$matches[4]; standIn = $l -match "the stand-in's hand" }
         } else { $unread++ }  # not numbers (nan, inf)

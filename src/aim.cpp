@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -53,7 +55,10 @@ float g_gameMoveMost = 0.0f;
 // written until the game has left the yaw alone for kScriptedQuiet: the game's camera is then the
 // body and the head turns the picture about it (xr_runtime.cpp keeps the hand's yaw as it was), the
 // horizon level. weapon.txt "scripted 0" writes through it as before.
-constexpr float kScriptedMove = 2.0f / kRadToDeg;
+// 10 degrees a frame: the moving train's curves turned it about 2 a frame, which the 2 it was took for a
+// scripted moment, stopping the aim 1.5 s at a time (the user's knife fight, 16:21); the scripted turns
+// seen are 15-170 degrees.
+constexpr float kScriptedMove = 10.0f / kRadToDeg;
 constexpr ULONGLONG kScriptedQuiet = 1500;
 std::atomic<bool> g_scriptedOn{true};
 bool g_scripted = false;
@@ -98,33 +103,55 @@ float YawApart(float a, float b) {
     return std::fabs(d);
 }
 
+// How a pair was reached from the soldier: the field followed at each step (its index among the
+// node's 0x100), then the pair's place in the window after the last pointer.
+struct Route {
+    int steps = 0;
+    uint16_t field[3] = {};
+    uint16_t offset = 0;
+};
+
 // Every yaw-and-pitch pair within kWindow after a pointer the soldier's fields lead to, three
-// deep, that matches the camera's angles.
-std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPitch) {
+// deep, that matches the camera's angles (routes: how each was reached, alike in order).
+std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPitch, std::vector<Route>* routes = nullptr,
+                            bool anyYaw = false) {
     std::vector<uintptr_t> pairs;
-    std::vector<uintptr_t> level{soldier}, next;
+    struct Node {
+        uintptr_t at;
+        Route route;
+    };
+    std::vector<Node> level{{soldier, {}}}, next;
     std::unordered_set<uintptr_t> seen{soldier};
     uint32_t window[kWindow / 4 + 3];
     for (int depth = 0; depth < 3; ++depth) {
-        for (uintptr_t node : level) {
+        for (const Node& node : level) {
             uint32_t fields[0x100];
-            if (!camera::SafeRead(node, fields, sizeof(fields)))
+            if (!camera::SafeRead(node.at, fields, sizeof(fields)))
                 continue;
-            for (uint32_t v : fields) {
+            for (uint16_t f = 0; f < 0x100; ++f) {
+                const uint32_t v = fields[f];
                 if (v < 0x10000 || v >= 0xFFFF0000u || (v & 3) || !seen.insert(v).second)
                     continue;
+                Route route = node.route;
+                route.field[route.steps++] = f;
                 if (depth < 2 && seen.size() < 200000)
-                    next.push_back(v);
+                    next.push_back({v, route});
                 if (!camera::SafeRead(v, window, sizeof(window)))
                     continue;
                 for (uint32_t i = 0; i < kWindow / 4; ++i) {
                     float yaw, pitch;
                     std::memcpy(&yaw, &window[i], 4);
                     std::memcpy(&pitch, &window[i + 3], 4);
-                    if (LooksLikeAngle(yaw, false) && YawApart(yaw, cameraYaw) < 0.01f &&
+                    if (LooksLikeAngle(yaw, false) &&
+                        (anyYaw ? std::fabs(yaw) < 7.0f : YawApart(yaw, cameraYaw) < 0.01f) &&
                         std::fabs(pitch - cameraPitch) < 0.01f &&
-                        std::find(pairs.begin(), pairs.end(), v + i * 4) == pairs.end())
+                        std::find(pairs.begin(), pairs.end(), v + i * 4) == pairs.end()) {
                         pairs.push_back(v + i * 4);
+                        if (routes) {
+                            route.offset = static_cast<uint16_t>(i * 4);
+                            routes->push_back(route);
+                        }
+                    }
                 }
             }
         }
@@ -132,6 +159,73 @@ std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPit
         next.clear();
     }
     return pairs;
+}
+
+// The route the look angles were last found by (Search): a new soldier (each load, checkpoint or life)
+// is tried by it first, one nudge instead of a whole search (the user, 2026-10-31: the free arms
+// waited 5-10 s for the aim after every load, the game's own arms shown meanwhile).
+Route g_lastRoute;
+bool g_haveLastRoute = false;
+// The camera's yaw less the look yaw found (radians): none on foot, a moving vehicle's turn on The Great
+// Destroyer's train. Followed slowly as the vehicle turns (Targets).
+float g_yawOffset = 0.0f;
+
+// The pairs matching only the camera's pitch (a vehicle's look yaw is its own, not the camera's).
+std::vector<uintptr_t> PitchPairs(uintptr_t soldier, float cameraPitch, std::vector<Route>* routes) {
+    return Pairs(soldier, 0.0f, cameraPitch, routes, true);
+}
+
+// Kept in aimroute.txt next to the mod's DLL, so the next launch starts with it too.
+std::wstring RoutePath() {
+    HMODULE self = nullptr;
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&RoutePath), &self) ||
+        !GetModuleFileNameW(self, path, MAX_PATH))
+        return {};
+    std::wstring p = path;
+    return p.substr(0, p.find_last_of(L'\\') + 1) + L"aimroute.txt";
+}
+
+void SaveRoute() {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, RoutePath().c_str(), L"w") || !f)
+        return;
+    fprintf(f, "%d %u %u %u %u\n", g_lastRoute.steps, g_lastRoute.field[0], g_lastRoute.field[1], g_lastRoute.field[2],
+            g_lastRoute.offset);
+    fclose(f);
+}
+
+void LoadRoute() {
+    static bool s_loaded = false;
+    if (s_loaded)
+        return;
+    s_loaded = true;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, RoutePath().c_str(), L"r") || !f)
+        return;
+    unsigned a = 0, b = 0, c = 0, o = 0;
+    int steps = 0;
+    if (fscanf_s(f, "%d %u %u %u %u", &steps, &a, &b, &c, &o) == 5 && steps >= 1 && steps <= 3 && a < 0x100 && b < 0x100 &&
+        c < 0x100 && o < kWindow) {
+        g_lastRoute.steps = steps;
+        g_lastRoute.field[0] = static_cast<uint16_t>(a), g_lastRoute.field[1] = static_cast<uint16_t>(b);
+        g_lastRoute.field[2] = static_cast<uint16_t>(c), g_lastRoute.offset = static_cast<uint16_t>(o);
+        g_haveLastRoute = true;
+        Log("Aim: the last route to the look angles read from aimroute.txt (%d steps)", steps);
+    }
+    fclose(f);
+}
+
+uintptr_t Follow(uintptr_t soldier, const Route& route) {
+    uintptr_t at = soldier;
+    for (int s = 0; s < route.steps; ++s) {
+        uint32_t v = 0;
+        if (!camera::SafeRead(at + route.field[s] * 4, &v, sizeof(v)) || v < 0x10000 || v >= 0xFFFF0000u || (v & 3))
+            return 0;
+        at = v;
+    }
+    return at + route.offset;
 }
 
 // A load leaves the pitch exactly level until it's written, and level, nothing is nudged (below):
@@ -163,14 +257,27 @@ constexpr size_t kMostPairs = 16;
 // user's shots at the floor went elsewhere, 2026-10-30).
 enum class Proof { kNo, kKept, kYes, kBusy };
 
-Proof Proves(uintptr_t at) {
+// How far the camera may drift in the 120 ms before a nudge (radians, 0.35 degrees): on The Great
+// Destroyer's moving train its sway always passed the 0.002 it was, and the aim was never found there
+// (the user's shots missed, 16:04). The nudge it then has to follow, and come back from, still proves it.
+constexpr float kStillMost = 0.006f;
+
+// While a candidate is being nudged (Proves): mouse aim waits, or it would undo the nudge.
+std::atomic<bool> g_proving{false};
+struct Proving {
+    Proving() { g_proving = true; }
+    ~Proving() { g_proving = false; }
+};
+
+Proof Proves(uintptr_t at, bool anyYaw = false) {
+    const Proving proving;
     float yaw = 0.0f, pitch = 0.0f, still[2][2] = {};
     if (!camera::SafeRead(at, &yaw, sizeof(yaw)) || !camera::SafeRead(at + 0xC, &pitch, sizeof(pitch)) ||
-        !camera::GameWeaponAngles(still[0][0], still[0][1]) || YawApart(yaw, still[0][0]) > 0.02f)
+        !camera::GameWeaponAngles(still[0][0], still[0][1]) || (!anyYaw && YawApart(yaw, still[0][0]) > 0.02f))
         return Proof::kNo;
     Sleep(120);
-    if (!camera::GameWeaponAngles(still[1][0], still[1][1]) || YawApart(still[1][0], still[0][0]) > 0.002f ||
-        std::fabs(still[1][1] - still[0][1]) > 0.002f)
+    if (!camera::GameWeaponAngles(still[1][0], still[1][1]) || YawApart(still[1][0], still[0][0]) > kStillMost ||
+        std::fabs(still[1][1] - still[0][1]) > kStillMost)
         return Proof::kBusy;
     // The pitch towards level, so the nudge never goes past the game's limits.
     const float pitchNudge = pitch > 0.0f ? -kNudge : kNudge;
@@ -216,15 +323,33 @@ void Search(uintptr_t soldier) {
     // is nudged then (nudging stray matches crashed the game once, from outside, 2026-10-30).
     int busy = 0;  // pairs not tried: the camera was moving (turning, firing)
     bool crowded = false;
-    if (camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.02f &&
+    LoadRoute();
+    // The last route first: its pair matching the camera and proving itself, nothing else to search.
+    if (g_haveLastRoute && camera::GameWeaponAngles(cameraYaw, cameraPitch)) {
+        const uintptr_t at = Follow(soldier, g_lastRoute);
+        float pair[4] = {};
+        // Its yaw needn't match the camera's: on a moving vehicle (The Great Destroyer's train) the look
+        // yaw is the player's own, the camera's the vehicle's turn added (g_yawOffset).
+        if (at && camera::SafeRead(at, pair, sizeof(pair)) && LooksLikeAngle(pair[0], false) &&
+            std::fabs(pair[3] - cameraPitch) < 0.01f && Proves(at, true) == Proof::kYes) {
+            found = at, kept = 1, candidates = 1;
+            g_yawOffset = std::remainder(cameraYaw - pair[0], 2.0f * kPi);
+            Log("Aim: the look angles found again by the last route, at once (%.0f degrees off the camera's yaw)",
+                g_yawOffset * kRadToDeg);
+        }
+    }
+    if (!found && camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.02f &&
         std::fabs(cameraYaw) > 0.02f) {
-        const std::vector<uintptr_t> pairs = Pairs(soldier, cameraYaw, cameraPitch);
+        std::vector<Route> routes;
+        const std::vector<uintptr_t> pairs = Pairs(soldier, cameraYaw, cameraPitch, &routes);
         candidates = pairs.size();
         crowded = candidates > kMostPairs;
         for (size_t k = 0; k < pairs.size() && !crowded && !found; ++k) {
             switch (Proves(pairs[k])) {
             case Proof::kYes:
                 found = pairs[k], ++kept;
+                if (k < routes.size())
+                    g_lastRoute = routes[k], g_haveLastRoute = true, SaveRoute();
                 break;
             case Proof::kKept:
                 ++kept;
@@ -234,6 +359,27 @@ void Search(uintptr_t soldier) {
                 break;
             default:
                 break;
+            }
+        }
+        if (found)
+            g_yawOffset = 0.0f;
+    }
+    // Then by the pitch alone (the yaw any): on the moving train the look yaw is the player's own, not the
+    // camera's, and no pair matching the camera's ever kept a nudge (the user's shots missed, 16:10). Only
+    // with the view clearly up or down (more stray floats match a small pitch; nudging strays crashed the
+    // game once) and at most kMostPairs of them.
+    if (!found && !crowded && camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.1f) {
+        std::vector<Route> routes;
+        const std::vector<uintptr_t> pairs = PitchPairs(soldier, cameraPitch, &routes);
+        for (size_t k = 0; k < pairs.size() && k < kMostPairs && !found; ++k) {
+            float yaw = 0.0f;
+            if (Proves(pairs[k], true) == Proof::kYes && camera::SafeRead(pairs[k], &yaw, sizeof(yaw))) {
+                found = pairs[k], ++kept;
+                g_yawOffset = std::remainder(cameraYaw - yaw, 2.0f * kPi);
+                if (k < routes.size())
+                    g_lastRoute = routes[k], g_haveLastRoute = true, SaveRoute();
+                Log("Aim: the look angles found by the pitch alone, %.0f degrees off the camera's yaw (a vehicle's turn)",
+                    g_yawOffset * kRadToDeg);
             }
         }
     }
@@ -274,8 +420,12 @@ bool Targets(uintptr_t& yawAddress, uintptr_t& pitchAddress) {
         LooksLikeAngle(pitch, true)) {
         // Yaw and pitch both (a wrong pair's yaw stayed near the camera's for 16 s by chance while
         // its pitch never did, 2026-10-30).
-        const bool matching = !camera::GameWeaponAngles(cameraYaw, cameraPitch) ||
-                              (YawApart(yaw, cameraYaw) < 0.2f && std::fabs(pitch - cameraPitch) < 0.12f);
+        // The yaw with the vehicle's turn added (g_yawOffset: none on foot), which is followed slowly so
+        // the train's curves keep it matching.
+        const bool haveCamera = camera::GameWeaponAngles(cameraYaw, cameraPitch);
+        const bool matching = !haveCamera || (YawApart(yaw + g_yawOffset, cameraYaw) < 0.2f && std::fabs(pitch - cameraPitch) < 0.12f);
+        if (haveCamera && matching && g_yawOffset != 0.0f)
+            g_yawOffset += 0.05f * std::remainder(cameraYaw - yaw - g_yawOffset, 2.0f * kPi);
         if (matching)
             g_mismatchSince = 0;
         else if (!g_mismatchSince)
@@ -309,6 +459,62 @@ void SetTo(uintptr_t address, float value) {
 
 namespace aim {
 
+// Mouse aim, while the look angles aren't known (after a load, on The Great Destroyer's moving train,
+// where the search failed for minutes and a knife-rushing enemy killed the user before the gun could
+// aim, 16:17): the game's view steered with the mouse towards where the hand points, closing half the
+// gap each frame from the weapon camera's angles as the game made them. Nothing in memory is searched
+// or written, so it works at once. The picture takes the hand's turn out by the yaw aimed for
+// (g_target, LookYaw) as it does with the angles written. Off while the search nudges a candidate
+// (g_proving: the mouse would undo the nudge), without the game's window in front, and with
+// weapon.txt "mouseaim 0".
+std::atomic<bool> g_mouseAimOn{true};
+bool g_mouseHave = false;
+float g_mouseBase = 0.0f;   // the game yaw with the hand's yaw at 0 and no stick turn
+float g_mouseTurned = 0.0f;
+constexpr float kMousePixelsPerRadian = 230.0f;  // about 4 a degree (TiltView's 24 for some 6)
+
+bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
+    float cameraYaw = 0.0f, cameraPitch = 0.0f;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    if (!g_mouseAimOn.load(std::memory_order_relaxed) || g_proving.load() || pid != GetCurrentProcessId() ||
+        !camera::GameWeaponAngles(cameraYaw, cameraPitch))
+        return false;  // paused: its centring kept (re-centred each time, the aim jumped, 16:21)
+    // Centred afresh only for a new soldier (a respawn, a load) or after the look angles were written.
+    static uintptr_t s_soldier = 0;
+    const uintptr_t soldier = god::PlayerClientSoldier();
+    if (soldier != s_soldier) {
+        s_soldier = soldier;
+        g_mouseHave = false;
+    }
+    if (!g_mouseHave) {
+        g_mouseBase = cameraYaw - sign * headYaw;
+        g_mouseTurned = 0.0f;
+        g_mouseHave = true;
+        g_yawOffset = 0.0f;  // the camera's own yaw here, no vehicle's turn to add
+        Log("Aim: the view steered with the mouse until the look angles are found");
+    }
+    g_mouseTurned += turn;
+    const float yaw = g_mouseBase + sign * (headYaw + g_mouseTurned);
+    const float pitch = std::clamp(headPitch, -1.4f, 1.4f);
+    const float yawError = std::remainder(yaw - cameraYaw, 2.0f * kPi), pitchError = pitch - cameraPitch;
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = static_cast<LONG>(std::clamp(yawError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
+    in.mi.dy = static_cast<LONG>(std::clamp(-pitchError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    if (in.mi.dx || in.mi.dy)
+        SendInput(1, &in, sizeof(in));
+    g_target = yaw - 2 * kPi * std::floor(yaw / (2 * kPi));
+    g_haveTarget = true;
+    return true;
+}
+
+void SetMouseAim(bool on) {
+    if (g_mouseAimOn.exchange(on) != on)
+        Log("Aim: mouse aim %s", on ? "on (until the look angles are found)" : "off");
+}
+
 bool Update(float headYaw, float headPitch, float turn) {
     config::Aim a = config::GetAim();
     uintptr_t yawAddress = 0, pitchAddress = 0;
@@ -316,8 +522,17 @@ bool Update(float headYaw, float headPitch, float turn) {
         g_havePrevious = false;  // found again: start from there, no jump
         g_haveTarget = false;
         g_havePitch = false;
-        return false;
+        // A scripted moment can only be seen ending through the look angles: without them it stayed on and
+        // kept the free hands off for 1.5 minutes after the dumpster (the user, 18:33). Over once the quiet has
+        // lasted as long as it would have to with them.
+        if (g_scripted && GetTickCount64() - g_scriptedMovedAt >= kScriptedQuiet) {
+            g_scripted = false;
+            Log("Aim: the scripted moment is over (%.1f s without seeing the game turn the look; its angles not found)",
+                kScriptedQuiet / 1000.0f);
+        }
+        return MouseAim(headYaw, headPitch, turn, a.invertYaw ? 1.0f : -1.0f);
     }
+    g_mouseHave = false;
     // The hand's yaw is OpenXR's (growing as it turns left); the game's look yaw grows turning
     // right: it goes in negated. Measured 2026-10-30 (weapon.txt "viewlog", the user sweeping the
     // gun with the head still): taken as it came, the game aimed the other way from the gun and
@@ -420,6 +635,11 @@ void Forget() {
     g_havePrevious = false;
     g_haveTarget = false;
     g_havePitch = false;
+    // Mouse aim centred again where the game left the view: kept, it steered from its centring before the
+    // load's opening sequence and swung the soldier back 75-80 degrees after it (the 16:27 log).
+    g_mouseHave = false;
+    // A cutscene ends a scripted moment: left on, it held the free hands off long after (Update's not-found path).
+    g_scripted = false;
 }
 
 void SetScriptedFollow(bool on) {
@@ -447,7 +667,9 @@ float TestTurn() {
 bool LookYaw(float& radians, float& sign) {
     if (!g_haveTarget)
         return false;
-    radians = g_target;  // as written, whatever the game has done to it since
+    // As written, whatever the game has done to it since; with a vehicle's turn (g_yawOffset) added, as
+    // the camera has it (the picture takes the hand's turn out by the difference).
+    radians = g_target + g_yawOffset;
     sign = config::GetAim().invertYaw ? 1.0f : -1.0f;  // the hand's yaw goes in negated (Update)
     return true;
 }

@@ -75,6 +75,38 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* info) {
             break;
     }
     Log("%s", line);
+    // The code round the crash as it runs (bf3.exe's is encrypted on disk: dumpbin of the file shows
+    // noise), 64 bytes before and 48 after, and the first stack words: to disassemble afterwards and
+    // tell what was null (bf3.exe+134E5F0, three times on 2026-10-31: the train jump, a checkpoint load,
+    // the interrogation's QTE).
+    auto bytes = [](const char* name, uintptr_t from, int count) {
+        char text[1024];
+        int used = sprintf_s(text, "CRASH? %s %08X:", name, static_cast<unsigned>(from));
+        for (int i = 0; i < count && used < static_cast<int>(sizeof(text)) - 4; ++i) {
+            unsigned char b = 0;
+            __try {
+                b = reinterpret_cast<const unsigned char*>(from)[i];
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                used += sprintf_s(text + used, sizeof(text) - used, " ??");
+                break;
+            }
+            used += sprintf_s(text + used, sizeof(text) - used, " %02X", b);
+        }
+        Log("%s", text);
+    };
+    bytes("code", at - 64, 112);
+    char words[1024] = "CRASH? stack words:";
+    size_t wordsUsed = strlen(words);
+    for (int i = 0; i < 32; ++i) {
+        uintptr_t v = 0;
+        __try {
+            v = stack[i];
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            break;
+        }
+        wordsUsed += sprintf_s(words + wordsUsed, sizeof(words) - wordsUsed, " %08X", static_cast<unsigned>(v));
+    }
+    Log("%s", words);
     return g_previousFilter ? g_previousFilter(info) : EXCEPTION_CONTINUE_SEARCH;
 }
 

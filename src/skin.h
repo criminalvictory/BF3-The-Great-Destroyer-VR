@@ -16,6 +16,22 @@ namespace skin {
 void SetBareHandsAllowed(bool allowed);
 // weapon.txt "barewrist 0/1": the bare forearms solved from their hands (hands.cpp; on by default).
 bool BareWrist();
+// weapon.txt "baretwist L R": degrees taken off each bare forearm's roll before it's solved (the solver's
+// no-roll may sit off by a fixed amount per arm: the candy-wrapper wrist).
+float BareTwist(int side);
+// weapon.txt "bareshare E A B": the bare forearms' shares of the hand's roll (hands.cpp PlaceBareForearms),
+// the elbow end, the middle and the wrist end.
+void BareShares(float* share);
+// While the train pistol is in hand: the right palm from the pistol's frame as the game holds it (learned
+// from an arm draw and a pistol draw next to each other in one eye). False until learned, or with no pistol.
+bool BarePistolHand(float* hold);
+// The game's own left hand on it, learned with the right's (the game's two-handed M9 hold): the left palm
+// from the pistol's frame, and its bones as the left glove's (handpose.cpp's 0-22) from the bind space
+// relative to that palm. False until learned (the left hand at the grip), or with no pistol.
+bool BarePistolLeft(float* hold, float (*fingers)[12]);
+// weapon.txt "pistoltest 1": the stand-in left hand holds the pistol in both hands (a test with nobody in the
+// headset: hands.cpp PistolSupport).
+bool PistolTest();
 
 // weapon.txt "pslog": the instanced draws (effects.cpp) logged like the indexed ones.
 void LogShaderDraw(ID3D11DeviceContext* ctx, unsigned count, unsigned start, int base, unsigned instances);
@@ -131,6 +147,9 @@ struct HandTargets {
     // mirrored across x): The Great Destroyer's bare right arm is placed with it (skin.cpp).
     bool right = false;
     float rightPose[12] = {};
+    // The train pistol (The Great Destroyer) as the right controller holds it: its model space into the
+    // view's, its grip at the right hand's grip point, aimed as the M416 is (gunPose).
+    float pistolPose[12] = {};
     float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point
     // Each of the left glove's bones bent as its fingers are held, in the gloves' bind space
     // (handpose.cpp): the glove is drawn with leftPose composed with these.
@@ -150,6 +169,15 @@ struct HandTargets {
     // (hands.cpp PlaceBareForearms): the hand bends at the wrist, the forearm stays on the arm's line.
     bool bareArm[2] = {};
     float bareForearm[2][3][12] = {};
+    // The bare left hand's fingers while the right holds the train pistol (hands.cpp): each of the left
+    // glove's bones (handpose.cpp's 0-22) from the bind space relative to its palm (1), as the controller
+    // holds them, blended into the game's own two-handed hold while the left hand holds the pistol. Off:
+    // the game's own fingers.
+    bool bareLeftOn = false;
+    // How far the left hand has taken the train pistol (0 one hand, 1 both: hands.cpp PistolSupport's blend), for
+    // the right hand's fingers on its grip (skin.cpp: pistolfingers / pistolfingers2).
+    float pistolTwoHanded = 0.0f;
+    float bareLeftFingers[handpose::kBones][12] = {};
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

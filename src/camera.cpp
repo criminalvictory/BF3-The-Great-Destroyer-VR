@@ -114,6 +114,8 @@ std::atomic<int> g_viewIndex{0};
 std::atomic<ULONGLONG> g_turnLogUntil{0};  // weapon.txt "viewlog N" (TurnToHead)
 std::atomic<bool> g_mirrorFix{true};       // weapon.txt "mirrorfix 0": a mirrored camera turned as any (TurnToHead)
 std::atomic<int> g_turned{0};              // cameras turned to the head since TakeTurned
+std::atomic<uint32_t> g_refusedInactive{0}, g_refusedNotCamera{0};  // TurnToHead's refusals (TakeTurned logs them)
+float g_refusedMatrix[16] = {};
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -465,6 +467,17 @@ DWORD WINAPI WatchThread(LPVOID) {
                 desired[i] = current[i];
             } else if (++missing[i] < 20) {
                 desired[i] = current[i];
+            } else if (missing[i] == 20) {
+                // Dropped once (logged once): which part of the camera check its block failed (The Great
+                // Destroyer's train checkpoint drops the weapon slot for its 7.4 s opening sequence).
+                float m[16] = {};
+                const bool read = camera::SafeRead(current[i], m, sizeof(m));
+                auto row = [&m](int r) {
+                    return std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]);
+                };
+                Log("Camera watch: slot %d dropped (%08llX %s): rows %.3f %.3f %.3f, w %.3f %.3f %.3f", i,
+                    static_cast<unsigned long long>(current[i]), read ? "readable" : "unreadable", row(0), row(1), row(2),
+                    m[3], m[7], m[11]);
             }
         }
         bool moved = !std::equal(std::begin(desired), std::end(desired), std::begin(current)) ||
@@ -632,8 +645,17 @@ void SetViewsMode(bool on) {
 
 bool TurnToHead(float* transform) {
     const ViewTurnState& view = g_view[g_viewIndex.load(std::memory_order_acquire)];
-    if (!view.active || !IsCamera(transform))
+    // Why a camera wasn't turned, counted for TakeTurned's log: after a load the game's own arms showed
+    // 6.5 s with no camera turned at all (the user: "it could be quicker", 16:28).
+    if (!view.active) {
+        g_refusedInactive.fetch_add(1, std::memory_order_relaxed);
         return false;
+    }
+    if (!IsCamera(transform)) {
+        if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
+            std::memcpy(g_refusedMatrix, transform, sizeof(g_refusedMatrix));
+        return false;
+    }
     float before[16];
     std::memcpy(before, transform, sizeof(before));
     float local[4];
@@ -688,7 +710,23 @@ bool TurnToHead(float* transform) {
 }
 
 int TakeTurned() {
-    return g_turned.exchange(0, std::memory_order_relaxed);
+    const int turned = g_turned.exchange(0, std::memory_order_relaxed);
+    // While none are turned, once a second: why (the view turn off, or the matrix not a camera: then its
+    // translation and its rows' lengths, the first refused one), and whether the views were built at all.
+    static ULONGLONG s_logged = 0;
+    const ULONGLONG now = GetTickCount64();
+    const uint32_t inactive = g_refusedInactive.exchange(0), notCamera = g_refusedNotCamera.exchange(0);
+    if (turned == 0 && now - s_logged >= 1000) {
+        s_logged = now;
+        const float* m = g_refusedMatrix;
+        auto row = [m](int r) { return std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]); };
+        Log("Camera: no camera turned this picture: %u refused with the view turn off, %u not a camera%s", inactive,
+            notCamera, notCamera ? "" : " (none offered: the views not built?)");
+        if (notCamera)
+            Log("Camera: the first refused: rows %.3f %.3f %.3f, w %.3f %.3f %.3f, at (%.2f %.2f %.2f)", row(0), row(1),
+                row(2), m[3], m[7], m[11], m[12], m[13], m[14]);
+    }
+    return turned;
 }
 
 void SetMirrorFix(bool on) {
