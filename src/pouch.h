@@ -66,6 +66,12 @@ struct Result {
 Result Update(const Frame& f);
 // A magazine is in the left hand, or on its way into the well.
 bool Holding();
+// The body as the pouch places it, as of the last Update (hands.cpp's forearms go by it too): the
+// neck point (7.5 cm below and 8 cm behind the eyes in the head's axes) in the room, and the body's
+// heading (radians about the room's up: forward is (-sin, 0, -cos), right (cos, 0, -sin); it follows
+// the head beyond 35 degrees, settles towards it slowly, holds while the left hand reaches the pouch
+// and jumps with a recentre: pouch.cpp). False before the first Update.
+bool BodyFrame(float neck[3], float& yaw);
 // Gone without a fall (free hands off).
 void Clear();
 

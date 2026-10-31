@@ -204,23 +204,63 @@ else {
     $img.Dispose()
 }
 
-# 6. Errors in the log since the game started.
+# 6. Wrist movement (build\arms.txt, off until seen in the headset): the stand-in's left hand moved
+# into reach, its wrist turned straight along the forearm solved for it, then bent 30 degrees of
+# flexion about the wrist joint; the once-a-second readings must say so. arms.txt is put back as it
+# was (no file: none again, the forearms off).
+$arms = Join-Path $root 'build\arms.txt'
+if (-not (Get-Process bf3 -ErrorAction SilentlyContinue)) { Result 'Forearms' 'SKIP' 'bf3.exe is not running' }
+elseif ($text -notmatch 'Window: resizing to \d+x\d+') { Result 'Forearms' 'SKIP' 'stereo is not on' }
+else {
+    $hadArms = Test-Path $arms
+    $armsBefore = if ($hadArms) { [IO.File]::ReadAllText($arms) } else { $null }
+    $from = (LogLines).Count
+    WriteFile $arms "on`nlog 1`ntest move -0.25 0.05 0.35`ntest neutral`ntest bend 30 0 0`n"
+    Start-Sleep -Seconds 4
+    if ($hadArms) { WriteFile $arms $armsBefore } else { Remove-Item $arms -ErrorAction SilentlyContinue }
+    $lines = @(Since $from)
+    $readings = @(); $unread = 0
+    foreach ($l in @($lines | Where-Object { $_ -match 'Arms: left' })) {
+        if ($l -match 'Arms: left reach ([\d.]+)/[\d.]+ bend ([\d.]+) \(flexion ([-+]?[\d.]+) ulnar ([-+]?[\d.]+)\) twist ([-+]?[\d.]+)') {
+            $readings += [pscustomobject]@{ reach = [double]$matches[1]; flexion = [double]$matches[3]; ulnar = [double]$matches[4]; standIn = $l -match "the stand-in's hand" }
+        } else { $unread++ }  # not numbers (nan, inf)
+    }
+    $ours = @($readings | Where-Object standIn)
+    if (-not ($lines -match 'Arms: ')) { Result 'Forearms' 'SKIP' 'no Arms lines in the log after writing arms.txt (an older build?)' }
+    elseif ($readings.Count -eq 0 -and $unread -eq 0) { Result 'Forearms' 'FAIL' "no 'Arms: left' lines: is the stand-in's left hand drawn (weapon.txt standin 1, the left controller asleep)?" }
+    elseif ($readings.Count -gt 0 -and $ours.Count -eq 0 -and $unread -eq 0) { Result 'Forearms' 'SKIP' "the left hand is a real controller's (the test moves the stand-in's)" }
+    else {
+        $off = @($ours | Where-Object { [Math]::Abs($_.flexion - 30) -gt 1 })
+        $ok = $ours.Count -gt 0 -and $unread -eq 0 -and $off.Count -eq 0
+        $flex = ($ours | ForEach-Object { '{0:+0.0;-0.0}' -f $_.flexion }) -join ' '
+        Result 'Forearms' $(if ($ok) { 'PASS' } else { 'FAIL' }) ("{0} readings of the stand-in's hand, flexion {1} (30 +-1 wanted), {2} not numbers; reach {3:F2} m" -f $ours.Count, $flex, $unread, $(if ($ours.Count) { $ours[-1].reach } else { 0 }))
+    }
+}
+
+# 7. Errors in the log since the game started.
 $errors = @($all | Select-String -Pattern 'fail|error|exception' | Where-Object { $_.Line -notmatch "couldn't|didn't fire|without|no rounds" })
 Result 'Log errors' $(if ($errors.Count -eq 0) { 'PASS' } else { 'WARN' }) $(if ($errors.Count) { "$($errors.Count): $($errors[-1].Line)" } else { '' })
 
-# 7. The glove against the gun, offline (tools/collidetest.cpp), when it's built.
+# 8. The glove against the gun, offline (tools/collidetest.cpp), when it's built.
 $collide = Join-Path $root 'build\collidetest.exe'
 if (Test-Path $collide) {
     $out = & $collide 2>&1
     Result 'Glove collision (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
 } else { Result 'Glove collision (offline)' 'SKIP' 'build\collidetest.exe not built' }
 
-# 8. The magazine from the pouch at the pelvis pushed into the well, offline (tools/magtest.cpp).
+# 9. The magazine from the pouch at the pelvis pushed into the well, offline (tools/magtest.cpp).
 $magtest = Join-Path $root 'build\magtest.exe'
 if (Test-Path $magtest) {
     $out = & $magtest 2>&1
     Result 'Magazine by hand (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
 } else { Result 'Magazine by hand (offline)' 'SKIP' 'build\magtest.exe not built' }
+
+# 10. The forearm placed from its hand, offline (tools/armtest.cpp): src/armik.h's solver.
+$armtest = Join-Path $root 'build\armtest.exe'
+if (Test-Path $armtest) {
+    $out = & $armtest 2>&1
+    Result 'Arm IK (offline)' $(if ($LASTEXITCODE -eq 0) { 'PASS' } else { 'FAIL' }) ("$LASTEXITCODE failures; " + ($out | Select-Object -Last 1))
+} else { Result 'Arm IK (offline)' 'SKIP' 'build\armtest.exe not built' }
 
 $failed = @($results | Where-Object Status -eq 'FAIL').Count
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

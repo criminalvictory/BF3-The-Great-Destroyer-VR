@@ -15,11 +15,13 @@
 
 #include <windows.h>
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
 #include "ammo.h"
+#include "armik.h"
 #include "collide.h"
 #include "handpose.h"
 #include "input.h"
@@ -249,6 +251,143 @@ void ReadPouchTuning() {
     Log("Pouch: %s; other guns %s from it; X %s a magazine with it out%s", on ? "on" : "off",
         g_anyGunReload ? "reload" : "don't reload", tapInsert ? "puts" : "doesn't put",
         test ? " (a test's hand)" : "");
+}
+
+// Wrist movement (the user: the forearm swung rigidly with the hand; the design: three designs and a
+// judge, 2026-10-31): the left forearm solved from the glove's hand and a shoulder estimated from the
+// headset (armik.h), so the glove bends at the wrist while the forearm keeps pointing at the elbow.
+// Off until it's been seen in the headset: build\arms.txt "on" turns it on; no file, or "off", draws
+// the forearm whole with the hand, as before.
+bool g_armsOn = false;
+bool g_armsLog = false;  // "log 1": an Arms line once a second
+float g_shoulder[3] = {0.164f, 0.16f, 0.02f};  // the shoulder out, down and back from the neck point (metres)
+armik::Params ArmDefaults(bool right) {
+    armik::Params p;  // the left's
+    if (right)
+        p.poleOut = 0.9f, p.ulnar = 55.0f;  // fitted to the game's right hold; its grip bends the wrist 50.7
+    return p;
+}
+armik::Params g_armParams[2] = {ArmDefaults(false), ArmDefaults(true)};  // left, right (the right's for later)
+// The stand-in's tests (its left hand only, nobody in the headset): moved (metres, in the view's
+// space), turned so its straight wrist lies along the solved forearm, bent about its wrist joint
+// (degrees: flexion, ulnar deviation, twist; after neutral), or no left hand at all.
+struct ArmTests {
+    bool move = false, neutral = false, bend = false, drop = false;
+    float moveBy[3] = {}, bendBy[3] = {};
+};
+ArmTests g_armTests;
+
+// A line's first word (after any spaces) is word, ending there or at a space; rest: what follows.
+bool Word(const char* line, const char* word, const char** rest = nullptr) {
+    while (*line == ' ' || *line == '\t')
+        ++line;
+    const size_t n = std::strlen(word);
+    if (std::strncmp(line, word, n) != 0 || (line[n] && !std::isspace(static_cast<unsigned char>(line[n]))))
+        return false;
+    if (rest)
+        *rest = line + n;
+    return true;
+}
+
+// build\arms.txt, re-read when it changes: "on" / "off" (off wins); "shoulder 0.164 0.16 0.02" (out,
+// down and back from the neck point); "pole L 0.4 1 0.3" / "pole R 0.9 1 0.3" (the elbow's way: out,
+// down, back); "rise 0.6 0.8" (a rising hand takes it out and up); "limits L 70 65 25 40" / "limits R
+// 70 65 25 55" (the wrist's flexion, extension, radial and ulnar range, degrees); "twist 0.333 0.667"
+// (twist bones A's and B's shares of the hand's twist); "log 1" (an Arms line once a second); with
+// the stand-in's left hand only, "test move dx dy dz", "test neutral", "test bend flex dev twist",
+// "test drop". The log and the tests only with "on".
+void ReadArmsTuning() {
+    static FILETIME lastWrite{};
+    static ULONGLONG lastCheck = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastCheck < 300)
+        return;
+    lastCheck = now;
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadArmsTuning), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"arms.txt");
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    const bool exists = GetFileAttributesExW(path, GetFileExInfoStandard, &info) != 0;
+    if (CompareFileTime(&info.ftLastWriteTime, &lastWrite) == 0)
+        return;
+    lastWrite = info.ftLastWriteTime;
+    bool on = false, off = false, log = false;
+    float shoulder[3] = {0.164f, 0.16f, 0.02f};
+    armik::Params params[2] = {ArmDefaults(false), ArmDefaults(true)};
+    ArmTests tests;
+    FILE* f = nullptr;
+    if (exists && _wfopen_s(&f, path, L"r") == 0 && f) {
+        char line[512];
+        while (fgets(line, sizeof(line), f)) {
+            float v[4];
+            char sideName = 0;
+            const char* rest = nullptr;
+            auto side = [&] { return sideName == 'L' || sideName == 'l' ? 0 : sideName == 'R' || sideName == 'r' ? 1 : -1; };
+            if (Word(line, "off")) {
+                off = true;
+            } else if (Word(line, "on")) {
+                on = true;
+            } else if (Word(line, "shoulder", &rest) && sscanf_s(rest, "%f %f %f", &v[0], &v[1], &v[2]) == 3) {
+                std::memcpy(shoulder, v, sizeof(shoulder));
+            } else if (Word(line, "pole", &rest) &&
+                       sscanf_s(rest, " %c %f %f %f", &sideName, 1u, &v[0], &v[1], &v[2]) == 4 && side() >= 0) {
+                armik::Params& p = params[side()];
+                p.poleOut = v[0], p.poleDown = v[1], p.poleBack = v[2];
+            } else if (Word(line, "rise", &rest) && sscanf_s(rest, "%f %f", &v[0], &v[1]) == 2) {
+                for (armik::Params& p : params)
+                    p.riseOut = v[0], p.riseDown = v[1];
+            } else if (Word(line, "limits", &rest) &&
+                       sscanf_s(rest, " %c %f %f %f %f", &sideName, 1u, &v[0], &v[1], &v[2], &v[3]) == 5 && side() >= 0) {
+                for (float& d : v)
+                    d = std::fmin(std::fmax(d, 1.0f), 179.0f);  // (none at 0: the range's ellipse divides by them)
+                armik::Params& p = params[side()];
+                p.flex = v[0], p.ext = v[1], p.radial = v[2], p.ulnar = v[3];
+            } else if (Word(line, "twist", &rest) && sscanf_s(rest, "%f %f", &v[0], &v[1]) == 2) {
+                for (armik::Params& p : params)
+                    p.share[1] = std::fmin(std::fmax(v[0], 0.0f), 1.0f), p.share[2] = std::fmin(std::fmax(v[1], 0.0f), 1.0f);
+            } else if (Word(line, "log", &rest)) {
+                int n = 1;
+                sscanf_s(rest, "%d", &n);
+                log = n != 0;
+            } else if (Word(line, "test", &rest)) {
+                const char* what = nullptr;
+                if (Word(rest, "move", &what) && sscanf_s(what, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
+                    tests.move = true, std::memcpy(tests.moveBy, v, sizeof(tests.moveBy));
+                else if (Word(rest, "neutral"))
+                    tests.neutral = true;
+                else if (Word(rest, "bend", &what) && sscanf_s(what, "%f %f %f", &v[0], &v[1], &v[2]) == 3)
+                    tests.bend = true, std::memcpy(tests.bendBy, v, sizeof(tests.bendBy));
+                else if (Word(rest, "drop"))
+                    tests.drop = true;
+            }
+        }
+        fclose(f);
+    }
+    g_armsOn = on && !off;
+    g_armsLog = g_armsOn && log;
+    g_armTests = g_armsOn ? tests : ArmTests{};
+    std::memcpy(g_shoulder, shoulder, sizeof(g_shoulder));
+    g_armParams[0] = params[0], g_armParams[1] = params[1];
+    if (!g_armsOn) {
+        Log("Arms: off, the forearms move whole with the hands%s", exists ? " (build\\arms.txt)" : "");
+        return;
+    }
+    const armik::Params& p = g_armParams[0];
+    const ArmTests& t = g_armTests;
+    char testing[160] = "";
+    if (t.move || t.neutral || t.bend || t.drop)
+        std::snprintf(testing, sizeof(testing), "; the stand-in's left hand%s%s%s%s",
+                      t.drop ? " dropped" : "", t.move ? " moved" : "", t.neutral ? " neutral" : "",
+                      t.bend ? " bent" : "");
+    Log("Arms: on, the left forearm solved from the hand (build\\arms.txt): the shoulder %.3f out, %.3f down, %.3f back "
+        "from the neck; the elbow's way %.2f out, %.2f down, %.2f back (rising %.2f %.2f); the wrist's range %.0f "
+        "%.0f %.0f %.0f; twist shares %.3f %.3f%s%s",
+        g_shoulder[0], g_shoulder[1], g_shoulder[2], p.poleOut, p.poleDown, p.poleBack, p.riseOut, p.riseDown, p.flex,
+        p.ext, p.radial, p.ulnar, p.share[1], p.share[2], g_armsLog ? "; logged once a second" : "", testing);
 }
 
 // The free left glove can't go into the gun (the user: the hand went through the gun when it
@@ -499,6 +638,123 @@ void SaveLeftOffset() {
     fclose(f);
 }
 
+// ---- Wrist movement: the left forearm solved each frame (armik.h; arms.txt "on") ----
+armik::State g_armState;  // the left's, from frame to frame
+// The last frame with a left hand to solve from: its body heading and wrist, so a recentre (the body's
+// heading turning more than 30 degrees in a frame) or a tracking jump (the wrist 30 cm) starts afresh.
+bool g_armSeen = false;
+float g_armYaw = 0.0f, g_armWrist[3] = {};
+constexpr float kArmYawJump = 30.0f * 3.14159265f / 180.0f, kArmWristJump = 0.3f;
+
+// The hand the arm is solved from: the glove's palm bone (1) as it's drawn, turned as the glove is
+// times that bone's own turn (its quaternion: the widened palm's is none, the game's grip's rigid),
+// placed so its wrist joint is where the drawn bone's is.
+void ArmHand(const skin::HandTargets& t, float* hand) {
+    float glove[9], bone[9], turn[9], drawn[12], wrist[3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            glove[i * 3 + j] = t.leftPose[i * 4 + j], bone[i * 3 + j] = t.leftFingers[1][i * 4 + j];
+    XrQuaternionf q = MatrixToQuat(bone);
+    const float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    q = n > 0.0f ? XrQuaternionf{q.x / n, q.y / n, q.z / n, q.w / n} : XrQuaternionf{0, 0, 0, 1};
+    QuatToMatrix(q, bone);
+    Mul3(glove, bone, turn);
+    Compose(t.leftPose, t.leftFingers[1], drawn);
+    Transform(drawn, armik::kWrist, wrist);
+    PlaceAt(turn, armik::kWrist, wrist, hand);
+}
+
+// The left forearm's bones and fold point solved from the glove's hand (HandTargets::arm), in the
+// view's space; the shoulder from the pouch's neck point and body heading (pouch::BodyFrame, the
+// recentred space: fromHead and toView take it into the view's). standIn: the left glove is the
+// stand-in's (arms.txt's tests move and turn it first). Nothing while arms.txt isn't "on", the left
+// hand isn't drawn or is being lined up (the forearm whole with the hand, as before), and for the
+// frame of a recentre or a tracking jump.
+void PlaceForearms(skin::HandTargets& t, const float* fromHead, const float* toView, bool standIn) {
+    auto reset = [] {
+        g_armState = armik::State{};
+        g_armSeen = false;
+    };
+    if (!g_armsOn) {
+        reset();
+        return;
+    }
+    if (standIn && g_armTests.drop) {  // "test drop": the game's own left arm
+        t.left = false;
+        reset();
+        return;
+    }
+    float neckRoom[3], yaw = 0.0f;
+    if (!t.left || g_lining || !pouch::BodyFrame(neckRoom, yaw)) {
+        reset();
+        return;
+    }
+    // The body's axes (right, forward, up in the room) and the left shoulder, in the view's space.
+    const float rightRoom[3] = {std::cos(yaw), 0.0f, -std::sin(yaw)}, forwardRoom[3] = {-std::sin(yaw), 0.0f, -std::cos(yaw)};
+    float neck[3], out[3], up[3], back[3], shoulder[3];
+    Transform(fromHead, neckRoom, neck);
+    for (int i = 0; i < 3; ++i) {
+        const float* r = toView + i * 3;
+        out[i] = -(r[0] * rightRoom[0] + r[1] * rightRoom[1] + r[2] * rightRoom[2]);
+        up[i] = r[1];
+        back[i] = -(r[0] * forwardRoom[0] + r[1] * forwardRoom[1] + r[2] * forwardRoom[2]);
+    }
+    for (int i = 0; i < 3; ++i)
+        shoulder[i] = neck[i] + out[i] * g_shoulder[0] - up[i] * g_shoulder[1] + back[i] * g_shoulder[2];
+    // The stand-in's tests, on its glove: moved, then turned about its wrist joint (neutral, bent).
+    if (standIn && (g_armTests.move || g_armTests.neutral || g_armTests.bend)) {
+        if (g_armTests.move)
+            for (int i = 0; i < 3; ++i)
+                t.leftPose[i * 4 + 3] += g_armTests.moveBy[i];
+        if (g_armTests.neutral || g_armTests.bend) {
+            float hand[12], turned[12];
+            ArmHand(t, hand);
+            std::memcpy(turned, hand, sizeof(turned));
+            if (g_armTests.neutral)
+                armik::Neutral(turned, shoulder, out, up, back, false, g_armParams[0]);
+            if (g_armTests.bend)
+                armik::BendWrist(turned, false, g_armTests.bendBy[0], g_armTests.bendBy[1], g_armTests.bendBy[2]);
+            float inverse[12], turn[12], glove[12];  // the hand's turn, onto the glove
+            InvertRigid(hand, inverse);
+            Compose(turned, inverse, turn);
+            Compose(turn, t.leftPose, glove);
+            std::memcpy(t.leftPose, glove, sizeof(glove));
+        }
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+    }
+    float hand[12], wrist[3];
+    ArmHand(t, hand);
+    Transform(hand, armik::kWrist, wrist);
+    const float moved[3] = {wrist[0] - g_armWrist[0], wrist[1] - g_armWrist[1], wrist[2] - g_armWrist[2]};
+    const bool jumped =
+        g_armSeen && (std::fabs(std::remainder(yaw - g_armYaw, 6.2831853f)) > kArmYawJump || Length(moved) > kArmWristJump);
+    g_armSeen = true;
+    g_armYaw = yaw;
+    std::memcpy(g_armWrist, wrist, sizeof(g_armWrist));
+    if (jumped) {  // afresh from the next frame
+        g_armState = armik::State{};
+        return;
+    }
+    armik::Result r;
+    armik::Solve(hand, shoulder, out, up, back, false, g_armParams[0], g_armState, r);
+    // The cuff on the forearm as wide as the glove's on the hand: none on the handguard (the game's grip).
+    float cuff[12];
+    handpose::CuffWiden(1.0f + (g_leftWidth - 1.0f) * (1.0f - g_gripBlend), cuff);
+    for (int k = 0; k < 3; ++k)
+        Compose(r.frame[k], cuff, t.forearm[0][k]);
+    std::memcpy(t.fold[0], r.fold, sizeof(t.fold[0]));
+    t.arm[0] = true;
+    static ULONGLONG s_logged = 0;
+    if (g_armsLog && GetTickCount64() - s_logged >= 1000) {
+        s_logged = GetTickCount64();
+        const float apart[3] = {r.wrist[0] - shoulder[0], r.wrist[1] - shoulder[1], r.wrist[2] - shoulder[2]};
+        constexpr float kDeg = 180.0f / 3.14159265f;
+        Log("Arms: left reach %.2f/%.2f bend %.1f (flexion %+.1f ulnar %+.1f) twist %+.0f%s%s%s", Length(apart),
+            armik::kUpper + armik::kFore, r.bend * kDeg, r.flexion * kDeg, r.deviation * kDeg, r.twist * kDeg,
+            r.clamped ? " [clamped]" : "", r.twistHeld ? " [twist held]" : "", standIn ? " (the stand-in's hand)" : "");
+    }
+}
+
 }
 
 namespace hands {
@@ -521,6 +777,7 @@ void MakeLeftOffset() {
 void Update(const XrPosef& head) {
     ReadTuning();
     ReadPouchTuning();
+    ReadArmsTuning();
     if (!g_on) {
         skin::SetHands(nullptr);
         return;
@@ -845,6 +1102,7 @@ void Update(const XrPosef& head) {
     }
     // The stand-in's left hand (nobody in the headset: input.cpp), only drawn, its fingers relaxed:
     // the holds, reloads and touches above never saw it.
+    bool standInLeft = false;
     if (XrPosef standIn; !t.left && input::StandInLeftPose(standIn)) {
         MakeLeftOffset();
         float controller[12], glove[12];
@@ -856,7 +1114,10 @@ void Update(const XrPosef& head) {
         relaxed.spread = g_spread;
         handpose::Pose(relaxed, g_leftWidth, t.leftFingers);
         t.left = true;
+        standInLeft = true;
     }
+    // The left forearm solved from the hand (build\arms.txt "on"; otherwise nothing changes).
+    PlaceForearms(t, fromHead, toView, standInLeft);
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }
 

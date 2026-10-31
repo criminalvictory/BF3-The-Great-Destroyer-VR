@@ -23,6 +23,12 @@ struct Fingers {
 // placement composed with these.
 void Pose(const Fingers& fingers, float width, float out[kBones][12]);
 
+// The wrist's cuff (bones 0, 4 and 5) widened as Pose widens it for a palm width wide: half as much,
+// across the hand about its middle (3x4, rows: rotation | translation, in the bind space). hands.cpp
+// draws the solved forearm's frames composed with it (armik.h), so the cuff on the forearm is as wide
+// as on the hand.
+void CuffWiden(float width, float out[12]);
+
 // Bends each finger of an already posed hand further (degrees; negative opens it): bend[0] the
 // thumb ... bend[4] the little finger, spread over its three joints (the middle one most), about
 // where those joints are in that pose. bones: from the gloves' bind space into anything, as the

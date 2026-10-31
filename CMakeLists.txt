@@ -97,6 +97,12 @@ add_executable(magtest tools/magtest.cpp src/pouch.cpp)
 target_compile_definitions(magtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the headers only, no loader
 
+# The forearm placed from its hand (src/armik.h, header only): the bind pose, rigid moves, the game's
+# own rifle hold from the mesh dumps, the wrist's readings and range, the twist sweep, degenerate
+# poses, the time a solve takes, and the stand-in's test hooks.
+add_executable(armtest tools/armtest.cpp)
+target_compile_definitions(armtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)
 target_compile_definitions(sampler PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

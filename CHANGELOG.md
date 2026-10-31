@@ -89,6 +89,14 @@ self-test and the mod's own pictures, not yet in the headset.
   Stinger's lock-on, which only locks zoomed).
 - Research notes in `docs\research\`: FrostbiteVR and BC2VR (what works there, what applies to BF3),
   Overlord's lessons (ideas only), the mission's weapons, a 6DoF head plan, ten ranked next steps.
+- **Wrist movement, step 1 (the left hand)**: the left forearm is solved from the glove's hand and a
+  shoulder estimated from the headset, so the glove bends at the wrist while the forearm keeps
+  pointing at the elbow, and the forearm takes two thirds of the wrist's roll at the watch
+  (`src/armik.h`; three designs and a judge). **Off until it has been seen in the headset**:
+  `on` in build\arms.txt turns it on; no file, or `off`, draws the forearm exactly as before. `log 1`
+  logs the wrist's readings once a second; `test move`, `test neutral`, `test bend` and `test drop`
+  move, straighten, bend or remove the stand-in's left hand. Tested offline only (`armtest.exe`, 14
+  checks, now in the self-test with an in-game row too); not yet run in the game.
 
 ### Changed
 - **The ejection port's flap follows the charging handle**: pulled slowly it opens slowly, fully

@@ -126,6 +126,13 @@ struct HandTargets {
     // would be with that magazine seated in it, so its bones are drawn at magPose times their seat.
     bool mag = false;
     float magPose[12] = {};
+    // Each forearm solved from its hand and a shoulder (armik.h; hands.cpp, build\arms.txt "on"), left
+    // then right: its elbow end and twist bones A and B, from the gloves' bind space into the view's,
+    // and where its folded arm goes inside it. Without (arm false) the forearm moves whole with its
+    // hand, as before.
+    bool arm[2] = {};
+    float forearm[2][3][12] = {};
+    float fold[2][3] = {};
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

@@ -263,6 +263,10 @@ void Pose(const Fingers& fingers, float width, float out[kBones][12]) {
     }
 }
 
+void CuffWiden(float width, float out[12]) {
+    ScaleAlong(kAcross, 1 + (width - 1) * 0.5f, kMiddle, out);
+}
+
 void BendFurther(float bones[kBones][12], const float bend[5]) {
     for (int f = 0; f < 5; ++f) {
         if (bend[f] == 0.0f)

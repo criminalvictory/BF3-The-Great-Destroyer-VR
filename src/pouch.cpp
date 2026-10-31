@@ -65,6 +65,7 @@ constexpr float kBodyLag = 35.0f * kDegree, kBodyTurn = 4.0f, kBodySettle = 5.0f
                 kBodySteady = 20.0f * kDegree, kBodyReach = 0.25f, kBodyJump = 45.0f * kDegree;
 float g_bodyYaw = 0.0f, g_headYaw = 0.0f;
 bool g_haveBody = false;
+float g_neck[3] = {};  // the neck point as of the last Update (room), for BodyFrame
 
 // ---- The squeeze: armed below 0.4, crossing 0.6 from there; it reaches the pouch if the hand is in
 // it within 0.15 s of the crossing, still squeezed (a squeeze held while sweeping through takes
@@ -216,6 +217,7 @@ void FromPouch(const Frame& f, float* out) {
     const XrVector3f neckOffset = Rotate(q, {kNeck[0], kNeck[1], kNeck[2]});
     const float neck[3] = {f.head.position.x + neckOffset.x, f.head.position.y + neckOffset.y,
                            f.head.position.z + neckOffset.z};
+    std::memcpy(g_neck, neck, sizeof(g_neck));
     auto middleFor = [&](float yaw, float* m) {
         m[0] = neck[0] - std::sin(yaw) * g_zone[1];
         m[1] = neck[1] - g_zone[0];
@@ -495,6 +497,14 @@ Result Update(const Frame& f) {
 
 bool Holding() {
     return g_state != State::kNone;
+}
+
+bool BodyFrame(float neck[3], float& yaw) {
+    if (!g_haveBody)
+        return false;
+    std::memcpy(neck, g_neck, sizeof(g_neck));
+    yaw = g_bodyYaw;
+    return true;
 }
 
 void Clear() {

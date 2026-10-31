@@ -555,6 +555,20 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
             q[i] = v[i * 4] * p[0] + v[i * 4 + 1] * p[1] + v[i * 4 + 2] * p[2] + v[i * 4 + 3];
         std::memcpy(p, q, sizeof(q));
     }
+    // A forearm solved from its hand (build\arms.txt "on"): its three bones and its fold point, alike.
+    for (int side = 0; side < 2; ++side) {
+        if (!t.arm[side])
+            continue;
+        for (float* bone : t.forearm[side]) {
+            Compose(v, bone, pose);
+            std::memcpy(bone, pose, sizeof(pose));
+        }
+        const float* p = t.fold[side];
+        float q[3];
+        for (int i = 0; i < 3; ++i)
+            q[i] = v[i * 4] * p[0] + v[i * 4 + 1] * p[1] + v[i * 4 + 2] * p[2] + v[i * 4 + 3];
+        std::memcpy(t.fold[side], q, sizeof(q));
+    }
     return true;
 }
 
@@ -1774,6 +1788,9 @@ void Collapse(float* bone, const float* point) {
 // (the user's picture, 2026-10-31). Now the forearm is whole; the depth passes' arms fold into the
 // middle of it, inside the drawn forearm, where their stretched triangles are hidden, except looking
 // into the forearm's open elbow end along it: there a black disc shows (depth without colour).
+// Wrist movement (build\arms.txt "on", the left for now): the forearm's bones are placed where the
+// arm solved from the hand and a shoulder puts them (armik.h, hands.cpp), so the hand bends at the
+// wrist; the glove's cuff goes with the forearm, and the folds stay in its middle.
 struct ArmDraw {
     DrawKey key;
     const char* roles;
@@ -1785,6 +1802,12 @@ struct ArmDraw {
     // A gun part placed as another draw is (the scope's parts as its body): drawn only in a later
     // pass, where its own offsets from the gun are never learned, it takes that draw's.
     DrawKey placedLike{};
+    // With a forearm solved from its hand (HandTargets::arm, build\arms.txt "on"), what each entry is
+    // instead (kGlovesForearm and the others below): 0-2 the solved forearm's elbow end and twist
+    // bones A, B; 10 + g the left glove's bone g (handpose.cpp's), as the gloves draw it; -1 placed as
+    // without.
+    const int8_t* forearm = nullptr;
+    size_t forearmCount = 0;
 };
 // Matched by vertices at the same place in the gloves' mesh dump and these depth passes', so the
 // fingers bend alike in every pass. The bare forearms share no vertices with the gloves: their 'L'
@@ -1793,6 +1816,28 @@ constexpr int8_t kGloveDepthLeft[] = {-1, -1, 14, 13, 16, -1, 8, 9, 19, 15, 18, 
 constexpr int8_t kBodyDepthLeft[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4,
                                      0,  1,  6,  7,  21, 22, 12, 11, 20, 10, 14, 13, 16, 3,  8,  9,  19, 15, 18, 17, 2};
 constexpr int8_t kForearmLeft[] = {-1};
+// Wrist movement (armik.h; the judge's synthesis, 2026-10-31): the entries that are a forearm's bones
+// in the game's rig, matched by vertices at the same bind place with the same weights in the dumps,
+// so every pass draws them alike (a depth copy placed apart from its colour shows black). The left's
+// for now; the right's (gloves 37 and 44, gloves' depth 16 and 17, the bare forearms' 10-17) wait for
+// its forearm to be solved too: 'R' entries are placed as without. The gloves: the cuff, bone 0 on twist
+// bone B (the body's depth 20), 4 on A (19), 5 on the forearm's own bone (18: 3 vertices).
+constexpr int8_t kGlovesForearm[] = {2,  -1, -1, -1, 1,  0,  -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                                     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                                     -1, -1, -1, -1, -1, -1, -1, 2,  -1, -1, -1, -1, -1, -1, 1};
+// The gloves' depth pass: the right twist bones only (the left forearm isn't in it).
+constexpr int8_t kGloveDepthForearm[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                                         -1, -1, -1, 1,  2,  -1, -1, -1, -1, -1, -1, -1, -1,
+                                         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+// The bare forearms: the forearm's bone and its helpers (the body's depth 18/16/41/17) on the elbow
+// end, 2 on A (19), 4 on B (20), and the two at the wrist with the glove's bones they share vertices
+// with (8 its bone 1, the body's depth 21; 9 its bone 18, 38); then the right's alike.
+constexpr int8_t kBareForearm[] = {0, 0, 1, 0, 2, -1, 0, -1, 11, 28, 0, 0, 1, 0, 2, -1, 0, -1};
+// The body's depth pass: the left twist bones (its arm, 15-18 and 41, still folds inside the forearm).
+constexpr int8_t kBodyDepthForearm[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                                        -1, -1, -1, -1, -1, 1,  2,  -1, -1, -1, -1, -1, -1, -1,
+                                        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                                        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 // The right hand root's vertices' centre in the gloves' bind pose (the mesh dump).
 constexpr float kRightPalm[3] = {-0.505f, 1.129f, 0.150f};
 // The middle of each forearm in the bind pose, where its bare part's elbow end joins its wrist end
@@ -1936,15 +1981,22 @@ bool HoldIsNormal(const float* right, const float* left) {
 }
 
 constexpr ArmDraw kArmDraws[] = {
-    {{13755, 15051, 0}, "LLLLLLLLLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRRRRRRRR", 37},  // gloves
-    {{7617, 49995, 0}, "--LLL-LLLLLLLrrrRRRRRRRRRRRRRRRRRRRRRRr", -1, kGloveDepthLeft,
-     std::size(kGloveDepthLeft)},  // their depth
-    {kBareForearms, "LLLLL-L-LLRRRRR-RR", -1, kForearmLeft, std::size(kForearmLeft)},  // bare forearms, whole
-    {{8529, 0, 0}, "cllllll-rrrrrr", -1},                                                 // chest, sleeves
+    {{13755, 15051, 0}, "LLLLLLLLLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRRRRRRRR", 37, nullptr, 0, {}, kGlovesForearm,
+     std::size(kGlovesForearm)},  // gloves
+    {{7617, 49995, 0}, "--LLL-LLLLLLLrrrRRRRRRRRRRRRRRRRRRRRRRr", -1, kGloveDepthLeft, std::size(kGloveDepthLeft), {},
+     kGloveDepthForearm, std::size(kGloveDepthForearm)},  // their depth
+    {kBareForearms, "LLLLL-L-LLRRRRR-RR", -1, kForearmLeft, std::size(kForearmLeft), {}, kBareForearm,
+     std::size(kBareForearm)},  // bare forearms, whole
+    {{8529, 0, 0}, "cllllll-rrrrrr", -1},  // chest, sleeves
     {{21189, 28806, 0}, "cc-ccccccccccccllllLLLLLLLLLLLLLLLLLLLLLLlrrrrrRRRRRRRr", -1, kBodyDepthLeft,
-     std::size(kBodyDepthLeft)},              // body's depth
+     std::size(kBodyDepthLeft), {}, kBodyDepthForearm, std::size(kBodyDepthForearm)},  // body's depth
     {{4506, 8529, 0}, "c---ccccccccccccc", -1},  // legs
 };
+// Each forearm map has an entry for each of its draw's palette entries.
+static_assert(std::char_traits<char>::length(kArmDraws[0].roles) == std::size(kGlovesForearm) &&
+              std::char_traits<char>::length(kArmDraws[1].roles) == std::size(kGloveDepthForearm) &&
+              std::char_traits<char>::length(kArmDraws[2].roles) == std::size(kBareForearm) &&
+              std::char_traits<char>::length(kArmDraws[4].roles) == std::size(kBodyDepthForearm));
 
 // The gun's other skinned model (the mesh dumps: 7848 + 1440 indices drawn in colour, the 9288 of
 // its depth pass; bones 0-2 near the gun's back end, the stock): it goes wherever the gun goes.
@@ -2441,6 +2493,10 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
                     fold[side][i] = forearm[side][i * 4] * kForearmMiddle[side][0] +
                                     forearm[side][i * 4 + 1] * kForearmMiddle[side][1] +
                                     forearm[side][i * 4 + 2] * kForearmMiddle[side][2] + forearm[side][i * 4 + 3];
+        // A forearm solved from its hand: the same point, the middle of the forearm as it's drawn now
+        // (placed with its elbow end).
+        if (t.arm[0])
+            std::memcpy(fold[0], t.fold[0], sizeof(fold[0]));
         // The body and legs fold onto the line between the two arms' fold points, so every triangle
         // mixing them ('c', 'l' and 'r': 15 on the collar) stays without area (the review, 2026-10-31).
         float mid[3];
@@ -2452,10 +2508,19 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             case 'L':
                 // The whole hand placed as one, each bone bent as its finger is held. (Blending the
                 // matrices towards the game's own grip and past it folded the hand flat: user,
-                // 2026-10-30.)
+                // 2026-10-30.) With its forearm solved (build\arms.txt "on"), the forearm's bones and
+                // the glove's cuff on that instead, and the bare forearm's wrist end with the glove's
+                // bones it shares vertices with.
                 if (t.left) {
-                    int g = !draw.leftBones ? static_cast<int>(k) : k < draw.leftBoneCount ? draw.leftBones[k] : -1;
-                    Compose(t.leftPose, t.leftFingers[g >= 0 && g < handpose::kBones ? g : 0], bone);
+                    const int f = t.arm[0] && draw.forearm && k < draw.forearmCount ? draw.forearm[k] : -1;
+                    if (f >= 0 && f <= 2) {
+                        std::memcpy(bone, t.forearm[0][f], sizeof(t.forearm[0][f]));
+                    } else if (f >= 10 && f < 10 + handpose::kBones) {
+                        Compose(t.leftPose, t.leftFingers[f - 10], bone);
+                    } else {
+                        int g = !draw.leftBones ? static_cast<int>(k) : k < draw.leftBoneCount ? draw.leftBones[k] : -1;
+                        Compose(t.leftPose, t.leftFingers[g >= 0 && g < handpose::kBones ? g : 0], bone);
+                    }
                 }
                 break;
             case 'R':
