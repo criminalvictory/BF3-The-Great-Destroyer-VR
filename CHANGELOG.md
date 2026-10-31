@@ -4,6 +4,62 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
+
+Since the last upload. The game aims where the gun points and the view stays put however the gun
+moves, the left hand holds the gun, the free hand rests against the gun instead of passing through
+it, and everything drawn over the picture is the same in both eyes. Tested in the headset by the
+user ("they land there": the shots; the view no longer moves with the gun; the smooth turn the
+right way) and by the mod's own pictures of both eyes in combat.
+
+### New
+- **Both hands on the gun**: squeeze the left grip near the handguard and the left hand holds it
+  until the grip is let go (not on sway, not on a far swing). The gun points from the right hand to
+  the left, and the game aims along it. The glove is the game's own left hand as its animation
+  holds this gun (made for it, the grenade launcher included, so it doesn't clip), its fingers
+  moving a little with the controller's, easing on and off the gun.
+- **Collisions with the rifle**: the free left hand rests against the gun and slides along it
+  instead of passing through, and slapping the bolt release counts when the glove touches it. The
+  rifle's shape is a distance field built from its mesh dump by `gunshape.exe` (into
+  `build\guns\m416.bin`; it's the game's model, so it isn't in the repository). The launcher, the
+  stock and the scope aren't in it yet.
+- **Walking with the left stick as an analog stick** (the game reads a virtual controller), where
+  the head faces, not where the gun points.
+- **Sharper picture**: 2160 pixels per eye.
+- **God mode keeps the spare rounds up**, for testing the reloads over and over.
+- Tools: `gunshape.exe` (the rifle's collision shape and the glove's collision spheres),
+  `gripfit.exe` and `leverfit.exe` (the glove fitted on the gun from the mesh dumps),
+  `tools\gunammo.ps1` (the gun's ammo state from outside), `tools\make.bat` (build only some
+  targets, e.g. the tools while the game runs). weapon.txt: `tail` (one frame's draws onto the
+  window, in order), `viewdiff`, `viewlog` (the view's turn each frame), `aimtest`.
+
+### Fixed
+- **Every shot froze the game**: the window is bigger than the monitor, so the mouse pointer sat on
+  the taskbar's "Show desktop" corner and each fire click minimised everything. The pointer is now
+  kept on the game's window.
+- **The view moved with the gun, and the game aimed the other way**: BF3's look angle grows turning
+  right, the headset's turning left. The old angle finder flipped it; the search that replaced it
+  didn't. The flip is now built into the aim itself (the gun's turn and the stick's), the angle is
+  set outright each frame, and the picture goes by the angle written.
+- **Shots didn't go where the gun pointed**: recoil or a turn during the check that proves the
+  look angles let a wrong pair through. The check now waits for a still camera, nudges both the
+  yaw and the pitch each its own way, and needs the camera to follow both and come back.
+- **The right eye smeared into streaks when suppressed** (seen as a blinding blur): BF3 drew the
+  second eye as a split screen's right half, and its screen effects read the scene past its edge.
+  The right eye is now drawn as the left one is and moved into place; the player's blood, damage
+  tint and HUD go into both eyes.
+- **Magazines held 59 or 88 rounds**: the game reloaded by itself on top of a hand reload. The
+  game's count keeps one hidden round so it never runs dry, and the rifle's magazine is 30.
+- The grip let go when the gun was swung far right or left, the free hand jittered against the
+  gun, the gun shook aiming up past the game's pitch limit, and the reload sounds were off to the
+  right: all fixed. The ejection port's cover swings shut between shots, and the black layer round
+  the arms, glove and gun is gone.
+
+### Known
+- The ammo counter on the HUD shows one round more than the gun holds (the hidden round).
+- The lever hand still clips the charging handle's shaft.
+- The ACOG's reticle can float away from the scope.
+
 ## 2026-10-30, night: smooth turning and reloading by hand (stage: pre-alpha, experimental)
 
 4 commits since the last upload. Turning is smooth, the rifle is reloaded by hand with the game's
