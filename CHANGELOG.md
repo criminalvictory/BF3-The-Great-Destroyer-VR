@@ -7,8 +7,11 @@ GitHub release.
 ## 2026-10-31, morning: the gun stays in your hands, no lens-flare ring, a steady grip (stage: pre-alpha, experimental)
 
 From the user's headset session and videos this morning. The grip and wrist fixes were seen in the
-headset ("both fixed"); the rest is checked by the self-test, an offline test and the mod's own
-pictures, not yet in the headset.
+headset ("both fixed"). The gun and the lens flare were then tried in the headset one test at a time,
+and all six passed: two-handed aiming smooth with no jumps; the gun staying with the right hand while
+the left wanders with the grip squeezed; settling back gently onto the handguard; no jump letting go;
+the ring gone and the lens blobs kept; a relaxed left hand not grabbing or sticking (the grip reads
+1.0 holding, about 0.2 let go).
 
 ### Fixed
 - **The gun jumping to wrong places** (the user's video: the rifle lying across the body, swinging
