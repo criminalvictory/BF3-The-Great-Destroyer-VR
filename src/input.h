@@ -24,7 +24,12 @@ bool HandPose(int hand, XrPosef& out);
 // The stand-in hand (weapon.txt "standin 1"): each frame after Sync, with the head's pose. While
 // it's on and the right controller isn't tracked, AimPose and HandPose(1) give a right hand holding
 // the rifle out in front, aimed where the head looks, to test the gun with nobody in the headset.
-void SetStandIn(bool on);
+// pitchDegrees ("standin 1 45"): with the headset asleep (headless frames), the head looks that far
+// up, so test shots go into the sky.
+// yawDegrees ("standin 1 45 25"): the gun aims that far right of the head (to see its side).
+// shift ("standin 1 45 0 -0.25 -0.15 0"): the hold moved (right, up, back; metres).
+void SetStandIn(bool on, float pitchDegrees = 0.0f, float yawDegrees = 0.0f, const float* shift = nullptr);
+float StandInPitch();  // radians
 void StandIn(const XrPosef& head);
 bool StandingIn();
 // The stand-in is switched on (weapon.txt "standin 1"), whether or not it holds the gun now.

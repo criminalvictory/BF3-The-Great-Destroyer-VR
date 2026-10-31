@@ -78,8 +78,10 @@ $startup = @(
 )
 foreach ($s in $startup) { if ($text -match $s[1]) { Result $s[0] 'PASS' '' } else { Result $s[0] 'FAIL' "no '$($s[1])' in the log" } }
 if ($text -match '(MH_CreateHook failed|hooking .* failed)') { Result 'Hooks' 'FAIL' $matches[1] } else { Result 'Hooks' 'PASS' '' }
-$recent = $all | Select-Object -Last 300
-if ($recent -match "exactly level") { Result 'Look angles held' 'FAIL' 'the search is running again (lost them)' } else { Result 'Look angles held' 'PASS' '' }
+# Lost again: the search's own lines after the last find.
+$lastFound = ($all | Select-String 'Aim: the look angles found' | Select-Object -Last 1).LineNumber
+$after = if ($lastFound) { $all | Select-Object -Skip $lastFound } else { @() }
+if ($after -match 'exactly level|too many to nudge|no look angles yet') { Result 'Look angles held' 'FAIL' 'the search is running again (lost them)' } else { Result 'Look angles held' 'PASS' '' }
 
 # 2. Frame rate (the last ten seconds' timing lines).
 $timing = @($all | Select-String 'Frame timing \(ms per frame\): whole frame ([\d.]+)' | Select-Object -Last 10 | ForEach-Object { [double]$_.Matches[0].Groups[1].Value })

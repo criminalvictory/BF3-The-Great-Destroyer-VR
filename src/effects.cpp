@@ -246,6 +246,135 @@ bool FlashSprite(ID3D11DeviceContext* ctx, UINT vertices) {
     return true;
 }
 
+// A buffer's bytes read back through a staging copy (a stall: for probes only). A vertex buffer's
+// range is copied as it is; a constant buffer whole (it can't be copied in part).
+bool ReadBack(ID3D11DeviceContext* ctx, ID3D11Buffer* buffer, UINT offset, UINT size, void* out) {
+    D3D11_BUFFER_DESC desc;
+    buffer->GetDesc(&desc);
+    const bool constants = (desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0;
+    if (constants)
+        offset = 0, size = std::min(size, desc.ByteWidth);
+    if (offset + size > desc.ByteWidth || !size)
+        return false;
+    ID3D11Device* device = nullptr;
+    buffer->GetDevice(&device);
+    D3D11_BUFFER_DESC staging{};
+    staging.ByteWidth = constants ? desc.ByteWidth : (size + 15) & ~15u;
+    staging.Usage = D3D11_USAGE_STAGING;
+    staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Buffer* copy = nullptr;
+    bool ok = false;
+    if (device && SUCCEEDED(device->CreateBuffer(&staging, nullptr, &copy))) {
+        if (constants) {
+            ctx->CopyResource(copy, buffer);
+        } else {
+            const D3D11_BOX box{offset, 0, 0, offset + size, 1, 1};
+            ctx->CopySubresourceRegion(copy, 0, 0, 0, 0, buffer, 0, &box);
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(ctx->Map(copy, 0, D3D11_MAP_READ, 0, &mapped))) {
+            std::memcpy(out, static_cast<const uint8_t*>(mapped.pData) + (constants ? offset : 0), size);
+            ctx->Unmap(copy, 0);
+            ok = true;
+        }
+        copy->Release();
+    }
+    if (device)
+        device->Release();
+    return ok;
+}
+
+// The flash is placed by the first matrix of its 4096-byte block (vertex shader constants 0), in
+// the arms' space, at the game's muzzle (the flash probe, 2026-10-31: its sprites are flat quads
+// around it, the world view in their other constants; moving the view constants had moved
+// nothing). Drawn with a copy of the block with that matrix moved as the gun is, from where the
+// game holds it to the hand, if it's at the game's gun (the same shader draws screen-wide things,
+// placed elsewhere).
+std::atomic<uint32_t> g_flashMoved{0}, g_flashNotAtGun{0};
+std::atomic<bool> g_flashMove{true};  // weapon.txt "flashmove 0": left where the game puts it (to compare)
+
+bool DrawAtGun(int which, ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
+    if (!g_flashMove.load(std::memory_order_relaxed))
+        return false;
+    ID3D11Buffer* block = nullptr;
+    ctx->VSGetConstantBuffers(0, 1, &block);
+    if (!block)
+        return false;
+    block->Release();  // its address is enough
+    unsigned int size = 0;
+    uint32_t serial = 0;
+    const uint8_t* bytes = skin::LatestBlockOf(block, size, serial);
+    float delta[12], gunWorld[3], gunArms[3];
+    if (!bytes || size < 48 || !skin::GunDeltaArms(delta) || !skin::GameGunPlaces(gunWorld, gunArms))
+        return false;
+    const float* m = reinterpret_cast<const float*>(bytes);
+    const float off[3] = {m[3] - gunArms[0], m[7] - gunArms[1], m[11] - gunArms[2]};
+    if (off[0] * off[0] + off[1] * off[1] + off[2] * off[2] > 1.0f) {
+        ++g_flashNotAtGun;
+        return false;
+    }
+    thread_local std::vector<uint8_t> t_copy;
+    t_copy.assign(bytes, bytes + size);
+    auto* moved = reinterpret_cast<float*>(t_copy.data());
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 4; ++c)
+            moved[r * 4 + c] = delta[r * 4] * m[c] + delta[r * 4 + 1] * m[4 + c] + delta[r * 4 + 2] * m[8 + c];
+        moved[r * 4 + 3] += delta[r * 4 + 3];
+    }
+    if (!skin::DrawWithCopy(which, ctx, block, t_copy.data(), size, draw))
+        return false;
+    ++g_flashMoved;
+    return true;
+}
+
+// weapon.txt "flashprobe": the next ten flash sprites' vertices (read back) and vertex-shader
+// constants, with the game's gun: whether the sprites lie in the world (their vertices there) or
+// are placed by a matrix. Moving the view constants moved none of them (2026-10-30).
+std::atomic<int> g_flashProbe{0};
+
+void ProbeFlash(ID3D11DeviceContext* ctx, UINT count, UINT start) {
+    float gunWorld[3] = {}, gunArms[3] = {};
+    const bool gun = skin::GameGunPlaces(gunWorld, gunArms);
+    ID3D11Buffer* vb = nullptr;
+    UINT stride = 0, offset = 0;
+    ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
+    if (vb) {
+        D3D11_BUFFER_DESC d;
+        vb->GetDesc(&d);
+        Log("Flash probe: Draw %u from %u: vertex buffer %u bytes (usage %d), stride %u; the game's gun %s at world "
+            "%.2f %.2f %.2f, arms %.2f %.2f %.2f",
+            count, start, d.ByteWidth, static_cast<int>(d.Usage), stride, gun ? "known" : "not known", gunWorld[0],
+            gunWorld[1], gunWorld[2], gunArms[0], gunArms[1], gunArms[2]);
+        uint8_t data[6 * 64] = {};
+        const UINT n = std::min(count, 6u);
+        if (stride >= 12 && stride <= 64 && ReadBack(ctx, vb, offset + start * stride, n * stride, data))
+            for (UINT v = 0; v < n; ++v) {
+                const float* f = reinterpret_cast<const float*>(data + v * stride);
+                const uint32_t* u = reinterpret_cast<const uint32_t*>(f);
+                Log("Flash probe:   vertex %u: %.3f %.3f %.3f | %08X %08X %08X", v, f[0], f[1], f[2], u[3],
+                    stride > 16 ? u[4] : 0, stride > 20 ? u[5] : 0);
+            }
+        vb->Release();
+    }
+    ID3D11Buffer* buffers[4] = {};
+    ctx->VSGetConstantBuffers(0, 4, buffers);
+    for (int s = 0; s < 4; ++s) {
+        if (!buffers[s])
+            continue;
+        D3D11_BUFFER_DESC d;
+        buffers[s]->GetDesc(&d);
+        float f[96] = {};
+        const UINT n = std::min(d.ByteWidth, static_cast<UINT>(sizeof(f)));
+        char line[1400];
+        int used = snprintf(line, sizeof(line), "Flash probe:   VS constants %d (%u bytes):", s, d.ByteWidth);
+        if (ReadBack(ctx, buffers[s], 0, n, f))
+            for (UINT i = 0; i < n / 4 && used < 1360; ++i)
+                used += snprintf(line + used, sizeof(line) - used, " %.3g", f[i]);
+        Log("%s", line);
+        buffers[s]->Release();
+    }
+}
+
 bool FlashMesh(ID3D11DeviceContext* ctx, UINT indices) {
     return indices == 36 && FlashLike(ctx, 32, 2);
 }
@@ -927,7 +1056,13 @@ void STDMETHODCALLTYPE Draw0(ID3D11DeviceContext* c, UINT count, UINT start) {
     if (overlay::Draw(c, count, [&] { g_origDraw[0](c, count, start); }))
         return;
     if (FlashSprite(c, count)) {
+        if (int probe = g_flashProbe.load(std::memory_order_relaxed); probe > 0) {
+            g_flashProbe.store(probe - 1, std::memory_order_relaxed);
+            ProbeFlash(c, count, start);
+        }
         DumpFx(count);
+        if (DrawAtGun(0, c, [&] { g_origDraw[0](c, count, start); }))
+            return;
         if (DrawMoved(0, c, [&] { g_origDraw[0](c, count, start); }))
             return;
     }
@@ -940,7 +1075,13 @@ void STDMETHODCALLTYPE Draw1(ID3D11DeviceContext* c, UINT count, UINT start) {
     if (overlay::Draw(c, count, [&] { g_origDraw[1](c, count, start); }))
         return;
     if (FlashSprite(c, count)) {
+        if (int probe = g_flashProbe.load(std::memory_order_relaxed); probe > 0) {
+            g_flashProbe.store(probe - 1, std::memory_order_relaxed);
+            ProbeFlash(c, count, start);
+        }
         DumpFx(count);
+        if (DrawAtGun(1, c, [&] { g_origDraw[1](c, count, start); }))
+            return;
         if (DrawMoved(1, c, [&] { g_origDraw[1](c, count, start); }))
             return;
     }
@@ -1032,7 +1173,7 @@ bool InstallHooks(const DrawFunctions& f) {
 }
 
 bool DrawWithGun(int which, ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
-    return DrawMoved(which, ctx, draw);
+    return DrawAtGun(which, ctx, draw) || DrawMoved(which, ctx, draw);
 }
 
 int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT start, INT) {
@@ -1043,6 +1184,16 @@ int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT start, INT) {
     if (const int casing = CasingDraw(count); casing != kNormal)
         return casing;
     return FlashMesh(ctx, count) ? kMove : kNormal;
+}
+
+void SetFlashMove(bool on) {
+    if (g_flashMove.exchange(on) != on)
+        Log("Effects: the muzzle flash %s", on ? "drawn at the gun in the hand" : "left where the game draws it");
+}
+
+void ProbeFlashes(int sprites) {
+    g_flashProbe = sprites;
+    Log("Flash probe: the next %d flash sprites are logged", sprites);
 }
 
 void SetLift(float metres) {
@@ -1133,24 +1284,14 @@ void Update() {
     if (const ULONGLONG now = GetTickCount64(); now - lastLog >= 1000) {
         lastLog = now;
         const uint32_t shots = g_shots.exchange(0), seen = g_flashSeen.exchange(0), moved = g_movedDraws.exchange(0),
-                       noDelta = g_noDelta.exchange(0), noView = g_noView.exchange(0), noSlot = g_noSlot.exchange(0);
-        if (shots || seen || moved || noDelta || noView || noSlot)
-            Log("Effects: last second %u shots; flash sprites %u; draws moved with the gun %u, not moved: %u no gun "
-                "move, %u no view constants, %u not bound (matrices %d)",
-                shots, seen, moved, noDelta, noView, noSlot, g_moveMatrices.load());
+                       noDelta = g_noDelta.exchange(0), noView = g_noView.exchange(0), noSlot = g_noSlot.exchange(0),
+                       atGun = g_flashMoved.exchange(0), notAtGun = g_flashNotAtGun.exchange(0);
+        if (shots || seen || moved || noDelta || noView || noSlot || atGun || notAtGun)
+            Log("Effects: last second %u shots; flash sprites %u; moved by their block's matrix %u (%u not at the "
+                "gun); moved by the view %u, not moved: %u no gun move, %u no view constants, %u not bound (matrices %d)",
+                shots, seen, atGun, notAtGun, moved, noDelta, noView, noSlot, g_moveMatrices.load());
     }
     if (GetTickCount64() <= g_probeUntil.load(std::memory_order_relaxed)) {
-    // Once a second while anything happened: shots, and what became of the flash's draws.
-    static ULONGLONG lastLog = 0;
-    if (const ULONGLONG now = GetTickCount64(); now - lastLog >= 1000) {
-        lastLog = now;
-        const uint32_t shots = g_shots.exchange(0), seen = g_flashSeen.exchange(0), moved = g_movedDraws.exchange(0),
-                       noDelta = g_noDelta.exchange(0), noView = g_noView.exchange(0), noSlot = g_noSlot.exchange(0);
-        if (shots || seen || moved || noDelta || noView || noSlot)
-            Log("Effects: last second %u shots; flash sprites %u; draws moved with the gun %u, not moved: %u no gun "
-                "move, %u no view constants, %u not bound (matrices %d)",
-                shots, seen, moved, noDelta, noView, noSlot, g_moveMatrices.load());
-    }
         // The game's muzzle: the end of the barrel in the gun's model space (the mesh dump).
         constexpr float kMuzzle[3] = {0.0f, 0.04f, 0.78f};
         float body[12], world[3], arms[3];

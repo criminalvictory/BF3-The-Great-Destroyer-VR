@@ -36,6 +36,9 @@ do {
     $line = Get-Content $log | Select-Object -Skip $before | Select-String 'FOV: source 55\.0, render view 100|Ammo: the gun in hand' | Select-Object -Last 1
     # The click doesn't always take (2026-10-30 23:00: the menu stayed): clicked again every 24 s.
     if (-not $line -and $t % 24 -eq 0 -and $t -le 96) {
+        # The window may have grown since (it opened at 1280x720 once, 2026-10-30 23:59): measured again.
+        [void][ResumeWin]::GetClientRect((Get-Process bf3).MainWindowHandle, [ref]$client)
+        $x = [int]($client.R / 2 - 350); $y = [int]($client.B / 2 - 198)
         & powershell -NoProfile -ExecutionPolicy Bypass -File $tool -Action click -X $x -Y $y -Name resume_click | Out-Null
     }
 } while ($t -lt 180 -and -not $line)

@@ -723,6 +723,7 @@ void ReadWeaponSelection() {
     float flashLift = 0.0f;
     int hidePsCount = 0;
     float testPull = -1.0f;
+    int flashMove = 1;
     int hudFix = 0;
     int moveCount = 0;
     int hideCount = 0;
@@ -734,8 +735,9 @@ void ReadWeaponSelection() {
             *next++ = 0;
         if (const char* si = std::strstr(line, "standin")) {
             int on = 1;
-            sscanf_s(si + 7, "%d", &on);
-            input::SetStandIn(on != 0);
+            float pitch = 0.0f, yaw = 0.0f, shift[3] = {};
+            sscanf_s(si + 7, "%d %f %f %f %f %f", &on, &pitch, &yaw, &shift[0], &shift[1], &shift[2]);
+            input::SetStandIn(on != 0, pitch, yaw, shift);
             line = next;
             continue;
         }
@@ -790,6 +792,16 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "empty")) {
             ammo::Empty();
+            line = next;
+            continue;
+        }
+        if (const char* fm2 = std::strstr(line, "flashmove")) {
+            sscanf_s(fm2 + 9, "%d", &flashMove);
+            line = next;
+            continue;
+        }
+        if (std::strstr(line, "flashprobe")) {
+            effects::ProbeFlashes(10);
             line = next;
             continue;
         }
@@ -937,6 +949,7 @@ void ReadWeaponSelection() {
     effects::SetMoveMatrices(flashMats);
     effects::SetLift(flashLift);
     reload::TestPull(testPull);
+    effects::SetFlashMove(flashMove != 0);
     overlay::SetHudFix(hudFix);
     if (g_wiggleBone.exchange(wiggle) != wiggle)
         Log("Weapon: %s", wiggle >= 0 ? "a bone slides to and fro (wiggle)" : "no bone wiggles");
@@ -2802,6 +2815,14 @@ bool GunDeltaWorld(float (&out)[16]) {
     }
     out[12] = out[13] = out[14] = 0.0f;
     out[15] = 1.0f;
+    return true;
+}
+
+bool GunDeltaArms(float (&out)[12]) {
+    std::lock_guard lock(g_handsMutex);
+    if (!g_haveGunDeltaTrue || GetTickCount64() - g_gunDeltaTrueTime > 100)
+        return false;
+    std::memcpy(out, g_gunDeltaTrue, sizeof(out));
     return true;
 }
 

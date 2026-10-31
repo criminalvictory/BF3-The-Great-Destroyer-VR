@@ -42,6 +42,11 @@ void SetHiddenShaders(const uintptr_t* shaders, int n);
 void SetMoveMatrices(int which);
 // weapon.txt "flashlift 1": what's moved with the gun is lifted that many metres more, to see
 // plainly whether a way of moving it works.
+// weapon.txt "flashprobe": the next sprites of the muzzle flash logged with their vertices (read
+// back) and vertex-shader constants.
+void ProbeFlashes(int sprites);
+// weapon.txt "flashmove 0": the muzzle flash left where the game draws it (1, the default: at the gun).
+void SetFlashMove(bool on);
 void SetLift(float metres);
 
 // Milliseconds since the last shot (the rounds in the gun going down by one), for animations.

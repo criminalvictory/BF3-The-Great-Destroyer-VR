@@ -68,12 +68,17 @@ XrPosef g_aimPose{};
 // pose sits from its aim pose as the real controller's do: learned whenever the right controller
 // is tracked and kept in build\standin.txt for the next run.
 std::atomic<bool> g_standIn{false};
+std::atomic<float> g_standInPitch{0.0f};  // radians: the headless head tilted up (to fire at the sky)
+std::atomic<float> g_standInYaw{0.0f};    // radians, left positive: the gun turned from the head (to see its side)
 bool g_standingIn = false;  // holding the gun this frame
 XrPosef g_aimToGrip{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};  // the grip in the aim pose's frame
 bool g_haveAimToGrip = false;
 ULONGLONG g_aimToGripSavedAt = 0;
 // Where it aims from in the head's frame (x right, y up, z back; metres): a rifle shouldered.
 constexpr XrVector3f kStandInAim{0.08f, -0.10f, -0.30f};
+// "standin 1 45 0 -0.25 -0.15 0": the hold moved that far (right, up, back; metres), so the drawn
+// gun is clearly apart from where the game holds its own (to tell what follows which).
+std::atomic<float> g_standInShift[3] = {0.0f, 0.0f, 0.0f};
 
 XrQuaternionf Mul(const XrQuaternionf& a, const XrQuaternionf& b) {
     return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
@@ -827,9 +832,21 @@ bool HandPose(int hand, XrPosef& out) {
     return true;
 }
 
-void SetStandIn(bool on) {
+void SetStandIn(bool on, float pitchDegrees, float yawDegrees, const float* shift) {
+    for (int i = 0; i < 3; ++i)
+        g_standInShift[i].store(shift ? shift[i] : 0.0f, std::memory_order_relaxed);
     if (g_standIn.exchange(on) != on)
         Log("Stand-in hand: %s", on ? "on (holds the rifle while the right controller isn't tracked)" : "off");
+    const float pitch = pitchDegrees * 3.14159265f / 180.0f;
+    if (g_standInPitch.exchange(pitch) != pitch)
+        Log("Stand-in hand: the headless head looks %.0f degrees up", pitchDegrees);
+    const float yaw = -yawDegrees * 3.14159265f / 180.0f;  // given right positive
+    if (g_standInYaw.exchange(yaw) != yaw)
+        Log("Stand-in hand: aiming %.0f degrees right of the head", yawDegrees);
+}
+
+float StandInPitch() {
+    return g_standInPitch.load(std::memory_order_relaxed);
 }
 
 void StandIn(const XrPosef& head) {
@@ -852,10 +869,14 @@ void StandIn(const XrPosef& head) {
         yaw = std::atan2(-fx, -fz);
         pitch = std::asin(std::clamp(fy, -1.0f, 1.0f));
     }
+    yaw += g_standInYaw.load(std::memory_order_relaxed);
     const XrQuaternionf turn{0.0f, std::sin(yaw / 2), 0.0f, std::cos(yaw / 2)};
     const XrQuaternionf tilt{std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
     const XrQuaternionf level = Mul(turn, tilt);
-    const XrVector3f at = Rotate(level, kStandInAim);
+    const XrVector3f hold{kStandInAim.x + g_standInShift[0].load(std::memory_order_relaxed),
+                          kStandInAim.y + g_standInShift[1].load(std::memory_order_relaxed),
+                          kStandInAim.z + g_standInShift[2].load(std::memory_order_relaxed)};
+    const XrVector3f at = Rotate(level, hold);
     g_aimPose.orientation = level;
     g_aimPose.position = {head.position.x + at.x, head.position.y + at.y, head.position.z + at.z};
     g_aimTracked = true;

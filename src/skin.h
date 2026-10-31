@@ -86,6 +86,8 @@ bool GameGunPlaces(float (&world)[3], float (&arms)[3]);
 // The gun's move from where the game holds it to the right hand, to where the gun really is (no
 // per-eye shift), in the world: a 4x4 (rows; column vectors). False while the gun isn't moved.
 bool GunDeltaWorld(float (&out)[16]);
+// The same move in the arms' space: rows rotation | translation.
+bool GunDeltaArms(float (&out)[12]);
 // This thread's latest per-view constants (352 bytes: the view-projection at +176) as they went to
 // the graphics card, and their buffer.
 const uint8_t* LatestViewConstants(ID3D11Resource*& resource);

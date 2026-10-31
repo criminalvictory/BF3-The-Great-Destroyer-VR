@@ -896,6 +896,17 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
                 views[e].fov = {-0.87f, 0.87f, 0.87f, -0.87f};
             }
         }
+        // "standin 1 45": the head tilted up that far about its own right (test shots into the sky).
+        if (const float pitch = input::StandInPitch(); pitch != 0.0f) {
+            const XrQuaternionf t{std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
+            for (XrView& v : views) {
+                const XrQuaternionf q = v.pose.orientation;
+                v.pose.orientation = {q.w * t.x + q.x * t.w + q.y * t.z - q.z * t.y,
+                                      q.w * t.y - q.x * t.z + q.y * t.w + q.z * t.x,
+                                      q.w * t.z + q.x * t.y - q.y * t.x + q.z * t.w,
+                                      q.w * t.w - q.x * t.x - q.y * t.y - q.z * t.z};
+            }
+        }
     } else if (!Check(xrLocateViews(g_session, &locate, &viewState, 2, &viewCount, views), "xrLocateViews") ||
                !(viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
         return;

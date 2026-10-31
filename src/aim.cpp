@@ -123,17 +123,23 @@ std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPit
 // A load leaves the pitch exactly level until it's written, and level, nothing is nudged (below):
 // the game's view is tilted a few degrees by the mouse, the game's own input, so the next search
 // can go ahead. Only with the game's window in front (the mouse would move the desktop's otherwise).
-void TiltView() {
+void TiltView(bool turn) {
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     if (pid != GetCurrentProcessId())
         return;
     INPUT in{};
     in.type = INPUT_MOUSE;
-    in.mi.dy = 24;  // about 6 degrees down at the test setup's mouse speed
+    in.mi.dy = 24;            // about 6 degrees down at the test setup's mouse speed
+    in.mi.dx = turn ? 24 : 0;  // and as much to the side, for a yaw that's a zero too
     in.mi.dwFlags = MOUSEEVENTF_MOVE;
     SendInput(1, &in, sizeof(in));
 }
+
+// More pairs than this matching the camera means its angles are ones memory is full of (a yaw or
+// pitch near zero): 163 pairs at yaw 0.0085 once, and nudging them crashed the game (2026-10-31).
+// Nothing is nudged then; the view is turned a little and searched again.
+constexpr size_t kMostPairs = 16;
 
 // Whether a yaw/pitch pair is the player's look: with the camera still (not turning, not firing),
 // its yaw nudged one way and its pitch the other, the pair keeps them and the camera's yaw and pitch
@@ -195,10 +201,13 @@ void Search(uintptr_t soldier) {
     // Looking level, the pitch is a zero, which matches every zero after a yaw-like float: nothing
     // is nudged then (nudging stray matches crashed the game once, from outside, 2026-10-30).
     int busy = 0;  // pairs not tried: the camera was moving (turning, firing)
-    if (camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.02f) {
+    bool crowded = false;
+    if (camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) > 0.02f &&
+        std::fabs(cameraYaw) > 0.02f) {
         const std::vector<uintptr_t> pairs = Pairs(soldier, cameraYaw, cameraPitch);
         candidates = pairs.size();
-        for (size_t k = 0; k < pairs.size() && k < 24 && !found; ++k) {
+        crowded = candidates > kMostPairs;
+        for (size_t k = 0; k < pairs.size() && !crowded && !found; ++k) {
             switch (Proves(pairs[k])) {
             case Proof::kYes:
                 found = pairs[k], ++kept;
@@ -214,15 +223,20 @@ void Search(uintptr_t soldier) {
             }
         }
     }
-    const bool level = !found && camera::GameWeaponAngles(cameraYaw, cameraPitch) && std::fabs(cameraPitch) <= 0.02f;
-    if (level)
-        TiltView();
+    const bool level = !found && camera::GameWeaponAngles(cameraYaw, cameraPitch) &&
+                       (std::fabs(cameraPitch) <= 0.02f || std::fabs(cameraYaw) <= 0.02f);
+    if (level || crowded)
+        TiltView(true);
     static uintptr_t s_logged = 1;
     if (found && found != s_logged)
         Log("Aim: the look angles found at %08X (%zu pairs near the soldier matching the camera, %d kept a nudge)",
             static_cast<unsigned>(found), candidates, kept);
     else if (level)
-        Log("Aim: the game's view is exactly level, which can't be told apart; tilted a little to look again");
+        Log("Aim: the game's view is exactly level or straight ahead, which can't be told apart; turned a little to "
+            "look again");
+    else if (crowded)
+        Log("Aim: %zu pairs near the soldier match the camera, too many to nudge safely; turned a little to look again",
+            candidates);
     else if (!found)
         Log("Aim: no look angles yet (%zu pairs near the soldier matching the camera, %d kept a nudge, none turned "
             "it, %d not tried with the camera moving); the view follows the head meanwhile",
