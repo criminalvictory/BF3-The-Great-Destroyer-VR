@@ -28,5 +28,8 @@ float HandleBack();
 
 // How far the ejection port's cover has swung open on its hinge, in radians (0 = shut).
 float CoverAngle();
+// weapon.txt "pull 30": the charging handle held drawn this far (metres; below 0 no test), to see
+// the cover open with it without anyone in the headset.
+void TestPull(float metres);
 
 }

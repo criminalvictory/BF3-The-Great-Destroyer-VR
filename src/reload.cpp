@@ -38,11 +38,15 @@ constexpr double kSpringHome = 0.06;     // s: the handle let go, back home
 // The ejection port's cover springs open on its hinge with each shot and snaps shut before the next
 // (the user: it opens and shuts, it doesn't slide; then: faster, between shots). Shots come
 // ~75 ms apart; open within a frame, held about a frame, shut within ~35 ms. It stays open while
-// the bolt is locked back or the charging handle is drawn.
+// the bolt is locked back. With the charging handle it stays in step with the handle: as far open
+// as the handle has come back, all the way at kCoverFullAt, so a slow pull opens it slowly (user,
+// 2026-10-30: it popped open and shut "too quick"), and let go, it shuts as the spring takes the
+// handle home (the user: then it should close at once).
 constexpr float kCoverOpen = 2.8f;       // radians (160 degrees): out and down against the receiver
 constexpr double kCoverSwing = 0.012;    // s to spring open
 constexpr double kCoverHold = 0.018;     // s open after the bolt last moved
 constexpr double kCoverShut = 0.035;     // s to swing shut
+constexpr float kCoverFullAt = 0.04f;    // m of the handle's pull: the cover all the way open
 
 bool g_boltBack = false;
 bool g_grabbed = false;
@@ -54,6 +58,8 @@ bool g_wasTouching = false;  // the glove touched the gun last frame (a slap is 
 double g_lastTime = 0.0;
 int g_lastLoaded = -1;
 float g_cover = 0.0f;  // 0 shut, 1 open
+bool g_coverByHandle = false;  // opened by the handle (follows it home) rather than by a shot
+std::atomic<float> g_testPull{-1.0f};  // weapon.txt "pull 30": the handle drawn this far (m), a test
 double g_boltMovedAt = -1.0;
 ULONGLONG g_shotSeen = 0;  // the last shot the cover opened for
 std::atomic<float> g_handleBack{0.0f}, g_coverAngle{0.0f};  // what DrawGun draws
@@ -165,18 +171,30 @@ void Update(const float* gunPose, const float* leftPalm, float trigger, const fl
         else
             g_releasedAt = -1.0, g_pull = 0.0f;
     }
+    if (const float test = g_testPull.load(std::memory_order_relaxed); test >= 0.0f)
+        handle = std::min(test, kPullTravel);
     g_handleBack = handle;
 
-    // The cover: open while the bolt moves (a shot, locked back, the handle drawn), then shut.
+    // The cover: snapped open by a shot or the bolt locking back, then shut; with the handle, as far
+    // open as the handle is back: pulled, eased forward by hand, or sprung home.
     const ULONGLONG shot = effects::LastShot();
     const bool newShot = shot != g_shotSeen;
     g_shotSeen = shot;
-    if (newShot || g_boltBack || handle > 0.01f)
+    if (newShot || g_boltBack)
         g_boltMovedAt = now;
-    const bool open = g_boltMovedAt >= 0.0 && now - g_boltMovedAt < kCoverHold;
-    g_cover = open ? std::min(g_cover + dt / static_cast<float>(kCoverSwing), 1.0f)
-                   : std::max(g_cover - dt / static_cast<float>(kCoverShut), 0.0f);
-    g_coverAngle = kCoverOpen * g_cover * (2.0f - g_cover);  // fast at first, easing into place
+    const bool snapped = g_boltMovedAt >= 0.0 && now - g_boltMovedAt < kCoverHold;
+    const float drawn = std::clamp(handle / kCoverFullAt, 0.0f, 1.0f);
+    if (snapped) {
+        g_cover = std::min(g_cover + dt / static_cast<float>(kCoverSwing), 1.0f);
+        g_coverByHandle = false;
+    } else if (drawn > 0.0f || g_coverByHandle) {
+        g_cover = drawn;
+        g_coverByHandle = drawn > 0.0f;
+    } else {
+        g_cover = std::max(g_cover - dt / static_cast<float>(kCoverShut), 0.0f);
+    }
+    // Snapped by a shot: fast at first, easing into place. With the handle: the angle as the pull.
+    g_coverAngle = kCoverOpen * (g_coverByHandle ? g_cover : g_cover * (2.0f - g_cover));
 
     // The bolt release: a slap at the left side of the receiver, behind the magazine well. The glove
     // touching the gun there as the hand comes in (the gun's shape, gunshape.cpp: the user saw the
@@ -218,6 +236,11 @@ float HandleBack() {
 
 float CoverAngle() {
     return g_coverAngle.load(std::memory_order_relaxed);
+}
+
+void TestPull(float metres) {
+    if (g_testPull.exchange(metres) != metres)
+        Log("Reload: %s", metres >= 0.0f ? "the charging handle held drawn (weapon.txt pull)" : "no test pull");
 }
 
 }

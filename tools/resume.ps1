@@ -34,6 +34,10 @@ do {
     Start-Sleep 3; $t += 3
     # The game's own view in use, or the player's gun found (the FOV line doesn't always come).
     $line = Get-Content $log | Select-Object -Skip $before | Select-String 'FOV: source 55\.0, render view 100|Ammo: the gun in hand' | Select-Object -Last 1
+    # The click doesn't always take (2026-10-30 23:00: the menu stayed): clicked again every 24 s.
+    if (-not $line -and $t % 24 -eq 0 -and $t -le 96) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $tool -Action click -X $x -Y $y -Name resume_click | Out-Null
+    }
 } while ($t -lt 180 -and -not $line)
 if (-not $line) { Write-Host "no gameplay after $t s (clicked $x,$y in a $($client.R)x$($client.B) window; see screenshots\resume_click.png)"; exit 1 }
 Write-Host "gameplay after $t s (clicked $x,$y): $line"

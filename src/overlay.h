@@ -19,4 +19,8 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
 // From the Present hook: a new frame's pictures follow.
 void NewFrame();
 
+// weapon.txt "tail": log the next frame's choices. "hudfix N": a HUD experiment (0 none).
+void LogNextFrame();
+void SetHudFix(int mode);
+
 }

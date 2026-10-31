@@ -21,6 +21,13 @@ bool AimPose(XrPosef& out);
 // A hand's grip pose (0 left, 1 right) from the last Sync, in the same space, if it's tracked.
 bool HandPose(int hand, XrPosef& out);
 
+// The stand-in hand (weapon.txt "standin 1"): each frame after Sync, with the head's pose. While
+// it's on and the right controller isn't tracked, AimPose and HandPose(1) give a right hand holding
+// the rifle out in front, aimed where the head looks, to test the gun with nobody in the headset.
+void SetStandIn(bool on);
+void StandIn(const XrPosef& head);
+bool StandingIn();
+
 // The left glove's fingers: how far the grip is squeezed (0-1, the middle, ring and little
 // fingers), how far the trigger is pulled (0-1, the index finger), and the thumb resting on the
 // stick. All three: a fist.

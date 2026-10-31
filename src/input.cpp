@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -59,6 +61,83 @@ bool g_handTracked[2] = {};
 bool g_ready = false;
 bool g_aimTracked = false;
 XrPosef g_aimPose{};
+
+// The stand-in hand (weapon.txt "standin 1"): while the right controller isn't tracked (nobody in
+// the headset, the controllers asleep), a right hand holds the rifle out in front, aiming where the
+// head looks, so the drawn gun, its effects and the aim can be tested without the user. Its grip
+// pose sits from its aim pose as the real controller's do: learned whenever the right controller
+// is tracked and kept in build\standin.txt for the next run.
+std::atomic<bool> g_standIn{false};
+bool g_standingIn = false;  // holding the gun this frame
+XrPosef g_aimToGrip{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};  // the grip in the aim pose's frame
+bool g_haveAimToGrip = false;
+ULONGLONG g_aimToGripSavedAt = 0;
+// Where it aims from in the head's frame (x right, y up, z back; metres): a rifle shouldered.
+constexpr XrVector3f kStandInAim{0.08f, -0.10f, -0.30f};
+
+XrQuaternionf Mul(const XrQuaternionf& a, const XrQuaternionf& b) {
+    return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
+XrQuaternionf Conjugate(const XrQuaternionf& q) {
+    return {-q.x, -q.y, -q.z, q.w};
+}
+
+XrVector3f Rotate(const XrQuaternionf& q, const XrVector3f& v) {
+    const XrQuaternionf r = Mul(Mul(q, {v.x, v.y, v.z, 0.0f}), Conjugate(q));
+    return {r.x, r.y, r.z};
+}
+
+std::wstring StandInPath() {
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&StandInPath), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"standin.txt");
+    return path;
+}
+
+// The real controller's grip seen from its aim pose, each frame both are tracked; saved once a
+// minute (and the first time).
+void LearnAimToGrip() {
+    if (!g_aimTracked || !g_handTracked[1])
+        return;
+    const XrQuaternionf inverse = Conjugate(g_aimPose.orientation);
+    const XrPosef& grip = g_handPoses[1];
+    g_aimToGrip.orientation = Mul(inverse, grip.orientation);
+    g_aimToGrip.position = Rotate(inverse, {grip.position.x - g_aimPose.position.x,
+                                            grip.position.y - g_aimPose.position.y,
+                                            grip.position.z - g_aimPose.position.z});
+    g_haveAimToGrip = true;
+    const ULONGLONG now = GetTickCount64();
+    if (g_aimToGripSavedAt && now - g_aimToGripSavedAt < 60000)
+        return;
+    g_aimToGripSavedAt = now;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, StandInPath().c_str(), L"w") == 0 && f) {
+        const XrPosef& p = g_aimToGrip;
+        fprintf(f, "%f %f %f %f %f %f %f\n", p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w,
+                p.position.x, p.position.y, p.position.z);
+        fclose(f);
+    }
+}
+
+void LoadAimToGrip() {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, StandInPath().c_str(), L"r") != 0 || !f)
+        return;
+    XrPosef p{};
+    if (fscanf_s(f, "%f %f %f %f %f %f %f", &p.orientation.x, &p.orientation.y, &p.orientation.z, &p.orientation.w,
+                 &p.position.x, &p.position.y, &p.position.z) == 7) {
+        g_aimToGrip = p;
+        g_haveAimToGrip = true;
+        Log("Stand-in hand: the controller's grip from its aim as last seen (build\\standin.txt)");
+    }
+    fclose(f);
+}
 
 // The smooth turn. Through the mouse it stuttered: BF3 reads the mouse on a rhythm of its own, and
 // one move a frame landed on both sides of a read about 6 times a second, so a frame barely turned
@@ -520,6 +599,8 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         if (g_handTracked[i])
             g_handPoses[i] = hand.pose;
     }
+    LearnAimToGrip();
+    g_standingIn = false;
     {
         XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
         get.action = g_squeeze;
@@ -739,6 +820,58 @@ bool HandPose(int hand, XrPosef& out) {
         return false;
     out = g_handPoses[hand];
     return true;
+}
+
+void SetStandIn(bool on) {
+    if (g_standIn.exchange(on) != on)
+        Log("Stand-in hand: %s", on ? "on (holds the rifle while the right controller isn't tracked)" : "off");
+}
+
+void StandIn(const XrPosef& head) {
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        LoadAimToGrip();
+    }
+    if (!g_standIn.load(std::memory_order_relaxed) || g_aimTracked || g_handTracked[1]) {
+        g_standingIn = false;
+        return;
+    }
+    // Aiming where the head looks, level (no roll), from the shouldered rifle's place.
+    float yaw = 0.0f, pitch = 0.0f;
+    {
+        const XrQuaternionf& q = head.orientation;
+        const float fx = -2.0f * (q.x * q.z + q.w * q.y);
+        const float fy = -2.0f * (q.y * q.z - q.w * q.x);
+        const float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+        yaw = std::atan2(-fx, -fz);
+        pitch = std::asin(std::clamp(fy, -1.0f, 1.0f));
+    }
+    const XrQuaternionf turn{0.0f, std::sin(yaw / 2), 0.0f, std::cos(yaw / 2)};
+    const XrQuaternionf tilt{std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
+    const XrQuaternionf level = Mul(turn, tilt);
+    const XrVector3f at = Rotate(level, kStandInAim);
+    g_aimPose.orientation = level;
+    g_aimPose.position = {head.position.x + at.x, head.position.y + at.y, head.position.z + at.z};
+    g_aimTracked = true;
+    const XrVector3f grip = Rotate(level, g_aimToGrip.position);
+    g_handPoses[1].orientation = Mul(level, g_aimToGrip.orientation);
+    g_handPoses[1].position = {g_aimPose.position.x + grip.x, g_aimPose.position.y + grip.y,
+                               g_aimPose.position.z + grip.z};
+    g_handTracked[1] = true;
+    if (!g_standingIn) {
+        static ULONGLONG told = 0;
+        if (GetTickCount64() - told > 10000) {
+            told = GetTickCount64();
+            Log("Stand-in hand: holding the rifle (the right controller isn't tracked)%s",
+                g_haveAimToGrip ? "" : "; its grip is placed at its aim, never having seen the controller");
+        }
+    }
+    g_standingIn = true;
+}
+
+bool StandingIn() {
+    return g_standingIn;
 }
 
 void MagazineTap() {

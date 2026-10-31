@@ -288,10 +288,42 @@ bool PushOut(const float (*bones)[12], const float* toGun, float* shift, float* 
     return touched;
 }
 
+// How far (0-1) the glove placed by toGun can move from shift a to shift b in a straight line
+// without going into the gun: in steps of kSweepStep at most, so a fast hand can't step over the
+// gun (a hard slap moved the hand further in a frame than half the gun is wide, and pushed out from
+// there the glove came out of the far side: user, 2026-10-30), then halved down to the first touch.
+constexpr float kSweepStep = 0.004f;
+float Reach(const float (*bones)[12], const float* toGun, const float* a, const float* b) {
+    const float d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    const float length = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    const int steps = std::max(1, static_cast<int>(std::ceil(length / kSweepStep)));
+    float deepest, last = 0.0f;
+    auto in = [&](float f) {
+        const float p[3] = {a[0] + d[0] * f, a[1] + d[1] * f, a[2] + d[2] * f};
+        return Deepest(bones, toGun, p, kAllSpheres, deepest) && deepest > 0.0f;
+    };
+    for (int i = 1; i <= steps; ++i) {
+        const float f = static_cast<float>(i) / steps;
+        if (in(f)) {
+            float low = last, high = f;
+            for (int k = 0; k < 6; ++k) {
+                const float mid = (low + high) / 2;
+                (in(mid) ? high : low) = mid;
+            }
+            return low;
+        }
+        last = f;
+    }
+    return 1.0f;
+}
+
 // Where the free glove is from the tracked hand, in the gun's model space, kept from frame to frame
 // (the user: the hand jittered in and out of the gun, 2026-10-30, when each frame pushed it out
 // afresh from wherever the hand was, by whichever sphere was deepest).
 float g_freeShift[3] = {};
+// Where the free glove was drawn last frame (its place in the gun's model space), to sweep from.
+float g_lastGlove[3] = {};
+bool g_haveLastGlove = false;
 
 // Keeps the glove out of the gun: it stays where it was against the gun, pushed out only as far as
 // the gun moved into it, and comes back to the hand as far as the gun lets it, so it rests on the
@@ -303,6 +335,21 @@ bool KeepOutOfGun(skin::HandTargets& t, const handpose::Fingers& fingers, float*
     InvertRigid(t.gunPose, inverse);
     Compose(inverse, t.leftPose, toGun);
     std::memcpy(shift, g_freeShift, sizeof(shift));
+    // The hand gone far round the gun (20 cm from the glove held off it): the glove follows it again.
+    if (shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2] > 0.2f * 0.2f) {
+        shift[0] = shift[1] = shift[2] = 0.0f;
+        g_haveLastGlove = false;
+    }
+    // From where it was drawn last frame towards the hand (with its kept shift), stopping at the
+    // first touch: it can't pass through the gun however fast the hand moves.
+    if (g_haveLastGlove) {
+        const float last[3] = {g_lastGlove[0] - toGun[3], g_lastGlove[1] - toGun[7], g_lastGlove[2] - toGun[11]};
+        if (!(Deepest(bones, toGun, last, kAllSpheres, deepest) && deepest > 0.0f)) {
+            const float f = Reach(bones, toGun, last, shift);
+            for (int k = 0; k < 3; ++k)
+                shift[k] = last[k] + (shift[k] - last[k]) * f;
+        }
+    }
     // Out of the gun from where it was (the gun moved into it).
     float from[12];
     std::memcpy(from, toGun, sizeof(from));
@@ -311,16 +358,13 @@ bool KeepOutOfGun(skin::HandTargets& t, const handpose::Fingers& fingers, float*
     PushOut(bones, from, push, touch);
     for (int k = 0; k < 3; ++k)
         shift[k] += push[k];
-    // Back towards the hand as far as it goes without going in.
+    // Back towards the hand as far as it goes without going in (stepped, so it can't hop through
+    // to a hand on the gun's far side).
     if (shift[0] || shift[1] || shift[2]) {
-        float low = 0.0f, high = 1.0f;
-        for (int step = 0; step < 8; ++step) {
-            const float mid = (low + high) / 2;
-            const float back[3] = {shift[0] * (1 - mid), shift[1] * (1 - mid), shift[2] * (1 - mid)};
-            (Deepest(bones, toGun, back, kAllSpheres, deepest) && deepest > 0.0f ? high : low) = mid;
-        }
+        const float zero[3] = {};
+        const float f = Reach(bones, toGun, shift, zero);
         for (float& s : shift)
-            s *= 1.0f - low;
+            s *= 1.0f - f;
         if (shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2] < 0.0005f * 0.0005f)
             shift[0] = shift[1] = shift[2] = 0.0f;
     }
@@ -337,18 +381,17 @@ bool KeepOutOfGun(skin::HandTargets& t, const handpose::Fingers& fingers, float*
             for (int k = 0; k < 3; ++k)
                 along[k] = -shift[k] - into * normal[k];
             if (into < 0.0f) {
-                float low = 0.0f, high = 1.0f;
-                for (int step = 0; step < 8; ++step) {
-                    const float mid = (low + high) / 2;
-                    const float slid[3] = {shift[0] + along[0] * mid, shift[1] + along[1] * mid, shift[2] + along[2] * mid};
-                    (Deepest(bones, toGun, slid, kAllSpheres, deepest) && deepest > 0.0f ? high : low) = mid;
-                }
+                const float slid[3] = {shift[0] + along[0], shift[1] + along[1], shift[2] + along[2]};
+                const float f = Reach(bones, toGun, shift, slid);
                 for (int k = 0; k < 3; ++k)
-                    shift[k] += along[k] * low;
+                    shift[k] += along[k] * f;
             }
         }
     }
     std::memcpy(g_freeShift, shift, sizeof(shift));
+    for (int k = 0; k < 3; ++k)
+        g_lastGlove[k] = toGun[k * 4 + 3] + shift[k];
+    g_haveLastGlove = true;
     // Where it touches the gun now, if it does.
     for (int k = 0; k < 3; ++k)
         from[k * 4 + 3] = toGun[k * 4 + 3] + shift[k];
@@ -755,8 +798,10 @@ void Update(const XrPosef& head) {
     // The free glove stays out of the gun, and where it touches the gun is felt (the bolt release).
     float touch[3];
     const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld();
-    if (!free)
+    if (!free) {
         g_freeShift[0] = g_freeShift[1] = g_freeShift[2] = 0.0f;
+        g_haveLastGlove = false;
+    }
     const bool touching = free && KeepOutOfGun(t, fingers, touch);
     // The bolt and its manual releases (reload.cpp): the gun and the left palm, both in the view's space.
     reload::Update(t.gun ? t.gunPose : nullptr, t.left ? palm : nullptr, input::LeftTrigger(), touching ? touch : nullptr);

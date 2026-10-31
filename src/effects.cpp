@@ -420,6 +420,14 @@ struct TailDraw {
     D3D11_VIEWPORT viewport;
     bool blend;
     D3D11_BLEND src, dst;
+    // The depth-stencil view (its size, 0 without one) and tests, and the scissor: the ammo counter
+    // drew in the right eye only (2026-10-30).
+    UINT depthWidth, depthHeight;
+    bool depthTest, depthWrite, stencilTest, scissorOn;
+    D3D11_COMPARISON_FUNC depthFunc, stencilFunc;
+    D3D11_STENCIL_OP stencilPass;
+    D3D11_RECT scissor;
+    UINT texture0;  // the first pixel-shader texture's width (0 none)
 };
 std::mutex g_tailMutex;
 std::vector<TailDraw> g_tail;
@@ -470,7 +478,22 @@ void LogPassConstants(ID3D11DeviceContext* ctx, size_t index) {
 void Tail(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
     TailDraw d{type, count, instances, ctx};
     ID3D11RenderTargetView* rtv = nullptr;
-    ctx->OMGetRenderTargets(1, &rtv, nullptr);
+    ID3D11DepthStencilView* dsv = nullptr;
+    ctx->OMGetRenderTargets(1, &rtv, &dsv);
+    if (dsv) {
+        ID3D11Resource* resource = nullptr;
+        dsv->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            d.depthWidth = desc.Width, d.depthHeight = desc.Height;
+            texture->Release();
+        }
+        if (resource)
+            resource->Release();
+        dsv->Release();
+    }
     if (rtv) {
         ID3D11Resource* resource = nullptr;
         rtv->GetResource(&resource);
@@ -504,8 +527,45 @@ void Tail(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
         vs->Release();
     if (ps)
         ps->Release();
-    if (depth)
+    if (depth) {
+        D3D11_DEPTH_STENCIL_DESC desc;
+        depth->GetDesc(&desc);
+        d.depthTest = desc.DepthEnable != FALSE;
+        d.depthWrite = desc.DepthWriteMask != D3D11_DEPTH_WRITE_MASK_ZERO;
+        d.depthFunc = desc.DepthFunc;
+        d.stencilTest = desc.StencilEnable != FALSE;
+        d.stencilFunc = desc.FrontFace.StencilFunc;
+        d.stencilPass = desc.FrontFace.StencilPassOp;
         depth->Release();
+    }
+    ID3D11RasterizerState* raster = nullptr;
+    ctx->RSGetState(&raster);
+    if (raster) {
+        D3D11_RASTERIZER_DESC desc;
+        raster->GetDesc(&desc);
+        d.scissorOn = desc.ScissorEnable != FALSE;
+        raster->Release();
+    }
+    UINT scissors = 1;
+    ctx->RSGetScissorRects(&scissors, &d.scissor);
+    if (!scissors)
+        d.scissor = {};
+    ID3D11ShaderResourceView* srv = nullptr;
+    ctx->PSGetShaderResources(0, 1, &srv);
+    if (srv) {
+        ID3D11Resource* resource = nullptr;
+        srv->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            d.texture0 = desc.Width;
+            texture->Release();
+        }
+        if (resource)
+            resource->Release();
+        srv->Release();
+    }
     UINT viewports = 1;
     ctx->RSGetViewports(&viewports, &d.viewport);
     if (!viewports)
@@ -563,10 +623,14 @@ void LogTail() {
     for (size_t i = g_tail.size() > 150 ? g_tail.size() - 150 : 0; i < g_tail.size(); ++i) {
         const TailDraw& d = g_tail[i];
         Log("Tail %zu: %s %u x%u, context %p, VS %p PS %p, target %p %ux%u format %u, viewport %.0f,%.0f %.0fx%.0f, "
-            "blend %s (%s, %s), stencil %u",
+            "blend %s (%s, %s), stencil %u; depth view %ux%u, depth %s%s func %d, stencil test %s func %d pass %d, "
+            "scissor %s %ld,%ld-%ld,%ld, texture 0 %u wide",
             i, kTypeNames[d.type], d.count, d.instances, d.ctx, d.vs, d.ps, d.target, d.width, d.height, d.format,
             d.viewport.TopLeftX, d.viewport.TopLeftY, d.viewport.Width, d.viewport.Height, d.blend ? "on" : "off",
-            BlendName(d.src), BlendName(d.dst), d.stencil);
+            BlendName(d.src), BlendName(d.dst), d.stencil, d.depthWidth, d.depthHeight, d.depthTest ? "test" : "off",
+            d.depthWrite ? "+write" : "", static_cast<int>(d.depthFunc), d.stencilTest ? "on" : "off",
+            static_cast<int>(d.stencilFunc), static_cast<int>(d.stencilPass), d.scissorOn ? "on" : "off",
+            d.scissor.left, d.scissor.top, d.scissor.right, d.scissor.bottom, d.texture0);
     }
     g_tail.clear();
 }

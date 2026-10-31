@@ -35,6 +35,28 @@ std::vector<EyeEffect> g_eyeEffects;
 std::unordered_map<ID3D11PixelShader*, bool> g_readsScene;
 
 std::atomic<int> g_logged{0};
+// weapon.txt "tail": the next frame's choices logged (1 asked, 2 this frame). "hudfix N": an
+// experiment for the ammo counter that came out in the right eye only (2026-10-30): 1 = the left
+// eye's copy drawn without the depth-stencil view.
+std::atomic<int> g_logFrame{0};
+std::atomic<int> g_hudFix{0};
+
+// The draw with no depth-stencil view bound (no depth or stencil test).
+void DrawWithoutDepth(ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
+    ID3D11RenderTargetView* target = nullptr;
+    ID3D11DepthStencilView* depth = nullptr;
+    ctx->OMGetRenderTargets(1, &target, &depth);
+    if (!depth) {
+        draw();
+    } else {
+        ctx->OMSetRenderTargets(1, &target, nullptr);
+        draw();
+        ctx->OMSetRenderTargets(1, &target, depth);
+        depth->Release();
+    }
+    if (target)
+        target->Release();
+}
 
 bool Blended(ID3D11DeviceContext* ctx) {
     ID3D11BlendState* blend = nullptr;
@@ -237,8 +259,19 @@ namespace overlay {
 
 void NewFrame() {
     g_eyePictures.store(0, std::memory_order_relaxed);
+    if (int asked = 1; !g_logFrame.compare_exchange_strong(asked, 2))
+        g_logFrame.store(0);
     std::lock_guard lock(g_shadersMutex);
     g_eyeEffects.clear();
+}
+
+void LogNextFrame() {
+    g_logFrame = 1;
+}
+
+void SetHudFix(int mode) {
+    if (g_hudFix.exchange(mode) != mode)
+        Log("Overlay: HUD experiment %d", mode);
 }
 
 bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& draw) {
@@ -298,9 +331,18 @@ bool Draw(ID3D11DeviceContext* ctx, UINT count, const std::function<void()>& dra
                     break;
                 }
         }
-    draw();
-    if (!((eyeEffect || ReadsScene(ctx, static_cast<UINT>(viewport.Height))) && IntoRightHalf(ctx, draw)))
+    if (g_hudFix.load(std::memory_order_relaxed) == 1)
+        DrawWithoutDepth(ctx, draw);
+    else
+        draw();
+    const bool reads = ReadsScene(ctx, static_cast<UINT>(viewport.Height));
+    const bool intoHalf = (eyeEffect || reads) && IntoRightHalf(ctx, draw);
+    if (!intoHalf)
         DrawMovedRight(ctx, draw, viewport);
+    if (g_logFrame.load(std::memory_order_relaxed) == 2)
+        Log("Overlay: %u, %s viewport, %s%s, right eye's copy %s", count, window ? "window" : "eye",
+            eyeEffect ? "the eye effect" : "HUD", reads ? " reading the scene" : "",
+            intoHalf ? "drawn into its half" : "moved right");
     if (g_logged.fetch_add(1, std::memory_order_relaxed) == 0)
         Log("Overlay: the right eye's view is drawn as the left eye's and moved into its half; the HUD in both eyes");
     return true;

@@ -62,6 +62,7 @@
 #include "ammo.h"
 #include "camera.h"
 #include "effects.h"
+#include "input.h"
 #include "log.h"
 #include "overlay.h"
 #include "reload.h"
@@ -695,6 +696,10 @@ void ReadWeaponSelection() {
     //   "dumpview"           log BF3's per-view constants once
     //   "eyetrace"           log the next 40 first-person view uploads and the eye each is given
     //   "sound bolt"         play that reload sound (build\sounds\bolt.wav), a little to the right
+    //   "standin 1"          a stand-in right hand holds the rifle while the controller sleeps
+    //                        (input.cpp; stays as set until "standin 0")
+    //   "pull 30"            the charging handle held 30 mm back (reload.cpp), to see the cover
+    //   "hudfix 1"           a HUD experiment (overlay.cpp)
     float shift[3] = {}, floor = 0.0f, wcam[3] = {};
     bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
     UINT hideFx[4] = {};
@@ -704,6 +709,8 @@ void ReadWeaponSelection() {
     int flashMats = 2 | 4;
     float flashLift = 0.0f;
     int hidePsCount = 0;
+    float testPull = -1.0f;
+    int hudFix = 0;
     int moveCount = 0;
     int hideCount = 0;
     DrawKey dumpKey = kWeapon;
@@ -712,6 +719,25 @@ void ReadWeaponSelection() {
         char* next = std::strchr(line, '\n');
         if (next)
             *next++ = 0;
+        if (const char* si = std::strstr(line, "standin")) {
+            int on = 1;
+            sscanf_s(si + 7, "%d", &on);
+            input::SetStandIn(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* pl = std::strstr(line, "pull")) {
+            float mm = 0.0f;
+            if (sscanf_s(pl + 4, "%f", &mm) == 1)
+                testPull = mm / 1000.0f;
+            line = next;
+            continue;
+        }
+        if (const char* hf = std::strstr(line, "hudfix")) {
+            sscanf_s(hf + 6, "%d", &hudFix);
+            line = next;
+            continue;
+        }
         if (const char* w = std::strstr(line, "wcam")) {
             wcamSet = sscanf_s(w + 4, "%f %f %f", &wcam[0], &wcam[1], &wcam[2]) == 3;
             line = next;
@@ -724,6 +750,7 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "tail")) {
             effects::LogFrameTail();
+            overlay::LogNextFrame();
             line = next;
             continue;
         }
@@ -886,6 +913,8 @@ void ReadWeaponSelection() {
     effects::SetHiddenShaders(hidePs, std::max(hidePsCount, 0));
     effects::SetMoveMatrices(flashMats);
     effects::SetLift(flashLift);
+    reload::TestPull(testPull);
+    overlay::SetHudFix(hudFix);
     if (g_wiggleBone.exchange(wiggle) != wiggle)
         Log("Weapon: %s", wiggle >= 0 ? "a bone slides to and fro (wiggle)" : "no bone wiggles");
     Log("Weapon: bones %s (in %d passes), %s; watch %s%s", any ? "chosen" : "none",

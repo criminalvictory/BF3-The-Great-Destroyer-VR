@@ -941,6 +941,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     {
         XrPosef head = views[kLeftEye].pose;
         head.position = {(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2};
+        input::StandIn(head);  // weapon.txt "standin 1": a right hand while the controller sleeps
         hands::Update(head);
     }
     // weapon.txt "watch": where the head and hands are, for lining the game's arms up with them.
