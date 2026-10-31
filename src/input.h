@@ -41,6 +41,9 @@ float RightTrigger();
 void SetTriggerTest(float pull);
 void StandIn(const XrPosef& head);
 bool StandingIn();
+// The stand-in's left hand this frame (the left controller asleep too): a pose like HandPose(0)'s,
+// under the handguard, only to be drawn; HandPose(0) doesn't give it.
+bool StandInLeftPose(XrPosef& out);
 // The stand-in is switched on (weapon.txt "standin 1"), whether or not it holds the gun now.
 bool StandInOn();
 

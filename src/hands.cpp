@@ -433,6 +433,21 @@ void SaveLeftOffset() {
 
 namespace hands {
 
+// The left glove's place on its controller's grip pose, made from grip.txt's turn and palm while
+// it has no "leftpose".
+void MakeLeftOffset() {
+    if (g_leftOffsetSet)
+        return;
+    // The glove's bind axes onto the grip pose's: x (outward) -> +Y, y (back of the hand) -> +X,
+    // z (fingers) -> -Z, then the tuning turn; the palm at the grip.
+    const float glove[9] = {0, 1, 0, 1, 0, 0, 0, 0, -1};
+    const float origin[3] = {};
+    float tuned[9], local[9];
+    Euler(g_leftTurn, tuned);
+    Mul3(tuned, glove, local);
+    PlaceAt(local, g_leftAnchor, origin, g_leftOffset);
+}
+
 void Update(const XrPosef& head) {
     ReadTuning();
     if (!g_on) {
@@ -490,16 +505,7 @@ void Update(const XrPosef& head) {
         t.gun = true;
     }
     if (input::HandPose(0, grip)) {
-        if (!g_leftOffsetSet) {
-            // The glove's bind axes onto the grip pose's: x (outward) -> +Y, y (back of the hand)
-            // -> +X, z (fingers) -> -Z, then the tuning turn; the palm at the grip.
-            const float glove[9] = {0, 1, 0, 1, 0, 0, 0, 0, -1};
-            const float origin[3] = {};
-            float tuned[9], local[9];
-            Euler(g_leftTurn, tuned);
-            Mul3(tuned, glove, local);
-            PlaceAt(local, g_leftAnchor, origin, g_leftOffset);
-        }
+        MakeLeftOffset();
         // In the recentered space: the glove held still there during the line-up stays put in the
         // room while the head moves.
         float controller[12], glove[12];
@@ -615,6 +621,20 @@ void Update(const XrPosef& head) {
                 Blend(t.leftFingers[b], held, g_gripBlend, t.leftFingers[b]);
             }
         }
+    }
+    // The stand-in's left hand (nobody in the headset: input.cpp), only drawn, its fingers relaxed:
+    // the holds, reloads and touches above never saw it.
+    if (XrPosef standIn; !t.left && input::StandInLeftPose(standIn)) {
+        MakeLeftOffset();
+        float controller[12], glove[12];
+        pose(standIn, controller);
+        Compose(controller, g_leftOffset, glove);
+        Compose(fromHead, glove, t.leftPose);
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+        handpose::Fingers relaxed;
+        relaxed.spread = g_spread;
+        handpose::Pose(relaxed, g_leftWidth, t.leftFingers);
+        t.left = true;
     }
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }

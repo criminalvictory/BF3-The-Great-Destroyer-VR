@@ -740,6 +740,8 @@ void ReadWeaponSelection() {
     //   "hudskiptex 64x32"   the HUD draws with a texture that size left out
     //   "orangemarkers 1"    the enemies' orange markers left on (taken off by default: overlay.cpp)
     //   "fingertest 1"       the glove's trigger finger drawn as if the trigger were pulled (nothing fires)
+    //   "casings 0"          the spent casings where the game throws them (effects.cpp); "casings 1 0.2
+    //                        0.8": out of the ejection port, all the way within 0.2 m of it, not at 0.8 m
     float shift[3] = {}, floor = 0.0f, wcam[3] = {};
     bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
     UINT hideFx[4] = {};
@@ -758,6 +760,8 @@ void ReadWeaponSelection() {
     uint32_t hudSkipTex[4] = {};
     int keepOrange = 0;
     float fingerTest = 0.0f;
+    int casings = 1;
+    float casingReach[2] = {0.2f, 0.8f};
     int moveCount = 0;
     int hideCount = 0;
     DrawKey dumpKey = kWeapon;
@@ -795,6 +799,11 @@ void ReadWeaponSelection() {
         if (const char* om = std::strstr(line, "orangemarkers")) {
             keepOrange = 1;
             sscanf_s(om + 13, "%d", &keepOrange);
+            line = next;
+            continue;
+        }
+        if (const char* ca = std::strstr(line, "casings")) {
+            sscanf_s(ca + 7, "%d %f %f", &casings, &casingReach[0], &casingReach[1]);
             line = next;
             continue;
         }
@@ -1051,6 +1060,7 @@ void ReadWeaponSelection() {
     overlay::SetHudSkipTextures(hudSkipTex);
     overlay::SetKeepOrange(keepOrange != 0);
     input::SetTriggerTest(std::clamp(fingerTest, 0.0f, 1.0f));
+    effects::SetCasings(casings != 0, casingReach[0], casingReach[1]);
     for (size_t r = 0; r < kBoostRules; ++r)
         if (const uint32_t was = g_scopeBoost[r].exchange(boost[r]); was != boost[r])
             Log("Weapon: the scope's %u-index part drawn %u more times on itself", (boost[r] ? boost[r] : was) >> 8,
@@ -1748,13 +1758,14 @@ void Collapse(float* bone, const float* point) {
 // The first-person arms' draws (the mesh dumps, 2026-10-30), each with a palette of its own, and
 // what each palette entry is, from where its vertices sit in the bind pose: L / R a hand's bone,
 // moved with that hand; l / r that side's arm or sleeve, folded into the middle of its forearm
-// (kForearmMiddle); c the body and legs, folded onto the line between the hands (zero-area
-// triangles, never drawn); '-' no vertices.
+// (kForearmMiddle); c the body and legs, folded onto the line between those two fold points
+// (zero-area triangles, never drawn); '-' no vertices.
 // The bare forearms' draw is moved whole with its hand: folded into the palm, its far end's
 // triangles stretched to it lit black (a folded bone's matrix is all zeros, its normals too) and the
 // depth passes' differently cut copy of them left black spikes on the left forearm below the watch
 // (the user's picture, 2026-10-31). Now the forearm is whole; the depth passes' arms fold into the
-// middle of it, inside the drawn forearm, where none of their stretched triangles shows.
+// middle of it, inside the drawn forearm, where their stretched triangles are hidden, except looking
+// into the forearm's open elbow end along it: there a black disc shows (depth without colour).
 struct ArmDraw {
     DrawKey key;
     const char* roles;
@@ -1793,33 +1804,84 @@ bool g_haveGrip = false;
 // the handguard) only while it holds the gun as it normally does: its sprint moves both hands on the
 // gun, and copying that slid the gloves about on it and swung the gun in the hand twice a second (the
 // user's videos, 2026-10-31 02:49 and 02:51). Normal: not sprinting (nor within a second of it), the
-// game's right palm within 3 cm of its grip so far and its left within 4 cm of its hold. A grip kept
-// steadily elsewhere for 5 s is taken as the new one (another hold to begin with, say).
+// game's right palm within 3 cm of its grip so far and its left within 4 cm of its hold. A hold kept
+// steadily elsewhere for 5 s is taken as the new one (another hold to begin with, say). The verdict
+// is judged in the gloves' draw; every draw of a frame learns by the one of the frame before
+// (g_learnHold), so all of them follow the game's hands or keep theirs together (a depth copy a frame
+// apart from the coloured glove shows black).
 constexpr float kLeftPalm[3] = {0.537f, 1.098f, 0.207f};  // the left hand's centre in the gloves' bind pose
 constexpr float kRightHoldTolerance = 0.03f, kLeftHoldTolerance = 0.04f;
 std::atomic<bool> g_holdNormal{true};
+std::atomic<bool> g_learnHold{true};  // g_holdNormal and not sprinting, at the last frame's end (Update)
 float g_leftHoldModel[3] = {};  // the game's left palm on its gun, held normally
 bool g_haveLeftHold = false;
-float g_elsewhere[3] = {};  // where the right palm has been instead, since g_elsewhereSince
-ULONGLONG g_elsewhereSince = 0;
+// The first hold after loading (and one newly taken) is provisional until both palms stay put.
+bool g_holdSettled = false;
+ULONGLONG g_settledMs = 0;
+// Where the palms have been instead (right, left), for how long the game was seen running.
+float g_elsewhere[2][3] = {};
+bool g_haveElsewhere = false;
+ULONGLONG g_elsewhereMs = 0;
+// Only time the game is seen running counts: when the hold was last judged, and since when the
+// game's gun has stood bit for bit still from frame to frame (a paused game still drawn).
+ULONGLONG g_lastJudged = 0, g_frozenSince = 0;
+uint32_t g_judgedFrame = 0;
+float g_lastBody[12] = {};
+// Judgements of the hold since the last log (Update): in the gloves' own draw, at the gun's draw
+// after them, and gloves drawn with no gun body in their view to judge by.
+uint32_t g_judgedHere = 0, g_judgedLater = 0, g_notJudged = 0;
+
+void FollowLeftHold(const float* left) {
+    if (!left)
+        return;
+    for (int i = 0; i < 3; ++i)
+        g_leftHoldModel[i] = g_haveLeftHold ? g_leftHoldModel[i] * 0.9f + left[i] * 0.1f : left[i];
+    g_haveLeftHold = true;
+}
 
 // Whether the game holds its gun as it normally does in this draw, from its palms in the gun's model
 // space (left: none in this draw); the normal hold follows small changes. Under g_handsMutex.
 bool HoldIsNormal(const float* right, const float* left) {
     const ULONGLONG now = GetTickCount64();
+    const ULONGLONG step = now - g_lastJudged;
+    g_lastJudged = now;
+    if (const uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); frame != g_judgedFrame) {
+        g_judgedFrame = frame;
+        const bool same = std::memcmp(g_lastBody, g_gunBodyOrig, sizeof(g_lastBody)) == 0;
+        std::memcpy(g_lastBody, g_gunBodyOrig, sizeof(g_lastBody));
+        g_frozenSince = !same ? 0 : g_frozenSince ? g_frozenSince : now;
+    }
+    // A gap between judgements (a pause, the rifle put away) or a quarter of a second frozen: not
+    // seen running, any time counted starts over. (One still frame alone isn't a pause: the game's
+    // animation may step less often than it draws.)
+    const bool live = step < 250 && !(g_frozenSince && now - g_frozenSince > 250);
     const float dr = !g_haveGrip ? 0.0f
                                  : Length3(right[0] - g_gripModel[0], right[1] - g_gripModel[1], right[2] - g_gripModel[2]);
     const float dl = !g_haveLeftHold || !left ? 0.0f
                                               : Length3(left[0] - g_leftHoldModel[0], left[1] - g_leftHoldModel[1],
                                                         left[2] - g_leftHoldModel[2]);
     const bool sprinting = input::Sprinting();
-    if (!sprinting && dr < kRightHoldTolerance && dl < kLeftHoldTolerance) {
-        g_elsewhereSince = 0;
-        if (left) {
-            for (int i = 0; i < 3; ++i)
-                g_leftHoldModel[i] = g_haveLeftHold ? g_leftHoldModel[i] * 0.9f + left[i] * 0.1f : left[i];
-            g_haveLeftHold = true;
+    if (!g_holdSettled) {
+        // Provisional: the first frames may be mid-reload or mid-raise, so the hold follows the game's
+        // hands (and they're copied, as before this guard) until both palms stay within 1 cm of it
+        // for a second of the game running. Not while sprinting.
+        g_haveElsewhere = false;
+        if (sprinting) {
+            g_settledMs = 0;
+            return false;
         }
+        g_settledMs = live && dr < 0.01f && dl < 0.01f ? g_settledMs + step : 0;
+        if (g_settledMs > 1000) {
+            g_holdSettled = true;
+            Log("Hands: the game's hold on its gun learned: the right palm at (%.3f %.3f %.3f) in its model space",
+                g_gripModel[0], g_gripModel[1], g_gripModel[2]);
+        }
+        FollowLeftHold(left);
+        return true;
+    }
+    if (!sprinting && dr < kRightHoldTolerance && dl < kLeftHoldTolerance) {
+        g_haveElsewhere = false;
+        FollowLeftHold(left);
         return true;
     }
     static ULONGLONG s_told = 0;
@@ -1829,15 +1891,32 @@ bool HoldIsNormal(const float* right, const float* left) {
             "the gloves keep theirs",
             sprinting ? "sprinting" : "one of its moves", dr * 1000.0f, dl * 1000.0f);
     }
-    // Held elsewhere: one of its moves, unless it stays there a while (never while sprinting).
-    if (sprinting || !g_elsewhereSince ||
-        Length3(right[0] - g_elsewhere[0], right[1] - g_elsewhere[1], right[2] - g_elsewhere[2]) > 0.01f) {
-        std::memcpy(g_elsewhere, right, sizeof(g_elsewhere));
-        g_elsewhereSince = sprinting ? 0 : now;
-    } else if (now - g_elsewhereSince > 5000) {
-        Log("Hands: the game held its gun %.0f mm from its usual grip for 5 s: taken as its grip", dr * 1000.0f);
-        g_haveGrip = g_haveLeftHold = false;
-        g_elsewhereSince = 0;
+    // Held elsewhere: one of its moves, unless both palms stay there for 5 s of the game running
+    // (never while sprinting). Then that's the hold, on the side that's off; it's provisional again.
+    const bool moved =
+        !g_haveElsewhere ||
+        Length3(right[0] - g_elsewhere[0][0], right[1] - g_elsewhere[0][1], right[2] - g_elsewhere[0][2]) > 0.01f ||
+        (left && Length3(left[0] - g_elsewhere[1][0], left[1] - g_elsewhere[1][1], left[2] - g_elsewhere[1][2]) > 0.02f);
+    if (sprinting || !live || moved) {
+        std::memcpy(g_elsewhere[0], right, sizeof(g_elsewhere[0]));
+        if (left)
+            std::memcpy(g_elsewhere[1], left, sizeof(g_elsewhere[1]));
+        g_haveElsewhere = !sprinting;
+        g_elsewhereMs = 0;
+        return false;
+    }
+    g_elsewhereMs += step;
+    if (g_elsewhereMs > 5000) {
+        Log("Hands: the game held its gun elsewhere for 5 s (right palm %.0f mm from its grip, left %.0f mm): taken as "
+            "its hold",
+            dr * 1000.0f, dl * 1000.0f);
+        if (dr >= kRightHoldTolerance)
+            g_haveGrip = false;
+        if (dl >= kLeftHoldTolerance)
+            g_haveLeftHold = false;
+        g_holdSettled = false;
+        g_settledMs = 0;
+        g_haveElsewhere = false;
         return true;
     }
     return false;
@@ -1974,6 +2053,110 @@ bool StartDrop() {
     return true;
 }
 
+// A point moved by a 3x4 matrix.
+void TransformPoint(const float* m, const float* p, float* out) {
+    for (int i = 0; i < 3; ++i)
+        out[i] = m[i * 4] * p[0] + m[i * 4 + 1] * p[1] + m[i * 4 + 2] * p[2] + m[i * 4 + 3];
+}
+
+// Learns an arms (or gun part) draw's offsets from the game's gun body drawn in the same view
+// (gunInverse: its inverse), from the bones the game drew it with: the gloves first judge the game's
+// hold (HoldIsNormal); a hand's bones are learned from the normal hold only, a gun part's always.
+// Under g_handsMutex.
+void LearnArms(const ArmDraw& draw, const float* bones, const float* gunInverse, bool later) {
+    if (draw.rightRoot >= 0) {
+        // Where the game's own right hand holds the gun: its palm, as the game drew it, in the
+        // gun's model space; the gloves' draw has the left palm too (its bone 1).
+        float palm[3], grip[3], at[3], leftGrip[3];
+        TransformPoint(bones + draw.rightRoot * 12, kRightPalm, palm);
+        TransformPoint(gunInverse, palm, grip);
+        const bool gloves = &draw == &kArmDraws[0];
+        if (gloves) {
+            TransformPoint(bones + 1 * 12, kLeftPalm, at);
+            TransformPoint(gunInverse, at, leftGrip);
+        }
+        const bool held = Length3(grip[0], grip[1], grip[2]) < 1.0f;  // within the gun's reach: a real hold
+        const bool normal = held && HoldIsNormal(grip, gloves ? leftGrip : nullptr);
+        g_holdNormal = normal;
+        ++(later ? g_judgedLater : g_judgedHere);
+        if (normal) {
+            for (int i = 0; i < 3; ++i)
+                g_gripModel[i] = g_haveGrip ? g_gripModel[i] * 0.9f + grip[i] * 0.1f : grip[i];
+            g_haveGrip = true;
+        }
+    }
+    // Every draw of a frame by the same verdict, the last frame's (see g_holdNormal).
+    const bool learnHold = g_learnHold.load(std::memory_order_relaxed);
+    Learned& learned = g_learned[draw.key];
+    for (size_t k = 0; draw.roles[k] && k < kPaletteBones; ++k) {
+        const float* bone = bones + k * 12;
+        switch (draw.roles[k]) {
+        case 'L':
+            // The game's own left hand as its animation holds the gun, learned against the game's gun
+            // (hands.cpp draws it on the free gun while the hand holds the handguard).
+            if (&draw == &kArmDraws[0] && k < handpose::kBones && learnHold) {
+                Compose(gunInverse, bone, g_gameLeft[k]);
+                if (k + 1 == handpose::kBones)
+                    g_haveGameLeft = true;
+            }
+            break;
+        case 'R':
+            if (learnHold)
+                Learn(learned, k, gunInverse, bone);
+            break;
+        case 'G':
+            Learn(learned, k, gunInverse, bone);
+            break;
+        }
+    }
+}
+
+// Arms (and gun parts) drawn before the gun's body in their view: which draw comes first differs
+// from launch to launch, and in some the gloves never had the gun's body to learn from, the right
+// glove left at the game's hip (2026-10-31, until a reload changed the order). Their bones are kept
+// until the gun's body is drawn in the same view and learned from then (DrawGun); they're placed by
+// what was learned before. Under g_handsMutex.
+struct PendingArms {
+    const ArmDraw* draw = nullptr;
+    uint32_t view = 0;
+    bool waiting = false;
+    float bones[kPaletteBones][12] = {};
+};
+std::vector<PendingArms> g_pendingArms;
+
+void KeepForLater(const ArmDraw& draw, const float* bones, uint32_t view) {
+    auto it = std::find_if(g_pendingArms.begin(), g_pendingArms.end(), [&](const PendingArms& p) { return p.draw == &draw; });
+    if (it == g_pendingArms.end())
+        it = g_pendingArms.insert(g_pendingArms.end(), PendingArms{&draw});
+    else if (it->waiting && draw.rightRoot >= 0)
+        ++g_notJudged;  // the gloves kept before never met the gun's body
+    size_t used = 0;
+    while (used < kPaletteBones && draw.roles[used])
+        ++used;
+    std::memcpy(it->bones, bones, used * sizeof(it->bones[0]));
+    it->view = view;
+    it->waiting = true;
+}
+
+// The gun's body was just drawn (g_gunBodyOrig, view): the draws kept from this view learn now.
+void LearnKept(uint32_t view) {
+    float gunInverse[12];
+    bool haveInverse = false;
+    for (PendingArms& p : g_pendingArms) {
+        if (!p.waiting)
+            continue;
+        p.waiting = false;
+        if (p.view != view) {  // from a view gone by
+            if (p.draw->rightRoot >= 0)
+                ++g_notJudged;
+            continue;
+        }
+        if (!haveInverse && !(haveInverse = Invert(g_gunBodyOrig, gunInverse)))
+            return;
+        LearnArms(*p.draw, &p.bones[0][0], gunInverse, true);
+    }
+}
+
 // One of the gun's passes: moved into the right hand (free hands), without its magazine while it's
 // out, and drawn again with only the dropped magazine's bones while that falls. Its magazine bones
 // are noted, as drawn, for the moment it comes out. False: draw as usual.
@@ -1996,6 +2179,7 @@ bool DrawGun(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT ba
             std::memcpy(g_gunBodyOrig, bones + 2 * 12, sizeof(g_gunBodyOrig));
             g_haveGunBodyOrig = true;
             g_gunBodyView = g_viewUploads.load();
+            LearnKept(g_gunBodyView);
         }
         skin::HandTargets t = g_hands;
         if (g_handsOn && t.gun && ToArms(t, ctx)) {
@@ -2162,48 +2346,14 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
         skin::HandTargets t = g_hands;
         if (!ToArms(t, ctx))
             return false;
-        float inverse[12];
-        // Where the game's own right hand holds the gun: its palm, as the game drew it, in the
-        // gun's model space.
-        uint32_t frame = g_viewUploads.load();
-        if (draw.rightRoot >= 0 && g_haveGunBodyOrig && g_gunBodyView == frame && Invert(g_gunBodyOrig, inverse)) {
-            const float* m = bones + draw.rightRoot * 12;
-            float palm[3], grip[3];
-            for (int i = 0; i < 3; ++i)
-                palm[i] = m[i * 4] * kRightPalm[0] + m[i * 4 + 1] * kRightPalm[1] + m[i * 4 + 2] * kRightPalm[2] +
-                          m[i * 4 + 3];
-            for (int i = 0; i < 3; ++i)
-                grip[i] = inverse[i * 4] * palm[0] + inverse[i * 4 + 1] * palm[1] + inverse[i * 4 + 2] * palm[2] +
-                          inverse[i * 4 + 3];
-            // The gloves' draw has the left palm too (its bone 1).
-            float leftGrip[3] = {};
-            const bool gloves = &draw == &kArmDraws[0];
-            if (gloves) {
-                const float* l = bones + 1 * 12;
-                float at[3];
-                for (int i = 0; i < 3; ++i)
-                    at[i] = l[i * 4] * kLeftPalm[0] + l[i * 4 + 1] * kLeftPalm[1] + l[i * 4 + 2] * kLeftPalm[2] + l[i * 4 + 3];
-                for (int i = 0; i < 3; ++i)
-                    leftGrip[i] = inverse[i * 4] * at[0] + inverse[i * 4 + 1] * at[1] + inverse[i * 4 + 2] * at[2] +
-                                  inverse[i * 4 + 3];
-            }
-            const bool held = Length3(grip[0], grip[1], grip[2]) < 1.0f;  // within the gun's reach: a real hold
-            const bool normal = held && HoldIsNormal(grip, gloves ? leftGrip : nullptr);
-            g_holdNormal = normal;
-            if (normal) {
-                for (int i = 0; i < 3; ++i)
-                    g_gripModel[i] = g_haveGrip ? g_gripModel[i] * 0.9f + grip[i] * 0.1f : grip[i];
-                g_haveGrip = true;
-            }
-        }
-        const bool holdNormal = g_holdNormal.load(std::memory_order_relaxed);
-        // The gun's body drawn earlier in this same frame, to learn offsets from.
-        float gunInverse[12];
-        bool gunRef = g_haveGunBodyOrig && g_gunBodyView == frame && Invert(g_gunBodyOrig, gunInverse);
+        // Offsets learned from the game's gun body drawn earlier in this view, or once it's drawn
+        // (the bones as the game sent them, before they're moved below).
+        const uint32_t view = g_viewUploads.load();
+        if (float gunInverse[12]; g_haveGunBodyOrig && g_gunBodyView == view && Invert(g_gunBodyOrig, gunInverse))
+            LearnArms(draw, bones, gunInverse, false);
+        else
+            KeepForLater(draw, bones, view);
         Learned& learned = g_learned[draw.key];
-        float mid[3];
-        for (int i = 0; i < 3; ++i)
-            mid[i] = t.left && t.gun ? (t.leftWrist[i] + t.rightWrist[i]) / 2 : t.left ? t.leftWrist[i] : t.rightWrist[i];
         // Where each side's arm folds: the middle of its forearm, inside the forearm drawn whole
         // (kForearmMiddle); the hand's palm until that's known.
         float fold[2][3];
@@ -2223,17 +2373,15 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
                     fold[side][i] = forearm[side][i * 4] * kForearmMiddle[side][0] +
                                     forearm[side][i * 4 + 1] * kForearmMiddle[side][1] +
                                     forearm[side][i * 4 + 2] * kForearmMiddle[side][2] + forearm[side][i * 4 + 3];
+        // The body and legs fold onto the line between the two arms' fold points, so every triangle
+        // mixing them ('c', 'l' and 'r': 15 on the collar) stays without area (the review, 2026-10-31).
+        float mid[3];
+        for (int i = 0; i < 3; ++i)
+            mid[i] = t.left && t.gun ? (fold[0][i] + fold[1][i]) / 2 : t.left ? fold[0][i] : fold[1][i];
         for (size_t k = 0; draw.roles[k] && k < kPaletteBones; ++k) {
             float* bone = bones + k * 12;
             switch (draw.roles[k]) {
             case 'L':
-                // The game's own left hand as its animation holds the gun, learned against the
-                // game's gun (hands.cpp draws it on the free gun while the hand holds the handguard).
-                if (&draw == &kArmDraws[0] && k < handpose::kBones && gunRef && holdNormal) {
-                    Compose(gunInverse, bone, g_gameLeft[k]);
-                    if (k + 1 == handpose::kBones)
-                        g_haveGameLeft = true;
-                }
                 // The whole hand placed as one, each bone bent as its finger is held. (Blending the
                 // matrices towards the game's own grip and past it folded the hand flat: user,
                 // 2026-10-30.)
@@ -2245,9 +2393,6 @@ bool DrawArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT b
             case 'R':
             case 'G':  // a part of the gun: where its learned offset from the gun's body puts it
                 if (t.gun) {
-                    // A hand's bone only from the game's normal hold (see HoldIsNormal).
-                    if (gunRef && (draw.roles[k] == 'G' || holdNormal))
-                        Learn(learned, k, gunInverse, bone);
                     // Placed as another draw is (the scope's parts as its body): that draw's offsets,
                     // learned every frame. The see-through parts are only drawn in a later pass, after
                     // the gun's body: they never learned their own and stayed where the game put them,
@@ -2585,6 +2730,10 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
         return;  // weapon.txt "hidefx" / "hideps"
     case effects::kMove:  // the muzzle flash's mesh, moved with the gun
         if (effects::DrawWithGun(which, ctx, [&] { g_origDrawIndexed[which](ctx, count, start, base); }))
+            return;
+        break;
+    case effects::kCasing:  // a spent casing, out of the gun's ejection port
+        if (effects::DrawCasing(ctx, [&] { g_origDrawIndexed[which](ctx, count, start, base); }))
             return;
         break;
     default:
@@ -3143,6 +3292,22 @@ bool RifleInHand() {
 void Update() {
     UpdateDrop();
     ++g_frameSerial;
+    // The next frame's draws all learn the game's hands by this frame's verdict (see g_holdNormal).
+    g_learnHold.store(g_holdNormal.load(std::memory_order_relaxed) && !input::Sprinting(), std::memory_order_relaxed);
+    // Every 10 s, how the game's hold was judged: a guard that never runs shows here.
+    static ULONGLONG lastHoldLog = 0;
+    if (const ULONGLONG now = GetTickCount64(); now - lastHoldLog >= 10000) {
+        lastHoldLog = now;
+        uint32_t here = 0, later = 0, never = 0;
+        {
+            std::lock_guard lock(g_handsMutex);
+            std::swap(here, g_judgedHere), std::swap(later, g_judgedLater), std::swap(never, g_notJudged);
+        }
+        if (here || later || never)
+            Log("Hands: the last 10 s, the game's hold judged %u times in the gloves' draw, %u at the gun's after them; "
+                "%u gloves draws had no gun body in their view",
+                here, later, never);
+    }
     if (int frames = g_fpProbeFrames.load(std::memory_order_relaxed); frames > 0)
         g_fpProbeFrames.store(frames - 1, std::memory_order_relaxed);
     if (int frames = g_scopeTraceFrames.load(std::memory_order_relaxed); frames > 0)

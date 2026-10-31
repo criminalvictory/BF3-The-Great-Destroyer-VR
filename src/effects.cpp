@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <MinHook.h>
+#include <d3dcompiler.h>
 
 #include <algorithm>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -383,22 +385,164 @@ bool FlashMesh(ID3D11DeviceContext* ctx, UINT indices) {
 
 // ---- The casings ----
 // A small mesh (234 indices; the census, 2026-10-30) drawn once per casing in each pass (colour,
-// depth, shadows), flying from where the game's gun throws them, at the chest. With free hands,
-// while firing they're drawn moved with the gun, so they come out of its ejection port; half a
-// second after the last shot they're hidden: moved with the hand they'd land above or below the
-// ground, and the game's own lie at the chest.
+// depth, shadows), flying from where the game's gun throws them, at the chest. Each is a draw of its
+// own with one instance, its world placement a 3x4 matrix in its instance stream (stride 48: the
+// instance probe, 2026-10-31 04:12; changing the view constants had moved nothing). That matrix is
+// copied on the graphics card and moved as the gun is (from the game's gun to the drawn one) by a
+// small compute shader: all the way near the ejection port, less as the casing flies off, not at all
+// 0.8 m from it, so the ones lying on the ground stay where they fell (crouched, the gun is higher).
+// Only while firing (and a little after): then casings are flying. weapon.txt "casings 0": as the
+// game draws them; "casings 1 0.2 0.8": moved all the way within 0.2 m of the port, not at 0.8 m.
 constexpr UINT kCasingIndices = 234;
-// Off until the casings really move with the gun (2026-10-30: changing the view constants moved
-// neither them nor the flash): hidden after half a second, the game's own would only vanish early.
-constexpr bool kMoveCasings = false;
+constexpr UINT kInstanceStride = 48;
+constexpr ULONGLONG kCasingFlight = 1500;  // ms after the last shot
+// The ejection port in the gun's model space (the dust cover's middle: skin.cpp's bone 3).
+constexpr float kPort[3] = {-0.017f, 0.043f, 0.41f};
+std::atomic<bool> g_moveCasings{true};
+std::atomic<float> g_casingNear{0.2f}, g_casingFar{0.8f};
+std::atomic<uint32_t> g_casingsMoved{0}, g_casingsNot{0};
 
-int CasingDraw(UINT count) {
-    if (!kMoveCasings || count != kCasingIndices)
-        return effects::kNormal;
-    float d[16];
-    if (!skin::GunDeltaWorld(d))
-        return effects::kNormal;  // the game's own gun: its casings are where they belong
-    return GetTickCount64() - g_lastShot.load(std::memory_order_relaxed) < 600 ? effects::kMove : effects::kHide;
+constexpr char kCasingShader[] = R"(
+cbuffer Move : register(b0) { float4 d0, d1, d2, port, reach; };
+ByteAddressBuffer src : register(t0);
+RWByteAddressBuffer dst : register(u0);
+[numthreads(1, 1, 1)] void Main() {
+    float4 m0 = asfloat(src.Load4(0)), m1 = asfloat(src.Load4(16)), m2 = asfloat(src.Load4(32));
+    // The gun's move times the casing's placement (3x4 rows: turn | place).
+    float4 n0 = d0.x * m0 + d0.y * m1 + d0.z * m2 + float4(0, 0, 0, d0.w);
+    float4 n1 = d1.x * m0 + d1.y * m1 + d1.z * m2 + float4(0, 0, 0, d1.w);
+    float4 n2 = d2.x * m0 + d2.y * m1 + d2.z * m2 + float4(0, 0, 0, d2.w);
+    // reach: all the way that near the port, not at all that far (metres).
+    float w = saturate((reach.y - distance(float3(m0.w, m1.w, m2.w), port.xyz)) / (reach.y - reach.x));
+    dst.Store4(0, asuint(lerp(m0, n0, w)));
+    dst.Store4(16, asuint(lerp(m1, n1, w)));
+    dst.Store4(32, asuint(lerp(m2, n2, w)));
+}
+)";
+
+struct CasingResources {
+    ID3D11Buffer* in = nullptr;   // the game's instance, copied
+    ID3D11Buffer* out = nullptr;  // moved: the instance stream drawn with
+    ID3D11Buffer* move = nullptr;
+    ID3D11ShaderResourceView* inView = nullptr;
+    ID3D11UnorderedAccessView* outView = nullptr;
+    ID3D11ComputeShader* cs = nullptr;
+    bool failed = false;
+} g_casing;
+std::mutex g_casingMutex;  // the resources made once; the draws come from several threads
+
+bool EnsureCasingResources(ID3D11Device* device) {
+    std::lock_guard lock(g_casingMutex);
+    if (g_casing.cs || g_casing.failed)
+        return g_casing.cs != nullptr;
+    ID3DBlob* code = nullptr;
+    ID3DBlob* errors = nullptr;
+    bool ok = SUCCEEDED(D3DCompile(kCasingShader, sizeof(kCasingShader) - 1, "casings", nullptr, nullptr, "Main", "cs_5_0",
+                                   0, 0, &code, &errors)) &&
+              SUCCEEDED(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_casing.cs));
+    if (errors) {
+        Log("Effects: the casings' shader: %s", static_cast<const char*>(errors->GetBufferPointer()));
+        errors->Release();
+    }
+    if (code)
+        code->Release();
+    D3D11_BUFFER_DESC in{kInstanceStride, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0,
+                         D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0};
+    D3D11_BUFFER_DESC out{kInstanceStride, D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_UNORDERED_ACCESS, 0,
+                          D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0};
+    D3D11_BUFFER_DESC move{80, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+    D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = DXGI_FORMAT_R32_TYPELESS;
+    sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+    sv.BufferEx.NumElements = kInstanceStride / 4;
+    sv.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uv{};
+    uv.Format = DXGI_FORMAT_R32_TYPELESS;
+    uv.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    uv.Buffer.NumElements = kInstanceStride / 4;
+    uv.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    ok = ok && SUCCEEDED(device->CreateBuffer(&in, nullptr, &g_casing.in)) &&
+         SUCCEEDED(device->CreateBuffer(&out, nullptr, &g_casing.out)) &&
+         SUCCEEDED(device->CreateBuffer(&move, nullptr, &g_casing.move)) &&
+         SUCCEEDED(device->CreateShaderResourceView(g_casing.in, &sv, &g_casing.inView)) &&
+         SUCCEEDED(device->CreateUnorderedAccessView(g_casing.out, &uv, &g_casing.outView));
+    if (!ok) {
+        g_casing.failed = true;
+        Log("Effects: the casings can't be moved with the gun (no compute shader or buffers)");
+    }
+    return ok;
+}
+
+// A casing's draw (one instance, its placement in stream 1) drawn moved with the gun. False: as is.
+bool DrawCasingMoved(ID3D11DeviceContext* ctx, UINT instances, UINT first, const std::function<void()>& draw) {
+    if (!g_moveCasings.load(std::memory_order_relaxed) || instances != 1 || first != 0 ||
+        GetTickCount64() - g_lastShot.load(std::memory_order_relaxed) > kCasingFlight)
+        return false;
+    float d[16], body[12];
+    if (!skin::GunDeltaWorld(d) || !skin::GameGunBody(body))
+        return false;  // the game's own gun: its casings are where they belong
+    ID3D11Buffer* stream = nullptr;
+    UINT stride = 0, offset = 0;
+    ctx->IAGetVertexBuffers(1, 1, &stream, &stride, &offset);
+    if (!stream || stride != kInstanceStride) {
+        if (stream)
+            stream->Release();
+        ++g_casingsNot;
+        return false;
+    }
+    ID3D11Device* device = nullptr;
+    ctx->GetDevice(&device);
+    const bool ready = device && EnsureCasingResources(device);
+    if (device)
+        device->Release();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (!ready || FAILED(ctx->Map(g_casing.move, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        stream->Release();
+        ++g_casingsNot;
+        return false;
+    }
+    float* cb = static_cast<float*>(mapped.pData);
+    std::memcpy(cb, d, 12 * sizeof(float));  // the move's three rows
+    for (int r = 0; r < 3; ++r)              // the port where the game's gun has it
+        cb[12 + r] = body[r * 4] * kPort[0] + body[r * 4 + 1] * kPort[1] + body[r * 4 + 2] * kPort[2] + body[r * 4 + 3];
+    cb[15] = 0.0f;
+    const float nearest = g_casingNear.load(std::memory_order_relaxed);
+    cb[16] = nearest, cb[17] = std::max(g_casingFar.load(std::memory_order_relaxed), nearest + 0.01f);
+    cb[18] = cb[19] = 0.0f;
+    ctx->Unmap(g_casing.move, 0);
+    const D3D11_BOX box{offset, 0, 0, offset + kInstanceStride, 1, 1};
+    ctx->CopySubresourceRegion(g_casing.in, 0, 0, 0, 0, stream, 0, &box);
+    // The compute stage as the game had it, put back afterwards.
+    ID3D11ComputeShader* cs = nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    ID3D11UnorderedAccessView* uav = nullptr;
+    ID3D11Buffer* cbuf = nullptr;
+    ctx->CSGetShader(&cs, nullptr, nullptr);
+    ctx->CSGetShaderResources(0, 1, &srv);
+    ctx->CSGetUnorderedAccessViews(0, 1, &uav);
+    ctx->CSGetConstantBuffers(0, 1, &cbuf);
+    ctx->CSSetShader(g_casing.cs, nullptr, 0);
+    ctx->CSSetShaderResources(0, 1, &g_casing.inView);
+    ctx->CSSetUnorderedAccessViews(0, 1, &g_casing.outView, nullptr);
+    ctx->CSSetConstantBuffers(0, 1, &g_casing.move);
+    ctx->Dispatch(1, 1, 1);
+    ID3D11UnorderedAccessView* noUav = nullptr;
+    const UINT keepCount = UINT_MAX;  // an append buffer's counter left as it is
+    ctx->CSSetUnorderedAccessViews(0, 1, &noUav, &keepCount);  // before it's read as a vertex buffer
+    ctx->CSSetShader(cs, nullptr, 0);
+    ctx->CSSetShaderResources(0, 1, &srv);
+    ctx->CSSetUnorderedAccessViews(0, 1, &uav, &keepCount);
+    ctx->CSSetConstantBuffers(0, 1, &cbuf);
+    for (IUnknown* p : std::initializer_list<IUnknown*>{cs, srv, uav, cbuf})
+        if (p)
+            p->Release();
+    const UINT zero = 0;
+    ctx->IASetVertexBuffers(1, 1, &g_casing.out, &stride, &zero);
+    draw();
+    ctx->IASetVertexBuffers(1, 1, &stream, &stride, &offset);
+    stream->Release();
+    ++g_casingsMoved;
+    return true;
 }
 
 // weapon.txt "dumpfx 234": the next three indexed instanced draws with that index count log the
@@ -486,6 +630,41 @@ void DumpFx(UINT count) {
     }
     if (!found)
         Log("Effects:   no world-view-projection in the block");
+}
+
+// weapon.txt "dumpfx 234" on an instanced draw (the casings: one instance each): its vertex streams,
+// and on the immediate context each stream's first two instances read back (a stall: probe only).
+// The casings' own block held no placement (2026-10-30): an instance stream may.
+std::atomic<int> g_dumpInstancesLeft{0};
+
+void DumpInstances(ID3D11DeviceContext* ctx, UINT count, UINT instances, UINT first, bool) {
+    if (count != g_dumpFx.load(std::memory_order_relaxed) || g_dumpInstancesLeft.fetch_sub(1) <= 0)
+        return;
+    // Read back only on the immediate context (a deferred one can't be read; both hooks may be one).
+    const bool immediate = ctx->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE;
+    ID3D11Buffer* vbs[4] = {};
+    UINT strides[4] = {}, offsets[4] = {};
+    ctx->IAGetVertexBuffers(0, 4, vbs, strides, offsets);
+    Log("Effects: instanced %u-count draw, %u instances from %u, %s context; streams (stride/offset): %u/%u %u/%u %u/%u "
+        "%u/%u",
+        count, instances, first, immediate ? "the immediate" : "a deferred", strides[0], offsets[0], strides[1],
+        offsets[1], strides[2], offsets[2], strides[3], offsets[3]);
+    for (int s = 1; s < 4 && immediate; ++s) {
+        if (!vbs[s] || !strides[s] || strides[s] > 128)
+            continue;
+        float data[64] = {};
+        const UINT bytes = std::min(2 * strides[s], static_cast<UINT>(sizeof(data)));
+        if (!ReadBack(ctx, vbs[s], offsets[s] + first * strides[s], bytes, data))
+            continue;
+        char line[900];
+        int used = 0;
+        for (UINT i = 0; i < bytes / 4 && used < 860; ++i)
+            used += snprintf(line + used, sizeof(line) - used, " %.4g", data[i]);
+        Log("Effects:   stream %d's first instances:%s", s, line);
+    }
+    for (ID3D11Buffer* b : vbs)
+        if (b)
+            b->Release();
 }
 
 std::atomic<bool> g_census{false};
@@ -1106,12 +1285,14 @@ void STDMETHODCALLTYPE DrawIndexedInstanced0(ID3D11DeviceContext* c, UINT count,
     t_start = start;
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
+    DumpInstances(c, count, instances, first, true);
     if (Hidden(count) || HiddenPs(c))
         return;
-    const int casing = CasingDraw(count);
-    if (casing == effects::kHide)
+    if (count == kCasingIndices &&
+        DrawCasingMoved(c, instances, first, [&] { g_origDrawIndexedInstanced[0](c, count, instances, start, base, first); }))
         return;
-    if ((casing == effects::kMove || Moved(count) || FlashMesh(c, count)) && DrawMoved(0, c, [&] { g_origDrawIndexedInstanced[0](c, count, instances, start, base, first); }))
+    if ((Moved(count) || FlashMesh(c, count)) &&
+        DrawMoved(0, c, [&] { g_origDrawIndexedInstanced[0](c, count, instances, start, base, first); }))
         return;
     g_origDrawIndexedInstanced[0](c, count, instances, start, base, first);
 }
@@ -1120,12 +1301,14 @@ void STDMETHODCALLTYPE DrawIndexedInstanced1(ID3D11DeviceContext* c, UINT count,
     t_start = start;
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
+    DumpInstances(c, count, instances, first, false);
     if (Hidden(count) || HiddenPs(c))
         return;
-    const int casing = CasingDraw(count);
-    if (casing == effects::kHide)
+    if (count == kCasingIndices &&
+        DrawCasingMoved(c, instances, first, [&] { g_origDrawIndexedInstanced[1](c, count, instances, start, base, first); }))
         return;
-    if ((casing == effects::kMove || Moved(count) || FlashMesh(c, count)) && DrawMoved(1, c, [&] { g_origDrawIndexedInstanced[1](c, count, instances, start, base, first); }))
+    if ((Moved(count) || FlashMesh(c, count)) &&
+        DrawMoved(1, c, [&] { g_origDrawIndexedInstanced[1](c, count, instances, start, base, first); }))
         return;
     g_origDrawIndexedInstanced[1](c, count, instances, start, base, first);
 }
@@ -1183,9 +1366,25 @@ int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT start, INT) {
     NoteDraw(ctx, kIndexed, count, 1);
     if (Hidden(count) || HiddenPs(ctx))
         return kHide;
-    if (const int casing = CasingDraw(count); casing != kNormal)
-        return casing;
+    if (count == kCasingIndices)
+        return kCasing;
     return FlashMesh(ctx, count) ? kMove : kNormal;
+}
+
+bool DrawCasing(ID3D11DeviceContext* ctx, const std::function<void()>& draw) {
+    return DrawCasingMoved(ctx, 1, 0, draw);
+}
+
+void SetCasings(bool on, float nearest, float farthest) {
+    nearest = std::clamp(nearest, 0.0f, 2.0f);
+    farthest = std::clamp(farthest, nearest + 0.01f, 3.0f);
+    const bool was = g_moveCasings.exchange(on);
+    const float wasNear = g_casingNear.exchange(nearest), wasFar = g_casingFar.exchange(farthest);
+    if (was != on || wasNear != nearest || wasFar != farthest)
+        Log(on ? "Effects: the casings come out of the gun's ejection port (all the way within %.2f m of it, not at "
+                 "%.2f m)"
+               : "Effects: the casings drawn where the game throws them (%.2f %.2f)",
+            nearest, farthest);
 }
 
 void SetFlashMove(bool on) {
@@ -1240,6 +1439,7 @@ void SetMoved(const UINT* counts, int n) {
 void DumpNext(UINT count) {
     g_dumpFx = count;
     g_dumpFxLeft = count ? 3 : 0;
+    g_dumpInstancesLeft = count ? 6 : 0;
 }
 
 void SetHidden(const UINT* counts, int n) {
@@ -1288,6 +1488,9 @@ void Update() {
         const uint32_t shots = g_shots.exchange(0), seen = g_flashSeen.exchange(0), moved = g_movedDraws.exchange(0),
                        noDelta = g_noDelta.exchange(0), noView = g_noView.exchange(0), noSlot = g_noSlot.exchange(0),
                        atGun = g_flashMoved.exchange(0), notAtGun = g_flashNotAtGun.exchange(0);
+        if (const uint32_t casings = g_casingsMoved.exchange(0), notMoved = g_casingsNot.exchange(0); casings || notMoved)
+            Log("Effects: last second %u casing draws at the gun's ejection port, %u not (no instance stream)", casings,
+                notMoved);
         if (shots || seen || moved || noDelta || noView || noSlot || atGun || notAtGun)
             Log("Effects: last second %u shots; flash sprites %u; moved by their block's matrix %u (%u not at the "
                 "gun); moved by the view %u, not moved: %u no gun move, %u no view constants, %u not bound (matrices %d)",

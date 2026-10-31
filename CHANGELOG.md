@@ -4,7 +4,7 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
-## 2026-10-31, overnight: a self-test, the flap with the handle, a smooth glove, no crash in the aim search (stage: pre-alpha, experimental)
+## 2026-10-31, overnight: a self-test, casings out of the port, the flap with the handle, a smooth glove, no crash in the aim search (stage: pre-alpha, experimental)
 
 Since the last upload. Worked on overnight with nobody in the headset: a stand-in hand holds the
 rifle while the controllers sleep, and a self-test checks what broke before after every build. The
@@ -39,6 +39,15 @@ self-test and the mod's own pictures, not yet in the headset.
   and at the end of the frame everything the HUD drew within about 40 pixels of a pixel it made more
   orange is put back as it was. The blue markers stay. It costs no measurable frame time (13.9 ms a
   frame with it and without). weapon.txt `orangemarkers 1` keeps them.
+- **Spent casings come out of the gun's ejection port** (the user: "every time I shoot"): each
+  casing is its own small draw whose world placement is in its instance data, so while firing that
+  placement is copied on the graphics card and moved by a small compute shader the way the gun was
+  moved from where the game holds it to the hand. Fully moved near the port, less as it flies off,
+  not at all 0.8 m out, so casings lying on the ground stay where they fell. In the pictures the
+  casings now start 3-4 cm from the port; before, they started about 20 cm off, where the game's
+  own gun is. No measurable frame time (bursts at 15.4 and 15.7 ms a frame with it, 15.1 and 16.2
+  without). weapon.txt `casings 0` leaves them where the game throws them; `casings 1 0.2 0.8` sets
+  how near the port they're fully moved and how far out not at all. Not yet seen in the headset.
 - `tools\launch.ps1` clicks Battlelog's LAUNCH CAMPAIGN when PLAY CAMPAIGN opens the campaign page.
 - **The ACOG's reticle and red cable stand out more**: they're see-through, so they're drawn again on
   themselves (the reticle five more times, the cable three), the strongest of three levels the user
@@ -75,7 +84,23 @@ self-test and the mod's own pictures, not yet in the headset.
   twice a second (the user's videos): the mod copied how the game's hands hold its gun every frame,
   sprint animation and all. Now it copies that only from the game's normal hold: not while
   sprinting (nor for a second after), and not while the game's hands are more than 3-4 cm off
-  their usual grip (its other moves), unless they stay put elsewhere for 5 s.
+  their usual grip (its other moves), unless both stay put elsewhere for 5 s of the game running (a
+  pause or the rifle put away doesn't count; only the hand that's off takes the new hold). The
+  first hold after loading is followed until both palms stay still for a second, and every draw of
+  a frame copies the game's hands or keeps its own together. A log line every 10 s says how the
+  hold was judged. Not yet tested with a sprint (the keyboard's didn't move the player there).
+- **In some launches the right glove stayed at the game's hip instead of on the grip**: where the
+  game's hands hold its gun was only learned when the gun was drawn before the arms in a view, and
+  which comes first differs from launch to launch (in one tonight it learned only after a reload,
+  2.5 minutes in). The arms' bones are now kept until the gun is drawn and learned then: in a launch
+  where every view draws the arms first, the grip was learned 0.1 s after stereo started.
+- **Black slivers could float between the hands** with the left hand off the gun (found by a code
+  review): 15 small collar triangles mix the body and both arms, and the arms now fold into their
+  forearms' middles while the body still folded between the wrists. The body folds onto the line
+  between the arms' fold points again, where those triangles have no area.
+- **The stand-in's left hand acted as a real one** (found by the review): with the headset off it
+  could take a hold on the handguard or chamber a round with the controllers' last buttons. It's
+  now only drawn. If the controllers failed to start, its first pose also stayed in the room.
 - **Black spikes on the left forearm** below the watch (the user's picture): the bare forearm's far
   end was folded into the palm with an all-zero matrix, which made its stretched triangles black,
   and the depth passes' differently cut copy of them left more. The bare forearms now move whole
@@ -95,8 +120,10 @@ self-test and the mod's own pictures, not yet in the headset.
   the body doesn't turn with the vehicle yet, and turning the head turned the view the wrong way
   (the user). Needs a test in the headset before changing.
 - The ammo counter reads one more than the gun holds.
-- To come (the user's list): the muzzle flash at the gun, casings out of the ejection port every
-  shot, magazines taken from the hip and pushed in by hand, wrist movement for the gloves.
+- Looking along a forearm into its open elbow end shows a black disc (the depth pass's folded arm
+  inside it); from the side nothing shows.
+- To come (the user's list): the muzzle flash at the gun, magazines taken from the hip and pushed
+  in by hand, wrist movement for the gloves.
 
 ## 2026-10-30, late night: aim, both hands on the gun, collisions, both eyes alike (stage: pre-alpha, experimental)
 

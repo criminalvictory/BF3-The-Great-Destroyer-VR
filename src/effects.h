@@ -23,9 +23,15 @@ struct DrawFunctions {
 bool InstallHooks(const DrawFunctions& functions);
 
 // Every DrawIndexed (skin.cpp's hook), for the census and the probe: kHide skips the draw, kMove
-// draws it with DrawWithGun (the muzzle flash's mesh after a shot).
-enum DrawChoice { kNormal, kHide, kMove };
+// draws it with DrawWithGun (the muzzle flash's mesh after a shot), kCasing with DrawCasing.
+enum DrawChoice { kNormal, kHide, kMove, kCasing };
 int NoteDrawIndexed(ID3D11DeviceContext* ctx, UINT count, UINT start, INT base);
+// A spent casing's draw (its world placement in its instance stream) drawn moved with the gun in
+// the right hand while it's near the ejection port. False when it isn't moved (then it hasn't drawn).
+bool DrawCasing(ID3D11DeviceContext* ctx, const std::function<void()>& draw);
+// weapon.txt "casings 0": the casings drawn where the game throws them; "casings 1 0.2 0.8": out of
+// the ejection port of the gun in the hand, moved all the way within 0.2 m of the port, not at 0.8 m.
+void SetCasings(bool on, float nearest, float farthest);
 // Calls draw with the view constants changed so what it draws moves with the gun in the right hand
 // (free hands). False when it can't be moved (then it hasn't drawn). which: the immediate (0) or
 // deferred (1) context's functions.

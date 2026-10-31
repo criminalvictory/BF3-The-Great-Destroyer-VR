@@ -74,6 +74,8 @@ std::atomic<bool> g_standIn{false};
 std::atomic<float> g_standInPitch{0.0f};  // radians: the headless head tilted up (to fire at the sky)
 std::atomic<float> g_standInYaw{0.0f};    // radians, left positive: the gun turned from the head (to see its side)
 bool g_standingIn = false;  // holding the gun this frame
+XrPosef g_standInLeft{};     // its left hand under the handguard, drawn only (StandInLeftPose)
+bool g_haveStandInLeft = false;
 XrPosef g_aimToGrip{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};  // the grip in the aim pose's frame
 bool g_haveAimToGrip = false;
 ULONGLONG g_aimToGripSavedAt = 0;
@@ -572,8 +574,12 @@ bool Init(XrInstance instance, XrSession session) {
 
 void Sync(XrSession session, XrSpace space, XrTime time) {
     g_aimTracked = false;
-    if (!g_ready)
+    if (!g_ready) {
+        // No controllers (Init failed): nothing tracked this frame; the stand-in may hold the gun.
+        g_handTracked[0] = g_handTracked[1] = false;
+        g_standingIn = false;
         return;
+    }
     XrActiveActionSet active{g_set, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
     sync.countActiveActionSets = 1;
@@ -889,6 +895,7 @@ void StandIn(const XrPosef& head) {
         loaded = true;
         LoadAimToGrip();
     }
+    g_haveStandInLeft = false;
     if (!g_standIn.load(std::memory_order_relaxed) || g_aimTracked || g_handTracked[1]) {
         g_standingIn = false;
         return;
@@ -920,14 +927,16 @@ void StandIn(const XrPosef& head) {
                                g_aimPose.position.z + grip.z};
     g_handTracked[1] = true;
     // A left hand too while that controller sleeps: under the handguard, palm up (a quarter turn
-    // about the forward axis), to see the left glove and forearm with nobody in the headset.
+    // about the forward axis), to see the left glove and forearm with nobody in the headset. Only
+    // drawn (StandInLeftPose): holds, reloads and touches never see it (the review, 2026-10-31: it
+    // took holds and chambered rounds with the controllers' last buttons while the headset was off).
     if (!g_handTracked[0]) {
         const XrVector3f under = Rotate(level, {-0.04f, -0.07f, -0.30f});
         const float half = -0.7853982f;
-        g_handPoses[0].orientation = Mul(level, XrQuaternionf{0.0f, 0.0f, std::sin(half), std::cos(half)});
-        g_handPoses[0].position = {g_aimPose.position.x + under.x, g_aimPose.position.y + under.y,
-                                   g_aimPose.position.z + under.z};
-        g_handTracked[0] = true;
+        g_standInLeft.orientation = Mul(level, XrQuaternionf{0.0f, 0.0f, std::sin(half), std::cos(half)});
+        g_standInLeft.position = {g_aimPose.position.x + under.x, g_aimPose.position.y + under.y,
+                                  g_aimPose.position.z + under.z};
+        g_haveStandInLeft = true;
     }
     if (!g_standingIn) {
         static ULONGLONG told = 0;
@@ -942,6 +951,13 @@ void StandIn(const XrPosef& head) {
 
 bool StandingIn() {
     return g_standingIn;
+}
+
+bool StandInLeftPose(XrPosef& out) {
+    if (!g_haveStandInLeft)
+        return false;
+    out = g_standInLeft;
+    return true;
 }
 
 bool StandInOn() {
