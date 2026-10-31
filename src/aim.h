@@ -19,6 +19,9 @@ void Reset();
 // hold something else, and writing there crashed the game 2 s after the jump (2026-10-31).
 void Forget();
 
+// Whether the game is turning the look yaw itself (a scripted moment): nothing written meanwhile.
+bool Scripted();
+
 // weapon.txt "scripted 0/1": whether a scripted moment (the game turning the look yaw itself) stops the
 // writes until it's over (on by default; aim.cpp).
 void SetScriptedFollow(bool on);

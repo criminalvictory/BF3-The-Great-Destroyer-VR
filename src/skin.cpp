@@ -357,6 +357,20 @@ std::atomic<int> g_eyeTrace{0};
 // view's constants bound) that the mod leaves where the game put them, each kind logged once: the
 // ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
 std::atomic<int> g_fpProbeFrames{0};
+// weapon.txt "pslog <checksum>": the next three frames' draws with that pixel shader (LogByShader).
+std::atomic<int> g_psLogFrames{0};
+std::atomic<uint64_t> g_psLogSum{0};
+std::atomic<ULONGLONG> g_bareMovedAt{0};  // when the bare arms were last drawn moved (the body hidden meanwhile)
+// weapon.txt "barehands 0" leaves the game's own bare arms; "barehands reset" learns their offsets again
+// from the controllers (DrawBareArms).
+std::atomic<bool> g_bareOn{true};
+std::atomic<bool> g_bareRelearn{false};
+std::atomic<bool> g_bareWrist{true};   // weapon.txt "barewrist 0": the bare forearms whole with their hands
+std::atomic<bool> g_bareElbow{true};   // weapon.txt "bareelbow 0": the forearms' elbow end left as drawn
+std::atomic<bool> g_bareLearn{false};  // weapon.txt "barehands learn": offsets learned from the game's own arms
+// weapon.txt "barehands learn 5": for 5 s the game's own arms are shown, then each hand's offset from its
+// controller is learned from them: the user puts the real hands where they are first (a line-up).
+std::atomic<ULONGLONG> g_bareLineUpAt{0};
 // weapon.txt "scopetrace": the next three frames' draws of the scope's mesh (its index buffer, as
 // the player's own scope body binds it), each with the bones it was drawn with and what became of it.
 std::atomic<int> g_scopeTraceFrames{0};
@@ -502,7 +516,7 @@ std::atomic<uint32_t> g_drawsByEye[3];
 
 // The hands' targets, from the view's space into the arms' space with the view this draw is drawn
 // with (the latest, if its constant buffer isn't known). False until a view has been seen.
-bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
+bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx, int* eyeOut = nullptr) {
     ID3D11Buffer* bound[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
     ctx->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, bound);
     float v[12];
@@ -532,11 +546,29 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
         if (b)
             b->Release();
     Compose(v, t.gunPose, t.gunPoseTrue);
+    // The view's place in the arms' space jumping more than 4 cm between the left eye's draws: the
+    // game's camera stepping (the user: the bare hands jump swaying left and right, 15:06). Only while
+    // the bare arms are on.
+    if (viewEye == 0 && GetTickCount64() - g_bareMovedAt.load(std::memory_order_relaxed) < 250) {
+        static float s_last[3] = {};
+        static bool s_have = false;
+        const float d[3] = {v[3] - s_last[0], v[7] - s_last[1], v[11] - s_last[2]};
+        const float moved = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        static ULONGLONG s_logged = 0;
+        if (s_have && moved > 0.04f && GetTickCount64() - s_logged > 200) {
+            s_logged = GetTickCount64();
+            Log("Bare hands: the view moved %.0f cm in the arms' space between draws", moved * 100.0f);
+        }
+        s_last[0] = v[3], s_last[1] = v[7], s_last[2] = v[11];
+        s_have = true;
+    }
     // Per-eye views: this draw's view is one eye's, half the eye distance from the middle of the
     // head the targets are measured from; that's taken off along the view's right. (Its viewport
     // can't tell: BF3 draws both views with one the width of the whole picture.)
     {
         int eye = views::Active() ? viewEye : -1;
+        if (eyeOut)
+            *eyeOut = eye;
         ++g_drawsByEye[eye + 1];
         if (float offset = views::EyeOffset(eye); eye >= 0 && offset != 0.0f)
             for (int i = 0; i < 3; ++i)
@@ -547,6 +579,16 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx) {
     std::memcpy(t.gunPose, pose, sizeof(pose));
     Compose(v, t.leftPose, pose);
     std::memcpy(t.leftPose, pose, sizeof(pose));
+    for (int side = 0; side < 2; ++side)
+        if (t.bareArm[side])
+            for (int k = 0; k < 3; ++k) {
+                Compose(v, t.bareForearm[side][k], pose);
+                std::memcpy(t.bareForearm[side][k], pose, sizeof(pose));
+            }
+    if (t.right) {
+        Compose(v, t.rightPose, pose);
+        std::memcpy(t.rightPose, pose, sizeof(pose));
+    }
     if (t.mag) {
         Compose(v, t.magPose, pose);
         std::memcpy(t.magPose, pose, sizeof(pose));
@@ -1020,6 +1062,50 @@ void ReadWeaponSelection() {
         }
         if (std::strstr(line, "eyetrace")) {
             g_eyeTrace = 40;
+            line = next;
+            continue;
+        }
+        if (const char* bw = std::strstr(line, "barewrist")) {  // the bare forearms solved from their hands
+            int on = 1;
+            sscanf_s(bw + 9, "%d", &on);
+            g_bareWrist = on != 0;
+            Log("Bare hands: the forearms %s", on ? "solved from the hands (bending at the wrist)" : "whole with the hands");
+            line = next;
+            continue;
+        }
+        if (const char* be = std::strstr(line, "bareelbow")) {  // the bare forearms' elbow end folded in
+            int on = 1;
+            sscanf_s(be + 9, "%d", &on);
+            g_bareElbow = on != 0;
+            Log("Bare hands: the forearms' elbow end %s", on ? "folded in" : "left as drawn");
+            line = next;
+            continue;
+        }
+        if (const char* bh = std::strstr(line, "barehands")) {  // the bare arms on the controllers
+            if (const char* ln = std::strstr(bh, "learn")) {
+                float seconds = 5.0f;
+                sscanf_s(ln + 5, "%f", &seconds);
+                g_bareLearn = true;
+                g_bareLineUpAt = GetTickCount64() + static_cast<ULONGLONG>(seconds * 1000.0f);
+                Log("Bare hands: the game's own arms shown for %.0f s, then the hands lined up with them", seconds);
+            } else if (std::strstr(bh, "glove")) {
+                g_bareLearn = false;
+                Log("Bare hands: placed as the left glove's line-up (the right mirrored)");
+            } else {
+                int on = 1;
+                sscanf_s(bh + 9, "%d", &on);
+                g_bareOn = on != 0;
+                Log("Bare hands: %s", on ? "on" : "off (the game's own arms)");
+            }
+            line = next;
+            continue;
+        }
+        if (const char* pl = std::strstr(line, "pslog")) {
+            unsigned long long sum = 0;
+            sscanf_s(pl + 5, "%llx", &sum);
+            g_psLogSum = sum;
+            g_psLogFrames = 3;
+            Log("PS log: the next three frames' draws with pixel shader %016llx", sum);
             line = next;
             continue;
         }
@@ -2505,6 +2591,231 @@ void TraceScopeDraw(ID3D11DeviceContext* ctx, const ArmDraw& draw, const Upload&
         b ? b[7] : 0.0f, b ? b[11] : 0.0f, gun[0], gun[1], gun[2], outcome);
 }
 
+// Empty hands (The Great Destroyer, 2026-10-31: Blackburn bare-armed, a handcuff on his right wrist,
+// no gun; the user: free hands there, but not in the interrogation and its QTEs). The bare arms are
+// one draw, 18108 indices from 16053 in every launch, with the skin shader (code 090cf267a0729457),
+// stencil 32, bones in the body's space like the gloves': 26-50 the left forearm and hand, 0-24 the
+// right, each laid out alike (45 and 19 the wrist's palm bone, 46-50 and 20-24 the forearm). Their
+// rest pose is the gloves' (the left hand's middle at x +0.554 in the vertex buffer, the gloves'
+// kLeftPalm +0.537; the right mirrored): taken the other way round at first, the left controller
+// moved the right arm a metre off (the user's video, 14:30). Each arm moves whole with its
+// controller, its fingers as the game animates them: the palm bone is put where the left glove's
+// line-up puts the gloves' (the right mirrored; weapon.txt "barehands learn 5": learned from the
+// game's own arms instead), and every bone of that side moved as the palm bone was. The cuff's ring
+// (2682 from 13371) moves as the right arm last did. On only while xr_runtime.cpp allows it (no
+// cutscene picture and no scripted turn for a few seconds, the aim found) and no gun is in hand.
+constexpr DrawKey kBareArms{18108, 16053, 0};
+constexpr DrawKey kBareCuff{2682, 13371, 0};   // the cuff round the right wrist
+constexpr DrawKey kBareChain{3492, 0, 0};       // the chain and the open cuff hanging from it (bones 0-2 the links, 3-4 the cuff)
+// The body with the bare arms on: the legs, torso and sleeves (5604 + 7545, hidden: the camo and the
+// feet went, 2026-10-31 14:45); folded away as the gloves' body is, or the sleeves stayed where the
+// game holds the arms and the feet showed looking down (the user).
+// With them their depth-only copies (stride 16, the same shader): the body's 26346 from 34161, one hand's
+// 7815 from 60507 (a skeleton of its own, 21 bones), the chain's 3492 from 3492. Left where the game holds
+// the arms they showed black, low by the waist (the user's video, 14:50); the moved arms draw without them.
+// And 222 from 13149 (the legs' shader): a small piece of uniform each side, two white sheets in the
+// corners of the view (the user, 15:14).
+constexpr DrawKey kBareBody[] = {{5604, 0, 0},     {7545, 5604, 0},  {26346, 34161, 0},
+                                 {7815, 60507, 0}, {3492, 3492, 0},  {222, 13149, 0},
+                                 // The chain and its open cuff (kBareChain) for now: moved with the hand they jittered
+                                 // whichever palm they went by (the user: "still absolutely jittery", 15:23; set aside).
+                                 {3492, 0, 0}};
+constexpr uint64_t kSkinShader = 0x090cf267a0729457ull;
+constexpr int kBarePalm[2] = {45, 19};  // left, right
+// Each side's palette entries, first and last (left, right): 51 and 25 with them, the upper arm's, which a few
+// elbow-end vertices lean on; left in place they stretched a white sheet of skin and sleeve from the moved
+// arm back to where the game holds it (the user's "piece of my uniform", 15:07).
+constexpr int kBareSide[2][2] = {{26, 51}, {0, 25}};
+std::atomic<bool> g_bareAllowed{false};
+float g_bareOffset[2][12] = {};          // the palm bone from its controller's pose (under g_handsMutex)
+bool g_haveBareOffset[2] = {};
+float g_bareDelta[2][12] = {};           // each side's last move (for the cuff)
+bool g_haveBareDelta[2] = {};
+// The right palm bone as the game last drew it, per view (no eye, left, right): the cuff and chain go by
+// it. The game poses the arms for each eye's view of its own, the palm 4-40 cm apart between them (the
+// log, 15:13): one kept for both, the chain took the other eye's and jittered, doubled (the user).
+float g_bareGamePalm[12][12] = {};  // by view and pass (BarePass)
+float g_bareGameWrist[12][12] = {}; // the right forearm's wrist end (20, twist B) alike: the cuff goes by it
+bool g_haveBareGamePalm[12] = {};
+std::atomic<uint32_t> g_bareDraws{0};
+
+bool SkinShaderBound(ID3D11DeviceContext* ctx) {
+    ID3D11PixelShader* ps = nullptr;
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    if (!ps)
+        return false;
+    const bool skin = shaders::ChecksumOf(ps) == kSkinShader;
+    ps->Release();
+    return skin;
+}
+
+bool DrawBareArms(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, bool cuff,
+                  bool depth = false) {
+    if (!g_bareOn.load(std::memory_order_relaxed) || !g_bareAllowed.load(std::memory_order_relaxed) ||
+        GetTickCount64() - g_rifleDrawn.load() < 1000)
+        return false;
+    // A line-up under way: the game's own arms until it's time, then learned from them.
+    if (const ULONGLONG at = g_bareLineUpAt.load(std::memory_order_relaxed); at) {
+        if (GetTickCount64() < at)
+            return false;
+        g_bareLineUpAt = 0;
+        g_bareRelearn = true;
+        Log("Bare hands: lined up with the game's arms");
+    }
+    const Upload& u = t_upload;
+    // Any pass of it: the depth pass has no pixel shader, and left out it drew a black copy of the arms
+    // where the game holds them (the user). Its bones being the player's own keeps other soldiers out.
+    if (!u.resource || u.bytes.size() != kGloveUploadSize || !PlayersOwn(u.bytes))
+        return false;
+    thread_local std::vector<uint8_t> t_bare;
+    t_bare = u.bytes;
+    auto* bones = reinterpret_cast<float*>(t_bare.data());
+    bool moved = false;
+    {
+        std::lock_guard lock(g_handsMutex);
+        if (!g_handsOn)
+            return false;
+        skin::HandTargets t = g_hands;
+        int eye = -1;
+        if (!ToArms(t, ctx, &eye))
+            return false;
+        // Each eye draws the arms twice a frame, in two passes with bones of their own: the palm 5-67 cm
+        // apart between them (the log, 15:18). The cuff and chain go by the arms' draw of their own pass:
+        // this view, its stencil reference, a pixel shader or none. One palm for all passes, they jumped
+        // between two poses (the user: "extremely jittery").
+        int view = eye >= 0 && eye <= 1 ? eye + 1 : 0;
+        {
+            ID3D11PixelShader* ps = nullptr;
+            ctx->PSGetShader(&ps, nullptr, nullptr);
+            ID3D11DepthStencilState* state = nullptr;
+            UINT ref = 0;
+            ctx->OMGetDepthStencilState(&state, &ref);
+            view = view * 4 + (ps ? 1 : 0) + (ref == 32 ? 2 : 0);
+            if (ps)
+                ps->Release();
+            if (state)
+                state->Release();
+        }
+        if (g_bareRelearn.exchange(false))
+            g_haveBareOffset[0] = g_haveBareOffset[1] = false;
+        for (int side = 0; side < 2; ++side) {
+            const bool learn = g_bareLearn.load(std::memory_order_relaxed);
+            const bool tracked = side == 0 ? t.left : learn ? t.gun : t.right;
+            const float* pose = side == 0 ? t.leftPose : learn ? t.gunPose : t.rightPose;
+            float delta[12];
+            {
+                // The cuff and its chain go with the right hand: its palm as the game drew it for this
+                // view (g_bareGamePalm) put by this draw's own view. Moved as the arms' last draw was,
+                // they took the other eye's view and doubled (the user's video, 14:50).
+                if (cuff && (side == 0 || !g_haveBareGamePalm[view]))
+                    continue;
+                if (!tracked)
+                    continue;
+                const float* palm = cuff ? g_bareGamePalm[view] : bones + kBarePalm[side] * 12;
+                // With the wrist solved the cuff goes with the forearm's wrist end, not the palm: bending
+                // the wrist swung it through the wrist (the user, 15:27).
+                if (cuff && t.bareArm[1]) {
+                    float inverse[12];
+                    if (!Invert(g_bareGameWrist[view], inverse))
+                        continue;
+                    Compose(t.bareForearm[1][2], inverse, delta);
+                    for (int k = 0; k < static_cast<int>(kPaletteBones); ++k)
+                        MoveBy(delta, bones + k * 12);
+                    moved = true;
+                    continue;
+                }
+                if (!cuff && side == 1 && !depth) {
+                    // The game's own right palm moving more than 4 cm between this view's draws: its
+                    // animation jumping, which the arm follows (the user: the hands jump swaying, 15:06).
+                    if (g_haveBareGamePalm[view]) {
+                        const float* last = g_bareGamePalm[view];
+                        const float d[3] = {palm[3] - last[3], palm[7] - last[7], palm[11] - last[11]};
+                        const float moved = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                        static ULONGLONG s_logged = 0;
+                        if (moved > 0.04f && GetTickCount64() - s_logged > 200) {
+                            s_logged = GetTickCount64();
+                            Log("Bare hands: the game's right palm jumped %.0f cm between view %d's draws",
+                                moved * 100.0f, view);
+                        }
+                    }
+                    std::memcpy(g_bareGamePalm[view], palm, sizeof(g_bareGamePalm[view]));
+                    g_haveBareGamePalm[view] = true;
+                    std::memcpy(g_bareGameWrist[view], bones + 20 * 12, sizeof(g_bareGameWrist[view]));
+                }
+                float inverse[12], target[12];
+                if (learn && !g_haveBareOffset[side]) {
+                    if (cuff || depth)
+                        continue;  // learned from the arms' own colour pass
+                    float poseInverse[12];
+                    if (!Invert(pose, poseInverse))
+                        continue;
+                    Compose(poseInverse, palm, g_bareOffset[side]);
+                    g_haveBareOffset[side] = true;
+                    Log("Bare hands: the %s hand's offset from its controller learned", side == 0 ? "left" : "right");
+                }
+                if (!Invert(palm, inverse))
+                    continue;
+                // By default the palm bone is put as the left glove's line-up puts the gloves' (their
+                // skeletons alike; the right mirrored): learned where the game drew it, each hand
+                // landed somewhere of its own (the user: "in complete different positions").
+                if (learn)
+                    Compose(pose, g_bareOffset[side], target);
+                else
+                    std::memcpy(target, pose, sizeof(target));
+                Compose(target, inverse, delta);
+                std::memcpy(g_bareDelta[side], delta, sizeof(delta));
+                g_haveBareDelta[side] = true;
+            }
+            const int first = cuff ? 0 : kBareSide[side][0], last = cuff ? kPaletteBones - 1 : kBareSide[side][1];
+            for (int k = first; k <= last && k < static_cast<int>(kPaletteBones); ++k)
+                MoveBy(delta, bones + k * 12);
+            // The forearm's elbow end (21 and 47, with the rolled sleeve's hem) folded onto the next bone
+            // in: the whole forearm moves rigidly with the hand, and with the hand low the hem swung up
+            // into a corner of the view (the user, 14:55). weapon.txt "bareelbow 0" keeps it.
+            // The forearm solved from the hand (hands.cpp PlaceBareForearms): its bones put on the solved
+            // elbow end and twist bones, so the hand bends at the wrist and the forearm stays on the arm's
+            // line. Matched by where they sit in the rest pose, wrist to elbow (as the gloves' kGlovesForearm
+            // has theirs): 46 / 20 on twist B, 49 / 23 on A, the rest (50, 47 and past the elbow 48, 51;
+            // the right's 24, 21, 22, 25) on the elbow end.
+            if (!cuff && t.bareArm[side]) {
+                static constexpr int kRoles[2][7][2] = {
+                    {{46, 2}, {49, 1}, {50, 0}, {47, 0}, {48, 0}, {51, 0}, {-1, 0}},
+                    {{20, 2}, {23, 1}, {24, 0}, {21, 0}, {22, 0}, {25, 0}, {-1, 0}}};
+                for (const auto& role : kRoles[side])
+                    if (role[0] >= 0)
+                        std::memcpy(bones + role[0] * 12, t.bareForearm[side][role[1]], 12 * sizeof(float));
+            } else if (!cuff && g_bareElbow.load(std::memory_order_relaxed)) {
+                // Onto the forearm's middle as the next bone in carries it (the rest pose's, from the
+                // vertex buffer: the left's at x +0.437, the right's mirrored).
+                const int end = side == 0 ? 47 : 21, next = side == 0 ? 46 : 20;
+                const float rest[3] = {side == 0 ? 0.4367f : -0.4367f, 1.1995f, 0.0656f};
+                float point[3];
+                const float* m = bones + next * 12;
+                for (int i = 0; i < 3; ++i)
+                    point[i] = m[i * 4] * rest[0] + m[i * 4 + 1] * rest[1] + m[i * 4 + 2] * rest[2] + m[i * 4 + 3];
+                Collapse(bones + end * 12, point);
+                Collapse(bones + (side == 0 ? 51 : 25) * 12, point);  // the upper arm's, with it
+            }
+            moved = true;
+        }
+    }
+    if (!moved)
+        return false;
+    const bool drawn = DrawWithPalette(which, ctx, count, start, base, u.resource, t_bare.data(), kGloveUploadSize);
+    if (drawn) {
+        g_bareDraws.fetch_add(1, std::memory_order_relaxed);
+        if (!cuff)
+            g_bareMovedAt = GetTickCount64();
+    }
+    return drawn;
+}
+
+// The body's draws while the bare arms are on the controllers: left out (their bones the player's own).
+bool HideBareBody() {
+    return GetTickCount64() - g_bareMovedAt.load(std::memory_order_relaxed) < 250 && t_upload.resource &&
+           PlayersOwn(t_upload.bytes);
+}
+
 // One of the first-person arms' draws with free hands on: each hand's bones moved with it, the
 // arms, sleeves and body folded away. False: draw as usual. (Other soldiers' copies of the scope
 // share its draws, their bones far out in the world: those are left as the game draws them.)
@@ -2840,8 +3151,17 @@ void WatchDraw(size_t pass) {
 }
 
 void CaptureMesh(ID3D11DeviceContext* ctx, const DrawKey& key) {
-    if (!PlayersOwn(t_upload.bytes) || !g_dumpWanted.exchange(false))
+    // A draw asked for by name ("dump 32847 8385") is taken wherever its bones are: The Great
+    // Destroyer's bare arms were never dumped, their bones not where the player's own are elsewhere
+    // (2026-10-31). Where its first bone sits is logged.
+    const bool named = !(key == kWeapon);
+    if ((!named && !PlayersOwn(t_upload.bytes)) || !g_dumpWanted.exchange(false))
         return;
+    if (t_upload.bytes.size() >= 48) {
+        const auto* first = reinterpret_cast<const float*>(t_upload.bytes.data());
+        Log("Dump: draw %u %u, its first bone at (%.3f %.3f %.3f), %zu bytes of bones", key.indexCount, key.startIndex, first[3],
+            first[7], first[11], t_upload.bytes.size());
+    }
     auto* d = new MeshDump;
     ctx->IAGetVertexBuffers(0, 4, d->vb, d->stride, d->offset);
     ctx->IAGetIndexBuffer(&d->ib, &d->ibFormat, &d->ibOffset);
@@ -2858,6 +3178,55 @@ void CaptureMesh(ID3D11DeviceContext* ctx, const DrawKey& key) {
             d->ib->Release();
         delete d;
     }
+}
+
+// weapon.txt "pslog 56df872a53641fae": the next three frames' draws with a pixel shader of that code
+// (its checksum: the same from one launch to the next, unlike its pointer), each logged with its
+// index count and start (which change from launch to launch in The Great Destroyer), its stencil
+// reference, its first constant buffer's size, whether the last 4096-byte bone upload is that buffer
+// (dumps took another draw's bones when it wasn't) and where its first bone sits: to find the bare
+// arms among the draws of the skin shader, which heads use too (2026-10-31).
+void LogByShader(ID3D11DeviceContext* ctx, UINT count, UINT start, INT base, UINT instances = 1) {
+    ID3D11PixelShader* ps = nullptr;
+    ctx->PSGetShader(&ps, nullptr, nullptr);
+    if (!ps)
+        return;
+    // The pointer as this launch's logs show it does too ("pslog 1C3FE7DC").
+    const uint64_t sum = shaders::ChecksumOf(ps), wanted = g_psLogSum.load(std::memory_order_relaxed);
+    const bool match = sum == wanted || reinterpret_cast<uintptr_t>(ps) == wanted;
+    ps->Release();
+    if (!match)
+        return;
+    static uint64_t s_named = 0;
+    if (s_named != wanted) {
+        s_named = wanted;
+        Log("PS log: pixel shader %p has the code %016llx", static_cast<void*>(ps), sum);
+    }
+    ID3D11Buffer* bones = nullptr;
+    ctx->VSGetConstantBuffers(0, 1, &bones);
+    UINT size = 0;
+    if (bones) {
+        D3D11_BUFFER_DESC desc;
+        bones->GetDesc(&desc);
+        size = desc.ByteWidth;
+    }
+    const bool ours = bones && t_upload.resource == bones && t_upload.bytes.size() >= 48;
+    if (bones)
+        bones->Release();
+    ID3D11DepthStencilState* state = nullptr;
+    UINT ref = 0;
+    ctx->OMGetDepthStencilState(&state, &ref);
+    if (state)
+        state->Release();
+    float first[3] = {};
+    if (ours) {
+        const auto* b = reinterpret_cast<const float*>(t_upload.bytes.data());
+        first[0] = b[3], first[1] = b[7], first[2] = b[11];
+    }
+    Log("PS log: DrawIndexed %u from %u base %d x%u; stencil ref %u; VS buffer 0 %u bytes, %s; first bone (%.3f %.3f "
+        "%.3f)",
+        count, start, base, instances, ref, size, ours ? "the last bone upload" : "not the last bone upload", first[0],
+        first[1], first[2]);
 }
 
 // weapon.txt "fpunknown": logs this draw if a first-person view's constants are bound to it (and
@@ -2951,6 +3320,11 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
         DrawKey key{count, start, base};
         if (g_dumpWanted.load(std::memory_order_acquire) && key == g_dumpKey)
             CaptureMesh(ctx, key);
+        if ((key == kBareArms || key == kBareCuff) &&
+            DrawBareArms(which, ctx, count, start, base, key != kBareArms))
+            return;
+        if (std::find(std::begin(kBareBody), std::end(kBareBody), key) != std::end(kBareBody) && HideBareBody())
+            return;
         if (key == kScope && g_weaponWatch.load(std::memory_order_relaxed))
             ProbeScope(ctx);
         size_t pass = WeaponPass(key);
@@ -2968,6 +3342,8 @@ void DrawIndexed(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, IN
         }
         if (g_fpProbeFrames.load(std::memory_order_relaxed) > 0)
             ProbeFirstPerson(ctx, count, start, base);
+        if (g_psLogFrames.load(std::memory_order_relaxed) > 0)
+            LogByShader(ctx, count, start, base);
         if (overlay::Draw(ctx, count, [&] { g_origDrawIndexed[which](ctx, count, start, base); }, true, start, base))
             return;
         g_origDrawIndexed[which](ctx, count, start, base);
@@ -3232,6 +3608,32 @@ void WriteDump() {
 }
 
 namespace skin {
+
+bool BareWrist() {
+    return g_bareWrist.load(std::memory_order_relaxed);
+}
+
+void SetBareHandsAllowed(bool allowed) {
+    if (g_bareAllowed.exchange(allowed) != allowed)
+        Log("Bare hands: %s", allowed ? "allowed (no cutscene or scripted turn for a while, the aim found)"
+                                       : "off (a cutscene, a scripted turn, or the aim not found)");
+    static ULONGLONG s_last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - s_last >= 10000) {
+        s_last = now;
+        if (const uint32_t n = g_bareDraws.exchange(0))
+            // Placed with the view bound to the draw (its own eye), or the latest one uploaded (maybe
+            // the other eye's: a jump between the eyes, the user swaying, 14:55).
+            Log("Bare hands: %u draws moved to the controllers in the last 10 s; placed with the draw's own view "
+                "%u times, the latest %u times",
+                n, g_viewBound.exchange(0), g_viewLatest.exchange(0));
+    }
+}
+
+void LogShaderDraw(ID3D11DeviceContext* ctx, unsigned count, unsigned start, int base, unsigned instances) {
+    if (g_psLogFrames.load(std::memory_order_relaxed) > 0)
+        LogByShader(ctx, count, start, base, instances);
+}
 
 bool InstallHooks(void* const (&map)[2], void* const (&unmap)[2], void* const (&drawIndexed)[2]) {
     void* mapHooks[2] = {reinterpret_cast<void*>(&Map0), reinterpret_cast<void*>(&Map1)};
@@ -3525,6 +3927,8 @@ void Update() {
     }
     if (int frames = g_fpProbeFrames.load(std::memory_order_relaxed); frames > 0)
         g_fpProbeFrames.store(frames - 1, std::memory_order_relaxed);
+    if (int frames = g_psLogFrames.load(std::memory_order_relaxed); frames > 0)
+        g_psLogFrames.store(frames - 1, std::memory_order_relaxed);
     if (int frames = g_scopeTraceFrames.load(std::memory_order_relaxed); frames > 0)
         g_scopeTraceFrames.store(frames - 1, std::memory_order_relaxed);
 }

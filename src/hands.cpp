@@ -902,6 +902,78 @@ void PlaceForearms(skin::HandTargets& t, const float* fromHead, const float* toV
 
 }
 
+// The bare arms' forearms (The Great Destroyer) solved from their hands, both sides, as PlaceForearms
+// solves the gloved left (armik.h; the bare arms share the gloves' rig and bind pose, each palm drawn
+// exactly at its pose, leftPose / rightPose). The user, 2026-10-31: "track my forearms ... but when
+// I'm bending my wrist, I need the forearms to stay locked". The shoulder from the pouch's neck point
+// and body heading, the right's mirrored. Nothing with weapon.txt "barewrist 0", without a body
+// frame, or for the frame of a gap or a jump (afresh after).
+void PlaceBareForearms(skin::HandTargets& t, const float* fromHead, const float* toView) {
+    static armik::State s_state[2];
+    static ULONGLONG s_solvedAt = 0;
+    static float s_wrist[2][3] = {};
+    float neckRoom[3], yaw = 0.0f;
+    if (!skin::BareWrist() || !pouch::BodyFrame(neckRoom, yaw)) {
+        s_state[0] = s_state[1] = armik::State{};
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    const bool gap = now - s_solvedAt > 100;
+    s_solvedAt = now;
+    const float rightRoom[3] = {std::cos(yaw), 0.0f, -std::sin(yaw)}, forwardRoom[3] = {-std::sin(yaw), 0.0f, -std::cos(yaw)};
+    float neck[3], left[3], up[3], back[3];
+    Transform(fromHead, neckRoom, neck);
+    for (int i = 0; i < 3; ++i) {
+        const float* r = toView + i * 3;
+        left[i] = -(r[0] * rightRoom[0] + r[1] * rightRoom[1] + r[2] * rightRoom[2]);
+        up[i] = r[1];
+        back[i] = -(r[0] * forwardRoom[0] + r[1] * forwardRoom[1] + r[2] * forwardRoom[2]);
+    }
+    for (int side = 0; side < 2; ++side) {
+        const bool tracked = side == 0 ? t.left : t.right;
+        if (!tracked || gap) {
+            s_state[side] = armik::State{};
+            continue;
+        }
+        const float* hand = side == 0 ? t.leftPose : t.rightPose;
+        float out[3], shoulder[3], wrist[3];
+        for (int i = 0; i < 3; ++i) {
+            out[i] = side == 0 ? left[i] : -left[i];
+            shoulder[i] = neck[i] + out[i] * g_shoulder[0] - up[i] * g_shoulder[1] + back[i] * g_shoulder[2];
+        }
+        const float kneeWrist[3] = {side == 0 ? armik::kWrist[0] : -armik::kWrist[0], armik::kWrist[1], armik::kWrist[2]};
+        Transform(hand, kneeWrist, wrist);
+        const float moved[3] = {wrist[0] - s_wrist[side][0], wrist[1] - s_wrist[side][1], wrist[2] - s_wrist[side][2]};
+        std::memcpy(s_wrist[side], wrist, sizeof(wrist));
+        if (Length(moved) > kArmWristJump) {  // a tracking jump: afresh from the next frame
+            s_state[side] = armik::State{};
+            continue;
+        }
+        // The wrist's range wider than the gloved arm's: with the controller strapped to the palm the
+        // user bends further, and past the range the solver turns the forearm to make up the rest (the
+        // user: "when I'm bending my wrist, my whole forearm is moving", 15:27).
+        armik::Params params = g_armParams[side];
+        params.flex = 100.0f, params.ext = 95.0f, params.radial = 45.0f, params.ulnar = 60.0f;
+        armik::Result r;
+        armik::Solve(hand, shoulder, out, up, back, side == 1, params, s_state[side], r);
+        std::memcpy(t.bareForearm[side], r.frame, sizeof(r.frame));
+        t.bareArm[side] = true;
+        // Once a second each side: the wrist's bend, whether the range was met, and how far its point
+        // moved in the second (it shouldn't, bending only the wrist: then the elbow guess moves too).
+        static ULONGLONG s_logged[2] = {};
+        static float s_from[2][3] = {};
+        if (now - s_logged[side] >= 1000) {
+            s_logged[side] = now;
+            const float drift[3] = {wrist[0] - s_from[side][0], wrist[1] - s_from[side][1], wrist[2] - s_from[side][2]};
+            std::memcpy(s_from[side], wrist, sizeof(wrist));
+            Log("Bare arms: %s wrist bent %+.0f (flexion +) and %+.0f (ulnar +) degrees, twist %+.0f%s; the wrist "
+                "point moved %.0f cm in the second",
+                side == 0 ? "left" : "right", r.flexion / armik::kDeg, r.deviation / armik::kDeg, r.twist / armik::kDeg,
+                r.clamped ? " [range met: the forearm turned]" : "", Length(drift) * 100.0f);
+        }
+    }
+}
+
 namespace hands {
 
 // The left glove's place on its controller's grip pose, made from grip.txt's turn and palm while
@@ -989,6 +1061,38 @@ void Update(const XrPosef& head) {
         }
         PlaceAt(gunTurn, anchor, t.rightWrist, t.gunPose);
         t.gun = true;
+        // The right hand placed as the left glove is, mirrored across x (the gloves' right hand is
+        // the left's mirror image, and so is its controller): The Great Destroyer's bare right arm.
+        MakeLeftOffset();
+        float controller[12], mirrored[12], hand[12];
+        pose(grip, controller);
+        std::memcpy(mirrored, g_leftOffset, sizeof(mirrored));
+        mirrored[1] = -mirrored[1], mirrored[2] = -mirrored[2], mirrored[3] = -mirrored[3];
+        mirrored[4] = -mirrored[4], mirrored[8] = -mirrored[8];
+        Compose(controller, mirrored, hand);
+        Compose(fromHead, hand, t.rightPose);
+        t.right = true;
+        // The right controller itself moving more than 4 cm in a frame in the room (tracking), and the
+        // head (the user: the bare hands jump swaying left and right, 15:06).
+        static float s_last[2][3] = {};
+        static bool s_have = false;
+        const float now[2][3] = {{grip.position.x, grip.position.y, grip.position.z},
+                                 {head.position.x, head.position.y, head.position.z}};
+        if (s_have) {
+            for (int which = 0; which < 2; ++which) {
+                const float d[3] = {now[which][0] - s_last[which][0], now[which][1] - s_last[which][1],
+                                    now[which][2] - s_last[which][2]};
+                const float moved = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                static ULONGLONG s_logged[2] = {};
+                if (moved > 0.04f && GetTickCount64() - s_logged[which] > 200) {
+                    s_logged[which] = GetTickCount64();
+                    Log("Hands: the %s moved %.0f cm in a frame (tracking)", which == 0 ? "right controller" : "head",
+                        moved * 100.0f);
+                }
+            }
+        }
+        std::memcpy(s_last, now, sizeof(s_last));
+        s_have = true;
     }
     if (input::HandPose(0, grip)) {
         MakeLeftOffset();
@@ -1330,6 +1434,7 @@ void Update(const XrPosef& head) {
     }
     // The left forearm solved from the hand (build\arms.txt "on"; otherwise nothing changes).
     PlaceForearms(t, fromHead, toView, standInLeft);
+    PlaceBareForearms(t, fromHead, toView);
     skin::SetHands(t.gun || t.left ? &t : nullptr);
 }
 

@@ -4,6 +4,32 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, late afternoon: The Great Destroyer: free bare hands with real wrists (stage: pre-alpha, experimental)
+
+Tried in the headset by the user, round by round; the offline tests pass. The in-game self-test
+wasn't run (the user was in the headset).
+
+### New
+- **Free bare hands** after the interrogation (the user: free hands, but not in the opening and its
+  QTEs): Blackburn's bare arms follow the controllers, lined up as the left glove of Rock and a Hard
+  Place is (the bare arms are the gloves' rig: the right hand mirrored). On only once the game has left
+  the view to the player for 3 s: no cutscene, no scripted turn, the aim found. The cuff round the right
+  wrist goes with the forearm. The body, legs and sleeves and the game's depth-only copies (black arms
+  and legs by the waist) are left out meanwhile. weapon.txt `barehands 0` leaves the game's own arms;
+  `barehands learn 5` lines them up on the game's arms instead.
+- **Wrists**: each forearm solved from its hand, a shoulder from the headset and an elbow (the same
+  solver as the gloved left arm's): the hand bends at the wrist and the forearm stays on the arm's line,
+  over a wider range than the gloves' (the user: "proper arm tracking behavior"). weapon.txt
+  `barewrist 0` moves the forearm whole with the hand.
+- Research switches: `pslog <pixel shader>` logs every draw using a shader (its code or this launch's
+  pointer), with where its bones sit; `dump <count> <start>` now takes any draw by name.
+  `tools\transcribe.ps1` roughly transcribes what's said in a recording.
+
+### Known
+- The chain and the open cuff hanging from the wrist are hidden for now: moved with the hand they
+  jittered (set aside).
+- Rock and a Hard Place's gloved arms don't have the wrist solver on both sides yet (to do there).
+
 ## 2026-10-31, afternoon: The Great Destroyer: no crash at the train, cutscenes you can look around in (stage: pre-alpha, experimental)
 
 Tried by the user in The Great Destroyer. The in-game self-test wasn't run: on the moving train the

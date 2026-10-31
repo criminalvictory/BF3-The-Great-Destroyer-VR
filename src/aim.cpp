@@ -409,6 +409,10 @@ void Reset() {
     g_haveTarget = false;
 }
 
+bool Scripted() {
+    return g_scripted;
+}
+
 void Forget() {
     if (g_yawAddress.exchange(0))
         Log("Aim: the look angles forgotten (the game drew without the head's turn: they're looked for again after)");

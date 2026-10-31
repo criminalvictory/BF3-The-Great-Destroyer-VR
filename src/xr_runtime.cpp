@@ -1128,6 +1128,19 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         } else {
             g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
         }
+        // The bare arms of The Great Destroyer follow the controllers only once the game has left the
+        // view to the player for 3 s: no cutscene picture, no scripted turn, the look angles found
+        // (the user: free hands, but not in the interrogation and its QTEs).
+        {
+            static ULONGLONG s_calmSince = 0;
+            const ULONGLONG now = GetTickCount64();
+            const bool calm = !g_unturnedLogged && g_turnDirect && !aim::Scripted();
+            if (!calm)
+                s_calmSince = 0;
+            else if (!s_calmSince)
+                s_calmSince = now;
+            skin::SetBareHandsAllowed(calm && now - s_calmSince > 3000);
+        }
         // The picture takes the hand's turn back out of the game's camera, which follows the hand
         // only while the look angles are written. Until they are (a new level, a checkpoint), the
         // hand's turn as it last was is taken out, so moving the gun doesn't move the view (it did,

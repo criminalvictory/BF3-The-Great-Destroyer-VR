@@ -11,6 +11,15 @@ struct ID3D11DeviceContext;
 
 namespace skin {
 
+// The bare arms of The Great Destroyer follow the controllers only while this allows it
+// (xr_runtime.cpp: no cutscene picture or scripted turn for a few seconds, the aim found).
+void SetBareHandsAllowed(bool allowed);
+// weapon.txt "barewrist 0/1": the bare forearms solved from their hands (hands.cpp; on by default).
+bool BareWrist();
+
+// weapon.txt "pslog": the instanced draws (effects.cpp) logged like the indexed ones.
+void LogShaderDraw(ID3D11DeviceContext* ctx, unsigned count, unsigned start, int base, unsigned instances);
+
 // Research into BF3's skinning: the bone matrices it uploads to the graphics card to bend
 // meshes such as the first-person arms. Hooks ID3D11DeviceContext::Map/Unmap/DrawIndexed
 // (immediate and deferred: index 0 and 1, which may be the same function). Call between
@@ -118,6 +127,10 @@ struct HandTargets {
     // middle of the head; gunPose then carries the shift that fakes each eye's view of it).
     float gunPoseTrue[12] = {};
     float leftPose[12] = {};
+    // The right hand's as the left glove's is, mirrored (its controller with the left glove's line-up
+    // mirrored across x): The Great Destroyer's bare right arm is placed with it (skin.cpp).
+    bool right = false;
+    float rightPose[12] = {};
     float rightWrist[3] = {}, leftWrist[3] = {};  // each hand's grip point
     // Each of the left glove's bones bent as its fingers are held, in the gloves' bind space
     // (handpose.cpp): the glove is drawn with leftPose composed with these.
@@ -133,6 +146,10 @@ struct HandTargets {
     bool arm[2] = {};
     float forearm[2][3][12] = {};
     float fold[2][3] = {};
+    // The bare arms' (The Great Destroyer) forearms solved from each hand the same way, left then right
+    // (hands.cpp PlaceBareForearms): the hand bends at the wrist, the forearm stays on the arm's line.
+    bool bareArm[2] = {};
+    float bareForearm[2][3][12] = {};
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 

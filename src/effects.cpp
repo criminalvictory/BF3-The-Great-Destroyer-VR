@@ -1305,6 +1305,7 @@ void STDMETHODCALLTYPE DrawIndexedInstanced0(ID3D11DeviceContext* c, UINT count,
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
     DumpInstances(c, count, instances, first, true);
+    skin::LogShaderDraw(c, count, start, base, instances);
     if (Hidden(count) || HiddenPs(c))
         return;
     if (count == kCasingIndices &&
@@ -1321,6 +1322,7 @@ void STDMETHODCALLTYPE DrawIndexedInstanced1(ID3D11DeviceContext* c, UINT count,
     NoteDraw(c, kIndexedInstanced, count, instances);
     DumpFx(count);
     DumpInstances(c, count, instances, first, false);
+    skin::LogShaderDraw(c, count, start, base, instances);
     if (Hidden(count) || HiddenPs(c))
         return;
     if (count == kCasingIndices &&
