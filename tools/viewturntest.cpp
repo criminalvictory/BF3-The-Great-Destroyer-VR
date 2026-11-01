@@ -70,6 +70,22 @@
 //      a normal picture's (the player's camera, 20000 with random turns, look or not, mirrored or not) left bit for bit,
 //      and the main camera turned bit for bit as at 6ee0128; with the look still written, or not a camera, left bit for
 //      bit; the main camera turned bit for bit as without one
+//  16  the body's own views turned where they're uploaded (skin.cpp's body lock: the first-person camera +0x930
+//      turned left the body moving with the head, 2026-11-01 09:24): a 352-byte per-view upload (the view at +48,
+//      the projection at +112, the view-projection at +176, the one for points less the eye at +240, the eye at
+//      +320; the projection's w row either way, an x offset or not, the products as the game's floats or rounded from
+//      double) in the arms' space, for a first-person camera as the scripted one or a few degrees from it: read, its
+//      view turned as TurnWith turns that camera (1e-6), still rigid; the view-projection the projection times the
+//      turned view, the one for points less the eye the projection times its turn alone (1e-5); the eye kept (+320
+//      bit for bit, from the turned view 1e-5 m); the projection and the rest bit for bit; the knees and the gun on
+//      the scene they were drawn over (0.001 deg); its view-projection alone in the world (80 bytes) turned alike:
+//      the same rows, the eye kept, what each row gives at the eye kept, points near the eye where the turned view
+//      shows them (2e-4 of the picture). Which uploads are turned (LockBodyPerView, LockBodyWorldView): the body's own
+//      by the frame's view build's turn, the newest or the one the main view's own upload names; the main view's
+//      (its turned camera's rows, in the world or not), the turned first-person camera's, one looking away, one
+//      elsewhere, and what isn't a view (random, orthographic, not the projection's product, +240 otherwise, NaN,
+//      infinite, zeros) left bit for bit. A normal picture's (no scripted build) all left bit for bit. The FOV fix
+//      after the turn as before it (1e-6). The time
 // Usage: viewturntest   The exit code is the number of failed checks.
 
 #include <windows.h>
@@ -1803,6 +1819,741 @@ void Check15() {
            lookBad, kLook, junkBad, kJunk - junkTaken, junkTaken, junkMainBad, noInverseBad);
 }
 
+// ---- 16. The body's own views turned where they're uploaded (skin.cpp's body lock) ----
+constexpr int kUploadFloats = viewturn::kPerViewBytes / 4, kWorldFloats = viewturn::kWorldViewBytes / 4;
+
+// A perspective projection as the game uploads one (rows, points taken as columns): its x and y scales from the FOV
+// and aspect, an x offset, its z row from the near and far planes, its w row 0 0 -1 0 (rh: the view's z row the
+// camera's back row) or 0 0 1 0 (the forward).
+void MakeProjection(double* p, double fovDeg, double aspect, double ox, double nearPlane, double farPlane, bool rh) {
+    std::fill(p, p + 16, 0.0);
+    const double sy = 1.0 / std::tan(Rad(fovDeg) / 2), s = rh ? -1.0 : 1.0;
+    p[0] = sy / aspect;
+    p[2] = ox;
+    p[5] = sy;
+    p[10] = s * farPlane / (farPlane - nearPlane);
+    p[11] = -farPlane * nearPlane / (farPlane - nearPlane);
+    p[14] = s;
+}
+// a times b (row-major 4x4 floats, points as columns), in double.
+void ProductOf(const float* a, const float* b, double* out) {
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) {
+            double sum = 0;
+            for (int k = 0; k < 4; ++k)
+                sum += static_cast<double>(a[4 * r + k]) * b[4 * k + c];
+            out[4 * r + c] = sum;
+        }
+}
+// A camera's view (rows, points as columns): its rows (the back row the other way round for !rh), the translation
+// each row's less its dot with the eye, the last row 0 0 0 1, in floats.
+void ViewOf(const float* cam, const V3& eye, bool rh, float* view) {
+    for (int r = 0; r < 3; ++r) {
+        const V3 row = Row(cam, r) * (r == 2 && !rh ? -1.0 : 1.0);
+        for (int i = 0; i < 3; ++i)
+            view[4 * r + i] = static_cast<float>(row[i]);
+        view[4 * r + 3] = static_cast<float>(-Dot(row, eye));
+    }
+    view[12] = view[13] = view[14] = 0.0f;
+    view[15] = 1.0f;
+}
+// A body's per-view upload as the game makes one: filler, the view of the camera cam at eye, the projection p, the
+// view-projection and the one for points less the eye (in floats as viewturn::Mul4 has it, or worked out in double
+// and rounded: the game's own order may differ), the eye.
+void MakeUpload(float* f, const float* cam, const V3& eye, const double* p, bool rh, bool roundedProducts) {
+    for (int i = 0; i < kUploadFloats; ++i)
+        f[i] = static_cast<float>(Uniform(-3, 3));
+    float* view = f + viewturn::kViewAt;
+    float* proj = f + viewturn::kProjectionAt;
+    ViewOf(cam, eye, rh, view);
+    for (int i = 0; i < 16; ++i)
+        proj[i] = static_cast<float>(p[i]);
+    double vp[16];
+    ProductOf(proj, view, vp);
+    if (roundedProducts) {
+        for (int i = 0; i < 16; ++i)
+            f[viewturn::kViewProjectionAt + i] = static_cast<float>(vp[i]);
+    } else {
+        viewturn::Mul4(proj, view, f + viewturn::kViewProjectionAt);
+    }
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 3; ++c)
+            f[viewturn::kFromEyeAt + 4 * r + c] = static_cast<float>(vp[4 * r + c] - static_cast<double>(proj[4 * r + 3]) * view[12 + c]);
+        f[viewturn::kFromEyeAt + 4 * r + 3] = proj[4 * r + 3];
+    }
+    for (int i = 0; i < 3; ++i)
+        f[viewturn::kEyeAt + i] = static_cast<float>(eye[i]);
+}
+// The view-projection alone in the world (80 bytes: it, then filler), in floats.
+void MakeWorldUpload(float* w, const float* cam, const V3& eye, const double* p, bool rh) {
+    float view[16], proj[16];
+    ViewOf(cam, eye, rh, view);
+    for (int i = 0; i < 16; ++i)
+        proj[i] = static_cast<float>(p[i]);
+    viewturn::Mul4(proj, view, w);
+    for (int i = 16; i < kWorldFloats; ++i)
+        w[i] = static_cast<float>(Uniform(-3, 3));
+}
+// The most any of n floats is from what's wanted, against its size (or 1).
+double RelOff(const float* got, const double* want, int n) {
+    double off = 0;
+    for (int i = 0; i < n; ++i)
+        off = std::max(off, std::fabs(got[i] - want[i]) / (1.0 + std::fabs(want[i])));
+    return off;
+}
+// The eye of a view-projection (where its x, y and w rows are 0), in double.
+V3 EyeOf(const float* vp) {
+    const int rows[3] = {0, 1, 3};
+    double a[3][3], b[3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j)
+            a[i][j] = vp[4 * rows[i] + j];
+        b[i] = -static_cast<double>(vp[4 * rows[i] + 3]);
+    }
+    auto det3 = [](const double m[3][3]) {
+        return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    };
+    const double det = det3(a);
+    double e[3];
+    for (int k = 0; k < 3; ++k) {
+        double c[3][3];
+        std::memcpy(c, a, sizeof(c));
+        for (int i = 0; i < 3; ++i)
+            c[i][k] = b[i];
+        e[k] = det3(c) / det;
+    }
+    return {e[0], e[1], e[2]};
+}
+// A view's eye from the view itself: its turn's transpose times its translation, turned round (each row times its
+// translation, summed and turned round).
+V3 EyeOfView(const float* view) {
+    V3 e;
+    for (int r = 0; r < 3; ++r)
+        e = e - V3(view[4 * r], view[4 * r + 1], view[4 * r + 2]) * view[4 * r + 3];
+    return e;
+}
+// Nine numbers' rows (right, up, back) as directions.
+V3 Row9(const float* rows, int r) {
+    return {rows[3 * r], rows[3 * r + 1], rows[3 * r + 2]};
+}
+// A way in a camera's picture (rows, nine numbers): along its right, up and back.
+V3 Seen9(const float* rows, const V3& d) {
+    return Unit({Dot(d, Row9(rows, 0)), Dot(d, Row9(rows, 1)), Dot(d, Row9(rows, 2))});
+}
+// A view build's turn as camera.cpp notes it for a scripted main camera cam turned to head (viewturn::Turn as
+// TurnToHead runs it), with its first-person camera fp (or none), the main camera as turned in turned.
+camera::BodyTurn MakeBuild(const float* cam, const Q& head, int hand, bool mirrored, const float* fp, float* turned) {
+    camera::BodyTurn b;
+    float m[16], body[16] = {};
+    std::memcpy(m, cam, sizeof(m));
+    if (fp)
+        std::memcpy(body, fp, sizeof(body));
+    viewturn::Level level;
+    viewturn::Turn(m, TurnFor(head), true, hand, mirrored, level, fp ? body : nullptr);
+    viewturn::OwnFrameTurn(cam, m, b.turn);
+    for (int r = 0; r < 3; ++r)
+        for (int i = 0; i < 3; ++i) {
+            b.before[3 * r + i] = cam[4 * r + i];
+            b.after[3 * r + i] = m[4 * r + i];
+            if (fp) {
+                b.firstPersonMade[3 * r + i] = fp[4 * r + i];
+                b.firstPerson[3 * r + i] = body[4 * r + i];
+            }
+        }
+    for (int i = 0; i < 3; ++i)
+        b.place[i] = cam[12 + i];
+    if (turned)
+        std::memcpy(turned, m, sizeof(m));
+    return b;
+}
+// A camera with rows (nine numbers) at a place, its w lanes 0.
+void CameraOf(const float* rows, const V3& at, float* m) {
+    for (int r = 0; r < 3; ++r) {
+        for (int i = 0; i < 3; ++i)
+            m[4 * r + i] = rows[3 * r + i];
+        m[4 * r + 3] = 0.0f;
+    }
+    for (int i = 0; i < 3; ++i)
+        m[12 + i] = static_cast<float>(at[i]);
+    m[15] = 1.0f;
+}
+// The FOV fix's rule (skin.cpp RescaleProjections) on a per-view upload: the x and y rows of the projection, the
+// view-projection and the one for points less the eye times k.
+void Rescale(float* f, float k) {
+    for (int at : {viewturn::kProjectionAt, viewturn::kViewProjectionAt, viewturn::kFromEyeAt})
+        for (int c = 0; c < 8; ++c)
+            f[at + c] *= k;
+}
+// An eye in the arms' space: the world's axes, the origin whole metres near the feet.
+V3 RandomArmsEye() {
+    return {Uniform(-1, 1), Uniform(0.5, 2.0), Uniform(-1, 1)};
+}
+// A random projection as the body's could be: 40 to 110 degrees, square or nearly, an x offset now and then.
+void RandomProjection(double* p, bool rh) {
+    MakeProjection(p, Uniform(40, 110), Uniform(0.9, 1.1), Coin(0.3) ? Uniform(-0.05, 0.05) : 0.0, Uniform(0.01, 0.1),
+                   Uniform(100, 5000), rh);
+}
+
+void Check16() {
+    // The knees and the gun as the game put them (right, up, back from the first-person camera).
+    const V3 points[3] = {{-0.15, -0.55, -0.35}, {0.15, -0.55, -0.35}, {0.12, -0.18, -0.40}};
+    // a. The math: a body upload turned, its world view-projection alike.
+    double rowsRead = 0, eyeRead = 0, withOff = 0, vpOff = 0, fromEyeOff = 0, eyeViewOff = 0, eyeVpOff = 0,
+           rigidOff = 0, sceneOff = 0, gluedOff = 0, worldRows = 0, worldEye = 0, worldTurnedRows = 0, worldEyeKept = 0,
+           worldAtEye = 0, worldSeen = 0, worldVsArms = 0;
+    int unread = 0, worldUnread = 0, keptBad = 0, worldKeptBad = 0, signBad = 0, runs = 0, worldSeenPoints = 0;
+    for (int n = 0; n < kLoggedCount * 50 + 20000; ++n) {
+        float cam[16];
+        int hand = 1;
+        if (n < kLoggedCount * 50) {
+            LoggedCamera(kLogged[n % kLoggedCount], cam);
+        } else {
+            hand = Coin(0.25) ? -1 : 1;
+            MakeCamera(cam, RandomScripted(80), hand, RandomPlace(), true);
+        }
+        const bool mirrored = hand < 0 && Coin(0.8);
+        // The body's camera: the scripted one's rows, or a few degrees from them in its own frame (the game's own
+        // first-person camera), its w lanes 0.
+        float fp[16];
+        const Q apart = Coin(0.3) ? Q{} : AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 10)));
+        TurnedInOwnFrame(cam, apart, fp);
+        fp[3] = fp[7] = fp[11] = 0.0f;
+        float turnedCam[16];
+        const camera::BodyTurn build = MakeBuild(cam, RandomHead(), hand, mirrored, nullptr, turnedCam);
+        const V3 eye = RandomArmsEye();
+        const bool rh = Coin(0.8);
+        double p[16];
+        RandomProjection(p, rh);
+        float f[kUploadFloats], was[kUploadFloats];
+        MakeUpload(f, fp, eye, p, rh, Coin());
+        std::memcpy(was, f, sizeof(f));
+        ++runs;
+        viewturn::BodyView v;
+        if (viewturn::ReadPerView(f, v) != viewturn::kPerViewOk) {
+            ++unread;
+            continue;
+        }
+        float fpRows[9];
+        for (int r = 0; r < 3; ++r)
+            for (int i = 0; i < 3; ++i)
+                fpRows[3 * r + i] = fp[4 * r + i];
+        for (int i = 0; i < 9; ++i)
+            rowsRead = std::max(rowsRead, Abs(v.rows[i] - fpRows[i]));
+        eyeRead = std::max(eyeRead, Len(V3(v.eye[0], v.eye[1], v.eye[2]) - eye));
+        signBad += v.zSign != (rh ? 1.0f : -1.0f);
+        viewturn::TurnPerView(f, v, build.turn);
+        // The turned view's camera rows as TurnWith turns that camera (the view description's +0x930 is turned so).
+        float withTurn[16];
+        std::memcpy(withTurn, fp, sizeof(withTurn));
+        viewturn::TurnWith(withTurn, cam, turnedCam);
+        viewturn::BodyView t;
+        const bool reread = viewturn::ReadPerView(f, t) == viewturn::kPerViewOk;
+        unread += !reread;
+        for (int r = 0; r < 3; ++r)
+            for (int i = 0; i < 3; ++i)
+                withOff = std::max(withOff, Abs(t.rows[3 * r + i] - withTurn[4 * r + i]));
+        // Still rigid.
+        const float* view = f + viewturn::kViewAt;
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b)
+                rigidOff = std::max(rigidOff, std::fabs(Dot(Row(view, a), Row(view, b)) - (a == b ? 1.0 : 0.0)));
+        // The view-projection the projection times the turned view; the one for points less the eye the projection
+        // times its turn alone, its last column the projection's.
+        double pv[16], fe[16];
+        ProductOf(f + viewturn::kProjectionAt, view, pv);
+        vpOff = std::max(vpOff, RelOff(f + viewturn::kViewProjectionAt, pv, 16));
+        const float* proj = f + viewturn::kProjectionAt;
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 3; ++c)
+                fe[4 * r + c] = static_cast<double>(proj[4 * r]) * view[c] + static_cast<double>(proj[4 * r + 1]) * view[4 + c] +
+                                static_cast<double>(proj[4 * r + 2]) * view[8 + c];
+            fe[4 * r + 3] = proj[4 * r + 3];
+        }
+        fromEyeOff = std::max(fromEyeOff, RelOff(f + viewturn::kFromEyeAt, fe, 16));
+        // The eye kept: from the turned view, and where the turned view-projection's x, y and w rows are 0.
+        eyeViewOff = std::max(eyeViewOff, Len(EyeOfView(view) - eye));
+        eyeVpOff = std::max(eyeVpOff, Len(EyeOf(f + viewturn::kViewProjectionAt) - eye));
+        // The rest as it was, bit for bit: +0 to +48, the view's last row, the projection, +240's last column, +304 on.
+        bool kept = std::memcmp(f, was, 48) == 0 && std::memcmp(view + 12, was + viewturn::kViewAt + 12, 16) == 0 &&
+                    std::memcmp(proj, was + viewturn::kProjectionAt, 64) == 0 &&
+                    std::memcmp(f + 76, was + 76, 48) == 0;
+        for (int r = 0; r < 4; ++r)
+            kept = kept && std::memcmp(&f[viewturn::kFromEyeAt + 4 * r + 3], &was[viewturn::kFromEyeAt + 4 * r + 3],
+                                       sizeof(float)) == 0;
+        keptBad += !kept;
+        // On the scene: where the turned view shows the knees and the gun, where the turned main camera shows the
+        // scene they were drawn over (that same way out of the main camera as the game made it).
+        for (const V3& q : points) {
+            const V3 at = Row(fp, 0) * q.x + Row(fp, 1) * q.y + Row(fp, 2) * q.z;
+            const V3 way = Seen9(fpRows, at);
+            const V3 scene = Row(cam, 0) * way.x + Row(cam, 1) * way.y + Row(cam, 2) * way.z;
+            const V3 there = {Dot(scene, Row(turnedCam, 0)), Dot(scene, Row(turnedCam, 1)), Dot(scene, Row(turnedCam, 2))};
+            sceneOff = std::max(sceneOff, AngleDeg(Seen9(t.rows, at), Unit(there)));
+            gluedOff = std::max(gluedOff, AngleDeg(way, Unit(there)));
+        }
+        // Its view-projection alone in the world (80 bytes): every other one within 100 m of the world's origin, where
+        // a near point's place in the picture is checked (further out a float view-projection's own rounding moves it
+        // as much, the game's as well: the reason the body is drawn in the arms' space), the rest up to 2 km out.
+        const bool nearOrigin = n % 2 == 0;
+        const double out = nearOrigin ? 100 : 2000;
+        const V3 eyeWorld = eye + V3(std::round(Uniform(-out, out)), std::round(Uniform(-20, 80)), std::round(Uniform(-out, out)));
+        float w[kWorldFloats], wasWorld[kWorldFloats];
+        MakeWorldUpload(w, fp, eyeWorld, p, rh);
+        std::memcpy(wasWorld, w, sizeof(w));
+        viewturn::BodyView wv;
+        if (!viewturn::ReadViewProjection(w, wv)) {
+            ++worldUnread;
+            continue;
+        }
+        for (int i = 0; i < 9; ++i)
+            worldRows = std::max(worldRows, Abs(wv.rows[i] - fpRows[i]));
+        worldEye = std::max(worldEye, Len(V3(wv.eye[0], wv.eye[1], wv.eye[2]) - eyeWorld));
+        viewturn::TurnViewProjection(w, wv, build.turn);
+        worldKeptBad += std::memcmp(w + 16, wasWorld + 16, (kWorldFloats - 16) * sizeof(float)) != 0;
+        viewturn::BodyView tw;
+        if (!viewturn::ReadViewProjection(w, tw)) {
+            ++worldUnread;
+            continue;
+        }
+        for (int i = 0; i < 9; ++i)
+            worldTurnedRows = std::max(worldTurnedRows, Abs(tw.rows[i] - t.rows[i]));
+        worldEyeKept = std::max(worldEyeKept, Len(EyeOf(w) - eyeWorld));
+        for (int r = 0; r < 4; ++r) {
+            // What each row gives at the eye it was turned about (the uploaded view-projection's own, as read: in floats
+            // a few hundred metres out it's a tenth of a millimetre from the one it was made from), kept, against the
+            // sizes summed there, as uploaded or as turned, whichever's larger.
+            double now = w[4 * r + 3], then = wasWorld[4 * r + 3];
+            double sizeNow = std::fabs(w[4 * r + 3]), sizeThen = std::fabs(wasWorld[4 * r + 3]);
+            for (int c = 0; c < 3; ++c) {
+                now += static_cast<double>(w[4 * r + c]) * wv.eye[c];
+                then += static_cast<double>(wasWorld[4 * r + c]) * wv.eye[c];
+                sizeNow += std::fabs(w[4 * r + c] * wv.eye[c]);
+                sizeThen += std::fabs(wasWorld[4 * r + c] * wv.eye[c]);
+            }
+            worldAtEye = std::max(worldAtEye, std::fabs(now - then) / (1.0 + std::max(sizeNow, sizeThen)));
+            // Its turn alike in both spaces (the arms' space has the world's axes).
+            double arms[3], world[3];
+            for (int c = 0; c < 3; ++c)
+                arms[c] = f[viewturn::kViewProjectionAt + 4 * r + c], world[c] = w[4 * r + c];
+            for (int c = 0; c < 3; ++c)
+                worldVsArms = std::max(worldVsArms, std::fabs(arms[c] - world[c]) / (1.0 + std::fabs(arms[c])));
+        }
+        // Points near the eye where the turned view shows them in the picture (x and y over w, where they're in it):
+        // through the turned view-projection, and through the projection and the turned view in double. The knees and
+        // the gun as the game put them, and points 30 to 80 cm ahead of the turned view.
+        const V3 ahead[4] = {{0.08, -0.1, -0.35}, {-0.1, 0.06, -0.5}, {0.0, -0.12, -0.8}, {0.12, 0.1, -0.6}};
+        for (int k = 0; k < 7 && nearOrigin; ++k) {
+            const V3 d = k < 3 ? Row(fp, 0) * points[k].x + Row(fp, 1) * points[k].y + Row(fp, 2) * points[k].z
+                               : Row9(t.rows, 0) * ahead[k - 3].x + Row9(t.rows, 1) * ahead[k - 3].y +
+                                     Row9(t.rows, 2) * ahead[k - 3].z;  // from the eye
+            if (Dot(Row9(t.rows, 2), d) > -0.2)  // not 20 cm ahead of the turned view
+                continue;
+            const V3 at = eyeWorld + d;
+            const double seen[4] = {Dot(Row9(t.rows, 0), d), Dot(Row9(t.rows, 1), d),
+                                    (rh ? 1.0 : -1.0) * Dot(Row9(t.rows, 2), d), 1.0};
+            double got[4] = {}, exact[4] = {};
+            for (int r = 0; r < 4; ++r) {
+                got[r] = w[4 * r + 3];
+                for (int c = 0; c < 3; ++c)
+                    got[r] += static_cast<double>(w[4 * r + c]) * at[c];
+                for (int c = 0; c < 4; ++c)
+                    exact[r] += p[4 * r + c] * seen[c];
+            }
+            if (std::fabs(exact[0] / exact[3]) > 1.2 || std::fabs(exact[1] / exact[3]) > 1.2)
+                continue;  // out of the picture
+            ++worldSeenPoints;
+            worldSeen = std::max(worldSeen, std::max(std::fabs(got[0] / got[3] - exact[0] / exact[3]),
+                                                     std::fabs(got[1] / got[3] - exact[1] / exact[3])));
+        }
+    }
+    Report("16a", "a body view turned where it's uploaded: as TurnWith turns its camera, the view-projections remade "
+                  "from the projection, the eye kept, on the scene; its world view-projection alike",
+           unread == 0 && worldUnread == 0 && signBad == 0 && rowsRead < 1e-7 && eyeRead < 1e-5 && withOff < 1e-6 &&
+               rigidOff < 1e-5 && vpOff < 1e-5 && fromEyeOff < 1e-5 && eyeViewOff < 1e-5 && eyeVpOff < 1e-4 &&
+               keptBad == 0 && sceneOff < 0.001 && gluedOff > 60 && worldRows < 1e-5 && worldEye < 1e-3 &&
+               worldTurnedRows < 1e-5 && worldEyeKept < 1e-3 && worldAtEye < 1e-6 && worldSeen < 2e-4 &&
+               worldSeenPoints > 20000 && worldVsArms < 1e-5 && worldKeptBad == 0,
+           "%d uploads (%d not read, %d of their world views; %d with the projection's w row taken the wrong way): read "
+           "as the body's camera %.2g, its eye %.2g m; turned, %.2g from TurnWith's turn of that camera, rigid within "
+           "%.2g; the view-projection %.2g from the projection times the turned view, the one for points less the eye "
+           "%.2g from its turn alone; the eye %.2g m from the turned view, %.2g m from the turned view-projection; %d "
+           "with anything else changed; the knees and the gun %.2g degrees off the scene (as the game made it, up to "
+           "%.1f). In the world: read %.2g, its eye %.2g m; turned, %.2g from the arms' view's turned rows and %.2g in "
+           "its turn, the eye %.2g m away, at the eye %.2g off, %d points near it in the picture %.2g off where the "
+           "turned view shows them; %d with the rest changed",
+           runs, unread, worldUnread, signBad, rowsRead, eyeRead, withOff, rigidOff, vpOff, fromEyeOff, eyeViewOff,
+           eyeVpOff, keptBad, sceneOff, gluedOff, worldRows, worldEye, worldTurnedRows, worldVsArms, worldEyeKept,
+           worldAtEye, worldSeenPoints, worldSeen, worldKeptBad);
+
+    // b. Which uploads are turned, in a frame of one to four view builds (the newest first), each scripted camera with
+    // its first-person camera (+0x930) a tenth of a degree from it, as the drive's was.
+    int verdictBad = 0, changedBad = 0, turnBad = 0, useBad = 0, faultBad = 0, cases = 0;
+    auto expect = [&](viewturn::BodyVerdict got, viewturn::BodyVerdict want, const float* now, const float* was,
+                      int floats) {
+        ++cases;
+        verdictBad += got != want;
+        if (want != viewturn::kBodyTurned)
+            changedBad += std::memcmp(now, was, floats * sizeof(float)) != 0;
+    };
+    for (int n = 0; n < 4000; ++n) {
+        const int count = 1 + n % 4;
+        camera::BodyTurn builds[4];
+        for (int b = 0; b < count; ++b) {
+            float cam[16], fp[16];
+            const int hand = Coin(0.25) ? -1 : 1;
+            MakeCamera(cam, RandomScripted(70), hand, RandomPlace(), true);
+            TurnedInOwnFrame(cam, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(0.1)), fp);
+            builds[b] = MakeBuild(cam, Ypr(Rad(Uniform(-120, 120)), Rad(Uniform(-60, 60)), Rad(Uniform(-20, 20))), hand,
+                                  hand < 0, fp, nullptr);
+        }
+        const bool rh = Coin(0.8);
+        double p[16];
+        RandomProjection(p, rh);
+        float f[kUploadFloats], was[kUploadFloats], cam[16];
+        viewturn::BodyView v;
+        viewturn::PerViewFault fault;
+        const int b = static_cast<int>(Uniform(0, count - 1e-9));
+        const V3 place(builds[b].place[0], builds[b].place[1], builds[b].place[2]);
+        // The main view's own (its turned camera's rows), in the world and an eye's shift along its right, or in the
+        // arms' space: left as it is, and it names its build for the frame.
+        {
+            CameraOf(builds[b].after, place, cam);
+            const V3 at = Coin() ? place + Row9(builds[b].after, 0) * 0.032 : RandomArmsEye();
+            MakeUpload(f, cam, at, p, rh, Coin());
+            std::memcpy(was, f, sizeof(f));
+            int use = -1;
+            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kMainView, f, was, kUploadFloats);
+            useBad += use != b;
+        }
+        // The turned first-person camera's: left as it is, naming nothing.
+        {
+            CameraOf(builds[b].firstPerson, place, cam);
+            MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
+            std::memcpy(was, f, sizeof(f));
+            int use = -1;
+            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kTurnedBefore, f, was,
+                   kUploadFloats);
+            useBad += use != -1;
+        }
+        // The body's own (a few degrees from the newest scripted camera), with no main view first: turned by the newest
+        // build's turn; after the main view of build b: by build b's.
+        for (int named = 0; named < 2; ++named) {
+            float rows[16];
+            CameraOf(builds[named ? b : 0].before, place, rows);
+            TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 10))),
+                             cam);
+            MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
+            std::memcpy(was, f, sizeof(f));
+            int use = named ? b : -1;
+            float alike[kUploadFloats];
+            std::memcpy(alike, f, sizeof(f));
+            viewturn::BodyView read;
+            viewturn::ReadPerView(alike, read);
+            viewturn::TurnPerView(alike, read, builds[named ? b : 0].turn);
+            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kBodyTurned, f, was,
+                   kUploadFloats);
+            turnBad += std::memcmp(f, alike, sizeof(f)) != 0;
+            useBad += use != (named ? b : 0);
+        }
+        // Looking away from the scripted camera (60 to 180 degrees): left as it is.
+        {
+            float rows[16];
+            CameraOf(builds[0].before, place, rows);
+            TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(60, 180))), cam);
+            const V3 back = Row(cam, 2);
+            if (Dot(back, Row9(builds[0].before, 2)) < 0.6) {
+                MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
+                std::memcpy(was, f, sizeof(f));
+                int use = -1;
+                expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kAway, f, was, kUploadFloats);
+            }
+        }
+        // Another view in the world: left as it is.
+        {
+            MakeCamera(cam, RandomRotation(), 1, RandomPlace(), false);
+            MakeUpload(f, cam, place + V3(Uniform(-50, 50), 6, Uniform(-50, 50)), p, rh, Coin());
+            std::memcpy(was, f, sizeof(f));
+            int use = -1;
+            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kElsewhere, f, was, kUploadFloats);
+        }
+        // Not per-view constants: left as they are, each for its reason.
+        {
+            float rows[16];
+            CameraOf(builds[0].before, place, rows);
+            const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+            for (int kind = 0; kind < 9; ++kind) {
+                MakeUpload(f, rows, RandomArmsEye(), p, rh, Coin());
+                viewturn::PerViewFault want = viewturn::kPerViewOk;
+                switch (kind) {
+                case 0:  // random floats
+                    for (float& x : f)
+                        x = static_cast<float>(Uniform(-2, 2));
+                    want = viewturn::kNotRigid;
+                    break;
+                case 1:  // an orthographic projection (a shadow's): its w row 0 0 0 1
+                    f[viewturn::kProjectionAt + 14] = 0.0f, f[viewturn::kProjectionAt + 15] = 1.0f;
+                    want = viewturn::kNotPerspective;
+                    break;
+                case 2:  // the view-projection not the projection's product (one of its numbers 1% of its size off, or 0.01)
+                    f[viewturn::kViewProjectionAt + n % 12] += 0.01f * (1.0f + std::fabs(f[viewturn::kViewProjectionAt + n % 12]));
+                    want = viewturn::kNotProduct;
+                    break;
+                case 3:  // +240 otherwise
+                    f[viewturn::kFromEyeAt + n % 16] += 0.05f;
+                    want = viewturn::kNotFromEye;
+                    break;
+                case 4:  // the view's rows a little long
+                    for (int i = 0; i < 3; ++i)
+                        f[viewturn::kViewAt + i] *= 1.01f;
+                    want = viewturn::kNotRigid;
+                    break;
+                case 5:  // NaN in the view's translation
+                    f[viewturn::kViewAt + 3 + 4 * (n % 3)] = nan;
+                    want = viewturn::kNotRigid;
+                    break;
+                case 6:  // infinite in the view-projection
+                    f[viewturn::kViewProjectionAt + n % 16] = n % 2 ? inf : -inf;
+                    want = viewturn::kNotProduct;
+                    break;
+                case 7:  // NaN in the projection
+                    f[viewturn::kProjectionAt + (n % 2 ? 0 : 5)] = nan;
+                    want = viewturn::kNotPerspective;
+                    break;
+                default:  // zeros
+                    std::memset(f, 0, sizeof(f));
+                    want = viewturn::kNotRigid;
+                    break;
+                }
+                std::memcpy(was, f, sizeof(f));
+                int use = -1;
+                expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kNotView, f, was,
+                       kUploadFloats);
+                faultBad += fault != want;
+                useBad += use != -1;
+            }
+        }
+        // The view-projections alone in the world (80 bytes): the body's (its eye by the scripted camera's place) turned
+        // by the frame's build's turn; the main view's, the turned first-person camera's, one away from the place, one
+        // looking away, and random numbers left as they are.
+        {
+            float w[kWorldFloats], wasWorld[kWorldFloats], rows[16];
+            CameraOf(builds[0].before, place, rows);
+            TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 10))),
+                             cam);
+            const V3 by0(builds[0].place[0], builds[0].place[1], builds[0].place[2]);
+            const V3 byCamera = by0 + V3(Uniform(-0.5, 0.5), Uniform(-0.5, 0.5), Uniform(-0.5, 0.5));
+            MakeWorldUpload(w, cam, byCamera, p, rh);
+            std::memcpy(wasWorld, w, sizeof(w));
+            float alike[kWorldFloats];
+            std::memcpy(alike, w, sizeof(w));
+            viewturn::BodyView read;
+            if (viewturn::ReadViewProjection(alike, read))
+                viewturn::TurnViewProjection(alike, read, builds[0].turn);
+            int use = -1;
+            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kBodyTurned, w, wasWorld, kWorldFloats);
+            turnBad += std::memcmp(w, alike, sizeof(w)) != 0;
+            useBad += use != 0;
+            MakeWorldUpload(w, cam, by0 + V3(0, 3, 0), p, rh);  // 3 m from the scripted camera
+            std::memcpy(wasWorld, w, sizeof(w));
+            use = -1;
+            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kElsewhere, w, wasWorld, kWorldFloats);
+            CameraOf(builds[b].after, place, cam);
+            MakeWorldUpload(w, cam, place, p, rh);
+            std::memcpy(wasWorld, w, sizeof(w));
+            use = -1;
+            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kMainView, w, wasWorld, kWorldFloats);
+            useBad += use != b;
+            CameraOf(builds[b].firstPerson, place, cam);
+            MakeWorldUpload(w, cam, place, p, rh);
+            std::memcpy(wasWorld, w, sizeof(w));
+            use = -1;
+            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kTurnedBefore, w, wasWorld,
+                   kWorldFloats);
+            TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(60, 180))), cam);
+            if (Dot(Row(cam, 2), Row9(builds[0].before, 2)) < 0.6) {
+                MakeWorldUpload(w, cam, byCamera, p, rh);
+                std::memcpy(wasWorld, w, sizeof(w));
+                use = -1;
+                expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kAway, w, wasWorld, kWorldFloats);
+            }
+            for (float& x : w)
+                x = static_cast<float>(Uniform(-2, 2));
+            std::memcpy(wasWorld, w, sizeof(w));
+            use = -1;
+            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kNotView, w, wasWorld, kWorldFloats);
+        }
+    }
+    Report("16b", "which uploads are turned: the body's own by the frame's build's turn; the main view's, the turned "
+                  "first-person camera's, one away, one elsewhere and what isn't a view left bit for bit",
+           verdictBad == 0 && changedBad == 0 && turnBad == 0 && useBad == 0 && faultBad == 0,
+           "%d uploads in 4000 frames of 1 to 4 view builds: %d taken for another kind, %d of those left as they are "
+           "changed, %d of the body's turned otherwise than by its frame's build's turn (the newest, or the one the main "
+           "view named), %d frames' builds chosen wrong, %d not read for another reason",
+           cases, verdictBad, changedBad, turnBad, useBad, faultBad);
+
+    // c. A normal picture (no scripted view build: the player's camera, an unturned one, "cutsceneturn 0", the look
+    // written): every upload left bit for bit, whatever it is and whatever the builds' numbers hold.
+    int normalChanged = 0, normalTaken = 0, normalUploads = 0;
+    for (int n = 0; n < 20000; ++n) {
+        camera::BodyTurn builds[4];
+        float cam[16], fp[16];
+        MakeCamera(cam, RandomScripted(70), 1, RandomPlace(), true);
+        TurnedInOwnFrame(cam, AxisAngle({1, 0, 0}, Rad(0.1)), fp);
+        for (camera::BodyTurn& b : builds)
+            b = MakeBuild(cam, RandomHead(), 1, false, fp, nullptr);
+        const bool rh = Coin(0.8);
+        double p[16];
+        RandomProjection(p, rh);
+        float f[kUploadFloats], was[kUploadFloats], w[kWorldFloats], wasWorld[kWorldFloats], rows[16];
+        const int kind = n % 5;
+        if (kind == 0)
+            CameraOf(builds[0].before, RandomArmsEye(), rows);  // the body's as the game made it
+        else if (kind == 1)
+            CameraOf(builds[0].after, RandomArmsEye(), rows);  // the main view's
+        else
+            MakeCamera(rows, RandomRotation(), 1, RandomPlace(), false);
+        const V3 byCamera(builds[0].place[0], builds[0].place[1] + 0.2, builds[0].place[2]);
+        MakeUpload(f, rows, kind < 3 ? RandomArmsEye() : byCamera, p, rh, Coin());
+        MakeWorldUpload(w, rows, byCamera, p, rh);
+        if (kind == 4)
+            for (float& x : f)
+                x = static_cast<float>(Uniform(-2, 2));
+        std::memcpy(was, f, sizeof(f));
+        std::memcpy(wasWorld, w, sizeof(w));
+        int use = -1;
+        viewturn::BodyView v;
+        viewturn::PerViewFault fault;
+        normalTaken += viewturn::LockBodyPerView(f, builds, 0, use, v, fault) != viewturn::kNotView;
+        normalTaken += viewturn::LockBodyWorldView(w, builds, 0, use, v) != viewturn::kNotView;
+        normalTaken += use != -1;
+        normalChanged += std::memcmp(f, was, sizeof(f)) != 0;
+        normalChanged += std::memcmp(w, wasWorld, sizeof(w)) != 0;
+        normalUploads += 2;
+    }
+    Report("16c", "a normal picture's uploads untouched, bit for bit", normalChanged == 0 && normalTaken == 0,
+           "%d of %d uploads changed (the body's, the main view's, others', random numbers), %d taken for anything",
+           normalChanged, normalUploads, normalTaken);
+
+    // d. The FOV fix after the turn as before it: the x and y rows of the projection and the two view-projections
+    // widened (from the game's 55 degrees to 100), before or after the turn, alike; read as per-view constants either
+    // way. And the world view-projection alike.
+    double composeOff = 0, worldComposeOff = 0;
+    int composeUnread = 0;
+    const float k = static_cast<float>(std::tan(Rad(55) / 2) / std::tan(Rad(100) / 2));
+    for (int n = 0; n < 20000; ++n) {
+        float cam[16], fp[16], turnedCam[16];
+        MakeCamera(cam, RandomScripted(80), 1, RandomPlace(), true);
+        TurnedInOwnFrame(cam, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 10))), fp);
+        const camera::BodyTurn build = MakeBuild(cam, RandomHead(), 1, false, nullptr, turnedCam);
+        const bool rh = Coin(0.8);
+        double p[16];
+        MakeProjection(p, 55, 1.0, 0.0, 0.05, 2000, rh);
+        float first[kUploadFloats], second[kUploadFloats];
+        MakeUpload(first, fp, RandomArmsEye(), p, rh, Coin());
+        std::memcpy(second, first, sizeof(first));
+        viewturn::BodyView v;
+        composeUnread += viewturn::ReadPerView(first, v) != viewturn::kPerViewOk;
+        viewturn::TurnPerView(first, v, build.turn);
+        Rescale(first, k);
+        Rescale(second, k);
+        viewturn::BodyView widened;
+        composeUnread += viewturn::ReadPerView(second, widened) != viewturn::kPerViewOk;
+        viewturn::TurnPerView(second, widened, build.turn);
+        double want[kUploadFloats];
+        for (int i = 0; i < kUploadFloats; ++i)
+            want[i] = first[i];
+        composeOff = std::max(composeOff, RelOff(second, want, kUploadFloats));
+        float w1[kWorldFloats], w2[kWorldFloats];
+        MakeWorldUpload(w1, fp, V3(Uniform(-300, 300), Uniform(0, 60), Uniform(-300, 300)), p, rh);
+        std::memcpy(w2, w1, sizeof(w1));
+        viewturn::BodyView a, b;
+        composeUnread += !viewturn::ReadViewProjection(w1, a);
+        viewturn::TurnViewProjection(w1, a, build.turn);
+        for (int c = 0; c < 8; ++c)
+            w1[c] *= k, w2[c] *= k;
+        composeUnread += !viewturn::ReadViewProjection(w2, b);
+        viewturn::TurnViewProjection(w2, b, build.turn);
+        // The rows' turns alike; their last numbers against the sizes summed into them (each turned about its own eye
+        // as read, in floats a few hundred metres out a hundredth of a millimetre apart).
+        for (int r = 0; r < 4; ++r) {
+            double size = 1.0 + std::fabs(w1[4 * r + 3]);
+            for (int c = 0; c < 3; ++c) {
+                worldComposeOff = std::max(worldComposeOff, std::fabs(w2[4 * r + c] - w1[4 * r + c]) /
+                                                                (1.0 + std::fabs(w1[4 * r + c])));
+                size += std::fabs(w1[4 * r + c] * a.eye[c]);
+            }
+            worldComposeOff = std::max(worldComposeOff, std::fabs(w2[4 * r + 3] - w1[4 * r + 3]) / size);
+        }
+    }
+    // (The world's last numbers: each turned about its eye as read from floats, which moves about 2.4e-7 of the eye's
+    // distance; times the row's turn, against the sizes summed there, up to a few millionths.)
+    Report("16d", "the FOV fix after the turn as before it", composeOff < 1e-6 && worldComposeOff < 5e-6 &&
+                                                                 composeUnread == 0,
+           "widened from 55 to 100 degrees after the turn or before it: %.2g apart (the world view-projection %.2g); %d "
+           "not read once widened",
+           composeOff, worldComposeOff, composeUnread);
+
+    // e. The time: a body view read and turned, a 352-byte upload that isn't per-view constants, a world view.
+    {
+        camera::BodyTurn builds[4];
+        float bodies[64][kUploadFloats], junk[64][kUploadFloats], worlds[64][kWorldFloats];
+        for (int b = 0; b < 4; ++b) {
+            float cam[16];
+            MakeCamera(cam, RandomScripted(60), 1, RandomPlace(), true);
+            builds[b] = MakeBuild(cam, RandomHead(), 1, false, nullptr, nullptr);
+        }
+        for (int i = 0; i < 64; ++i) {
+            float rows[16], cam[16];
+            CameraOf(builds[0].before, {0, 0, 0}, rows);
+            TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5))), cam);
+            double p[16];
+            RandomProjection(p, true);
+            MakeUpload(bodies[i], cam, RandomArmsEye(), p, true, false);
+            const V3 byCamera(builds[0].place[0], builds[0].place[1], builds[0].place[2]);
+            MakeWorldUpload(worlds[i], cam, byCamera, p, true);
+            for (float& x : junk[i])
+                x = static_cast<float>(Uniform(-2, 2));
+        }
+        LARGE_INTEGER frequency, a, b;
+        QueryPerformanceFrequency(&frequency);
+        volatile float sink = 0;
+        constexpr int kCalls = 400000;
+        auto time = [&](auto call) {
+            QueryPerformanceCounter(&a);
+            for (int n = 0; n < kCalls; ++n)
+                call(n & 63);
+            QueryPerformanceCounter(&b);
+            return static_cast<double>(b.QuadPart - a.QuadPart) * 1e6 / static_cast<double>(frequency.QuadPart) / kCalls;
+        };
+        viewturn::BodyView v;
+        viewturn::PerViewFault fault;
+        const double body = time([&](int i) {
+            float f[kUploadFloats];
+            std::memcpy(f, bodies[i], sizeof(f));
+            int use = -1;
+            viewturn::LockBodyPerView(f, builds, 4, use, v, fault);
+            sink = sink + f[20];
+        });
+        const double notView = time([&](int i) {
+            int use = -1;
+            viewturn::LockBodyPerView(junk[i], builds, 4, use, v, fault);
+            sink = sink + junk[i][20];
+        });
+        const double world = time([&](int i) {
+            float w[kWorldFloats];
+            std::memcpy(w, worlds[i], sizeof(w));
+            int use = -1;
+            viewturn::LockBodyWorldView(w, builds, 4, use, v);
+            sink = sink + w[3];
+        });
+        Report("16e", "the time the body lock takes an upload", body < 2.0 && notView < 2.0 && world < 2.0,
+               "%.3f us a body view read and turned, %.3f a 352-byte upload that isn't per-view constants, %.3f a world "
+               "view-projection (< 2)",
+               body, notView, world);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1828,6 +2579,7 @@ int main() {
     Check13();
     Check14();
     Check15();
+    Check16();
     std::printf("%d of %d checks failed\n", g_failed, g_counted);
     return g_failed;
 }

@@ -153,6 +153,56 @@ bool g_levelTaken = false;
 // log, with its three counts (a byte each, in that order from the low one).
 int g_buildKinds[3] = {};
 std::atomic<uint32_t> g_unalikeBuilds{0}, g_unalikeKinds{0};
+// The body lock (skin.cpp): each view build's turn of its main camera (BodyTurns), the last kBodyBuilds of them, the
+// newest at g_bodyNext - 1; an entry not valid for a build that turned no scripted main camera (the player's kind, a
+// refused one, the look angles written). Written once a build (its first main camera: g_bodyNoted, the view builder's
+// thread only), read by the threads that upload, under g_bodyMutex; whether the newest is valid, and when it was made,
+// in atomics too, for every upload to ask without the lock.
+constexpr int kBodyBuilds = 4;
+struct BodyEntry {
+    bool valid = false;
+    camera::BodyTurn turn;
+};
+std::mutex g_bodyMutex;
+BodyEntry g_bodyEntries[kBodyBuilds];
+int g_bodyNext = 0;
+uint32_t g_bodyBuild = 0;
+bool g_bodyNoted = false;
+std::atomic<bool> g_bodyNewestValid{false};
+std::atomic<ULONGLONG> g_bodyNewestAt{0};
+
+// This view build's main camera noted for the body lock (once a build): turned as a scripted one with no look angles
+// written (scripted), from before (as the game made it) to after, its first-person camera body (or nullptr) as the
+// game made it (bodyMade) and as turned; or not (a valid entry no more: the body's views are left as they are).
+void NoteBodyTurn(bool scripted, const float* before, const float* after, const float* bodyMade, const float* body) {
+    if (g_bodyNoted)
+        return;
+    g_bodyNoted = true;
+    BodyEntry entry;
+    entry.turn.build = g_bodyBuild;
+    entry.turn.at = GetTickCount64();
+    entry.valid = scripted && viewturn::OwnFrameTurn(before, after, entry.turn.turn);
+    if (entry.valid) {
+        for (int r = 0; r < 3; ++r)
+            for (int i = 0; i < 3; ++i) {
+                entry.turn.before[3 * r + i] = before[4 * r + i];
+                entry.turn.after[3 * r + i] = after[4 * r + i];
+                if (body && viewturn::Classify(bodyMade, true) != viewturn::kNone) {
+                    entry.turn.firstPersonMade[3 * r + i] = bodyMade[4 * r + i];
+                    entry.turn.firstPerson[3 * r + i] = body[4 * r + i];
+                }
+            }
+        for (int i = 0; i < 3; ++i)
+            entry.turn.place[i] = before[12 + i];
+    }
+    {
+        std::lock_guard lock(g_bodyMutex);
+        g_bodyEntries[g_bodyNext] = entry;
+        g_bodyNext = (g_bodyNext + 1) % kBodyBuilds;
+    }
+    g_bodyNewestAt.store(entry.turn.at, std::memory_order_relaxed);
+    g_bodyNewestValid.store(entry.valid, std::memory_order_release);
+}
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -605,20 +655,25 @@ bool TurnToHead(float* transform, float* body) {
     if (!view.active) {
         g_refusedInactive.fetch_add(1, std::memory_order_relaxed);
         g_haveLast = false;  // nothing turned: no last picture to tell a repeated camera by
+        if (body)
+            NoteBodyTurn(false, nullptr, nullptr, nullptr, nullptr);
         return false;
     }
     // A scripted camera (a cutscene's or a ride's, its rows' w lanes filled: viewturn.h) is turned as well, unless
     // weapon.txt says "cutsceneturn 0": made level about its yaw (viewturn::MakeLevel) and the head put on it, so the
     // game draws where the head looks and there are no edges to see (the opening drive of Comrades, 2026-11-01). The
     // player's kind of camera (IsCamera) goes as it always went; anything else is refused. With a scripted camera the
-    // view's first-person camera (body) is turned by the same turn, in its own frame (viewturn::TurnWith): the
-    // player's own arms, gun and legs are drawn with it, and left as the game made it they moved with the head ("lock
-    // the body while I move my head", the user, 2026-11-01).
+    // view's first-person camera (body) is turned by the same turn, in its own frame (viewturn::TurnWith), and the
+    // turn goes to the body lock (NoteBodyTurn; skin.cpp): the player's own arms, gun and legs are drawn with views the
+    // game uploads, which it doesn't make from that camera, and left as the game made them they moved with the head
+    // ("lock the body while I move my head", the user, 2026-11-01; still so with that camera turned, 09:24).
     const viewturn::Kind kind = viewturn::Classify(transform, g_cutsceneTurn.load(std::memory_order_relaxed));
     if (kind == viewturn::kNone) {
         if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
             std::memcpy(g_refusedMatrix, transform, sizeof(g_refusedMatrix));
         ++g_buildKinds[2];
+        if (body)
+            NoteBodyTurn(false, nullptr, nullptr, nullptr, nullptr);
         return false;
     }
     const bool scripted = kind == viewturn::kScripted;
@@ -725,13 +780,14 @@ bool TurnToHead(float* transform, float* body) {
         s_scriptedAt = now;
     }
     // The run's first first-person camera turned with a scripted one is logged as the game made it, against the main
-    // camera, to tell what the body is drawn from: how far its rows are turned from the main camera's (the body stays
-    // on the scene either way: TurnWith), and its place from the main camera's less whole metres, the whole metres
-    // logged on their own. The game's first-person views come in the arms' space too, the world less whole metres
-    // (skin.cpp): a camera in that space at the main camera's place is that origin turned round from it, the rest 0.
+    // camera: how far its rows are turned from the main camera's (TurnWith keeps it on the scene either way), and its
+    // place from the main camera's less whole metres, the whole metres logged on their own. The game's first-person
+    // views come in the arms' space too, the world less whole metres (skin.cpp): a camera in that space at the main
+    // camera's place is that origin turned round from it, the rest 0. It and the main camera's turn go to the body
+    // lock (NoteBodyTurn), once a build: the main camera of each eye comes with it, both turned alike.
     const bool logBody = body && scripted && !view.turn.haveLook && !s_bodyLogged;
-    float bodyBefore[16];
-    if (logBody)
+    float bodyBefore[16] = {};
+    if (body)
         std::memcpy(bodyBefore, body, sizeof(bodyBefore));
     viewturn::Level level = g_levelRef;
     const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, level, body);
@@ -739,6 +795,8 @@ bool TurnToHead(float* transform, float* body) {
         g_level = level;
         g_levelTaken = true;
     }
+    if (body)
+        NoteBodyTurn(scripted && !view.turn.haveLook, before, transform, bodyBefore, body);
     if (logBody) {
         s_bodyLogged = true;
         auto apart = [](const float* p, const float* q) {  // degrees between two rows
@@ -752,10 +810,10 @@ bool TurnToHead(float* transform, float* body) {
             whole[i] = std::round(d);
             rest[i] = d - whole[i];
         }
-        Log("Camera: the first-person camera (the player's own arms, gun and legs are drawn with it) %s; as the game "
-            "made it, its forward %.1f and its up %.1f degrees from the scripted camera's, its place %.3f m from it less "
-            "whole metres (%.0f %.0f %.0f of them apart: none in the world, the arms' space's origin turned round in "
-            "that space), its rows' w lanes %.3f %.3f %.3f",
+        Log("Camera: the view's first-person camera (+0x930; the body's own views are turned as they're uploaded) %s; "
+            "as the game made it, its forward %.1f and its up %.1f degrees from the scripted camera's, its place %.3f m "
+            "from it less whole metres (%.0f %.0f %.0f of them apart: none in the world, the arms' space's origin "
+            "turned round in that space), its rows' w lanes %.3f %.3f %.3f",
             viewturn::Classify(bodyBefore, true) != viewturn::kNone ? "turned with it, about its own place"
                                                                     : "left as the game made it: not a camera",
             apart(bodyBefore + 8, before + 8), apart(bodyBefore + 4, before + 4),
@@ -800,6 +858,28 @@ void BeginViews() {
     g_haveRef = g_haveLast;
     g_levelRef = g_level;
     g_levelTaken = false;
+    ++g_bodyBuild;
+    g_bodyNoted = false;  // the build's main camera goes to the body lock (NoteBodyTurn)
+}
+
+int BodyTurns(BodyTurn* out, int most) {
+    if (!BodyTurnWanted())
+        return 0;
+    std::lock_guard lock(g_bodyMutex);
+    const ULONGLONG now = GetTickCount64();
+    int n = 0;
+    for (int k = 1; k <= kBodyBuilds && n < most; ++k) {
+        const BodyEntry& e = g_bodyEntries[(g_bodyNext - k + kBodyBuilds) % kBodyBuilds];
+        if (!e.valid || now - e.turn.at > kShownFresh)
+            break;
+        out[n++] = e.turn;
+    }
+    return n;
+}
+
+bool BodyTurnWanted() {
+    return g_bodyNewestValid.load(std::memory_order_acquire) &&
+           GetTickCount64() - g_bodyNewestAt.load(std::memory_order_relaxed) <= kShownFresh;
 }
 
 bool ShownTurn(float& cameraYaw, float& takenYaw) {

@@ -70,6 +70,7 @@
 #include "shaders.h"
 #include "sounds.h"
 #include "views.h"
+#include "viewturn.h"
 
 namespace {
 
@@ -353,6 +354,9 @@ std::atomic<bool> g_dumpView{false};
 // in, their place in it, the eye given and the thread (the right eye got ~6 more hand draws a frame
 // than the left, 2026-10-30: one pass of the left eye's taken for the right's?).
 std::atomic<int> g_eyeTrace{0};
+// weapon.txt "bodylock 0": in a scripted picture turned to the head, the views the player's own body is drawn with
+// left as the game made them, moving with the head; on by default (LockBody).
+std::atomic<bool> g_bodyLock{true};
 // weapon.txt "fpunknown": the next three frames' first-person draws (drawn with a first-person
 // view's constants bound) that the mod leaves where the game put them, each kind logged once: the
 // ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
@@ -911,6 +915,9 @@ void ReadWeaponSelection() {
     //   "turnby 30"          the view turned 30 degrees right at once, -30 left (input.cpp)
     //   "cutsceneturn 0"     a scripted camera (a cutscene's or a ride's) not turned to the head: the picture
     //                        held still in the room as before ("cutsceneturn 1", the default, turns it; camera.cpp)
+    //   "bodylock 0"         in a scripted picture turned to the head, the views the player's own body is drawn
+    //                        with left as the game made them, moving with the head ("bodylock 1", the default,
+    //                        turns them with it: LockBody)
     //   "steer 35 65"        the left hand on the handguard steers the gun only within 35 degrees of the
     //                        right hand's line, not at all past 65 (without it: while out ahead of the
     //                        body, the left hand aims and the right levels: hands.cpp, steer.h)
@@ -1105,6 +1112,17 @@ void ReadWeaponSelection() {
             int on = 1;
             sscanf_s(ct + 12, "%d", &on);
             camera::SetCutsceneTurn(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* bl = std::strstr(line, "bodylock")) {  // the body's own views turned with the head (LockBody)
+            int on = 1;
+            sscanf_s(bl + 8, "%d", &on);
+            g_bodyLock = on != 0;
+            Log("Camera: in a scripted picture turned to the head, the views the player's own body is drawn with are %s "
+                "(weapon.txt bodylock %d)",
+                on ? "turned with the head as they're uploaded" : "left as the game made them, moving with the head",
+                on ? 1 : 0);
             line = next;
             continue;
         }
@@ -1692,6 +1710,210 @@ bool ChangedRange(const uint8_t* data, const std::vector<uint8_t>& shadow, UINT 
     return first < last;
 }
 
+// ---- The body lock ----
+// In a scripted picture (a cutscene's or a ride's camera turned to the head: camera.cpp, views.cpp) the game draws the
+// player's own body (its first-person arms, gun and legs) with views of its own, which the head's turn wasn't in: the
+// body moved with the head (the user, 2026-11-01, the drive of Comrades: "everywhere I look, I still see my knees and
+// hands hovering"; turning the view description's first-person camera changed nothing). Each of its views is turned
+// here as it's uploaded (viewturn.h LockBodyPerView, LockBodyWorldView), by the turn the view build put on the main
+// camera, before anything else reads it: the FOV fix then widens the turned one, and the eyes' labels and the free
+// hands' places come from it, all as if the game had built it turned. A frame's uploads are turned by one build's
+// turn, latched at its first: the one the main view's own upload names (its turned camera's rows), else the newest.
+// Found by their shape, not by the game's FOV: in the drive the FOV fix found none at it (its camera's 49.5, the
+// first-person views' not), all the drive through. weapon.txt "bodylock 0" leaves them as the game made them
+// (g_bodyLock).
+constexpr int kBodyLatched = 4;  // view builds' turns a frame looks among (camera.cpp keeps as many)
+struct BodyLatch {
+    uint32_t frame = 0xFFFFFFFFu;  // g_frameSerial it was taken at
+    camera::BodyTurn builds[kBodyLatched];
+    int count = 0;     // of them (0: no scripted picture)
+    int use = -1;      // the one this frame's views are turned by (-1 not chosen yet)
+    bool named = false;    // chosen by the main view's own upload
+    bool counted = false;  // the frame counted as named or the newest taken
+    uint32_t turned = 0, turnedBefore = 0;  // the body's 352-byte views turned this frame so far, and the last frame
+    double firstEye[3] = {};  // this frame's first one's eye
+};
+// Since the last log (LogBodyLock), under g_bodyMutex.
+struct BodyStats {
+    uint32_t byEye[3] = {};  // the body's 352-byte views turned: eye not known, left, right
+    uint32_t world = 0;      // its 80-byte view-projections in the world turned
+    uint32_t main = 0, before = 0, away = 0, elsewhere = 0;  // left as they were (viewturn::BodyVerdict)
+    // Frames turned by the build the main view named (by its age: the newest, the one before, ...: how far the frame
+    // drawn is behind the views built), or by the newest with none named.
+    uint32_t named[kBodyLatched] = {}, newest = 0;
+    double spread = 0.0;  // the most a frame's body views' eyes were apart (m)
+    bool loggedView = false, loggedOdd = false;  // this scripted run's first body view and odd upload logged
+};
+std::mutex g_bodyMutex;
+BodyLatch g_bodyLatch;
+BodyStats g_bodyStats;
+std::atomic<uint32_t> g_bodyNotPerView{0};  // 352-byte uploads not per-view constants, since the last log
+
+float DegreesApart(const float* a, const float* b) {  // two directions, any length
+    const float cross[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    return std::atan2(Length3(cross[0], cross[1], cross[2]), a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) * 57.29578f;
+}
+
+// A scripted run's first body view as the game uploaded it (made), to tell what it's made from: its eye in the arms'
+// space, its forward from the scripted camera's and from the view's first-person camera's (+0x930) as the game made
+// them, and from the turned main camera's; its field of view against the picture's and the game's own (the FOV fix
+// widens only the game's); its 22 rows.
+void LogBodyView(const float* made, const viewturn::BodyView& v, const camera::BodyTurn& build) {
+    const float* p = made + viewturn::kProjectionAt;
+    const float wide = g_wideScale.load(std::memory_order_relaxed), game = g_gameScale.load(std::memory_order_relaxed);
+    auto fov = [](float scale) { return scale > 0.0f ? 2.0f * std::atan(1.0f / scale) * 57.29578f : 0.0f; };
+    const bool firstPerson = Length3(build.firstPersonMade[6], build.firstPersonMade[7], build.firstPersonMade[8]) > 0.5f;
+    char fromFirstPerson[48] = "no first-person camera";
+    if (firstPerson)
+        std::snprintf(fromFirstPerson, sizeof(fromFirstPerson), "%.2f", DegreesApart(v.rows + 6, build.firstPersonMade + 6));
+    Log("Camera: the body's first-person view as the game uploaded it (this scripted run's first): its eye (%.3f %.3f "
+        "%.3f) in the arms' space; its forward %.2f degrees from the scripted camera's and %s from the view's "
+        "first-person camera's (+0x930) as the game made them, %.2f from the turned main camera's; its field of view "
+        "%.1f by %.1f degrees (the picture's %.1f, the game's own %.1f: %s); its projection's w row %+.0f",
+        v.eye[0], v.eye[1], v.eye[2], DegreesApart(v.rows + 6, build.before + 6), fromFirstPerson,
+        DegreesApart(v.rows + 6, build.after + 6), fov(p[0]), fov(p[5]), fov(wide), fov(game),
+        wide > 0.0f && Near(p[5], wide)   ? "the picture's already"
+        : game > 0.0f && Near(p[5], game) ? "the FOV fix widens it"
+                                          : "the FOV fix leaves it as it is",
+        p[14]);
+    for (int r = 0; r < 22; ++r)
+        Log("Camera:   +%3d: %12.5f %12.5f %12.5f %12.5f", r * 16, made[4 * r], made[4 * r + 1], made[4 * r + 2],
+            made[4 * r + 3]);
+}
+
+// The body's views turned with the head as they're uploaded, in a scripted picture (above). data: a small upload of
+// size bytes, before the FOV fix.
+void LockBody(uint8_t* data, UINT size) {
+    if (!g_bodyLock.load(std::memory_order_relaxed) || !camera::BodyTurnWanted())
+        return;
+    auto* f = reinterpret_cast<float*>(data);
+    const bool perView = size == viewturn::kPerViewBytes;
+    // A first look without the lock: per-view constants have a view's rows at +48 and a view-projection's w row (the
+    // forward) at +224, an 80-byte view-projection that w row at +48, each unit length.
+    auto unit = [](const float* r) { return std::fabs(r[0] * r[0] + r[1] * r[1] + r[2] * r[2] - 1.0f) < 4e-3f; };
+    const bool forward = unit(f + (perView ? viewturn::kViewProjectionAt + 12 : 12));
+    if (!(forward || (perView && unit(f + viewturn::kViewAt)))) {
+        if (perView)
+            g_bodyNotPerView.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::lock_guard lock(g_bodyMutex);
+    BodyLatch& l = g_bodyLatch;
+    BodyStats& s = g_bodyStats;
+    if (const uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); l.frame != frame) {
+        l.frame = frame;
+        l.count = camera::BodyTurns(l.builds, kBodyLatched);
+        l.use = -1;
+        l.named = l.counted = false;
+        l.turnedBefore = l.turned;
+        l.turned = 0;
+    }
+    float made[viewturn::kPerViewBytes / 4] = {};
+    const bool keep = perView && !(s.loggedView && s.loggedOdd);
+    if (keep)
+        std::memcpy(made, f, sizeof(made));
+    viewturn::BodyView v;
+    viewturn::PerViewFault fault = viewturn::kPerViewOk;
+    const int useWas = l.use;
+    const viewturn::BodyVerdict verdict = perView ? viewturn::LockBodyPerView(f, l.builds, l.count, l.use, v, fault)
+                                                  : viewturn::LockBodyWorldView(f, l.builds, l.count, l.use, v);
+    switch (verdict) {
+    case viewturn::kMainView:
+        ++s.main;
+        if (useWas < 0 && l.use >= 0)
+            l.named = true;
+        return;
+    case viewturn::kTurnedBefore:
+        ++s.before;
+        return;
+    case viewturn::kAway:
+        ++s.away;
+        return;
+    case viewturn::kElsewhere:
+        ++s.elsewhere;
+        return;
+    case viewturn::kNotView:
+        if (!perView || fault == viewturn::kPerViewOk)
+            return;
+        g_bodyNotPerView.fetch_add(1, std::memory_order_relaxed);
+        // One a run with a view-projection's forward at +176 the body lock doesn't read, had the game laid out its
+        // per-view constants otherwise there.
+        if (keep && forward && !s.loggedOdd) {
+            s.loggedOdd = true;
+            static const char* const kWhy[] = {"", "the view at +48 isn't rigid", "the projection at +112 isn't a perspective one",
+                                               "the view-projection at +176 isn't the projection times the view",
+                                               "+240 isn't the projection times the view's turn alone"};
+            Log("Camera: a 352-byte upload with a view-projection's forward at +176 the body lock doesn't read as "
+                "per-view constants (this scripted run's first: %s), as the game uploaded it:",
+                kWhy[fault]);
+            for (int r = 0; r < 22; ++r)
+                Log("Camera:   +%3d: %12.5f %12.5f %12.5f %12.5f", r * 16, made[4 * r], made[4 * r + 1], made[4 * r + 2],
+                    made[4 * r + 3]);
+        }
+        return;
+    case viewturn::kBodyTurned:
+        break;
+    }
+    if (!l.counted) {
+        l.counted = true;
+        ++(l.named ? s.named[l.use] : s.newest);
+    }
+    if (!perView) {
+        ++s.world;
+        return;
+    }
+    // Its eye, by its place in the frame: both eyes' come from one camera (so not by their places, as
+    // NoteFirstPersonView tries first), the left eye's first half of the last frame's, as there.
+    const uint32_t k = l.turned++, n = l.turnedBefore;
+    const int eye = views::Active() && n >= 2 && n % 2 == 0 ? (k < n / 2 ? 0 : 1) : -1;
+    ++s.byEye[eye + 1];
+    if (k == 0) {
+        std::memcpy(l.firstEye, v.eye, sizeof(l.firstEye));
+    } else {
+        const double d[3] = {v.eye[0] - l.firstEye[0], v.eye[1] - l.firstEye[1], v.eye[2] - l.firstEye[2]};
+        s.spread = std::max(s.spread, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+    }
+    if (keep && !s.loggedView) {
+        s.loggedView = true;
+        LogBodyView(made, v, l.builds[l.use]);
+    }
+}
+
+// Once a second (Probe), while the body lock is on in a scripted picture: what it turned, and what it left as it was.
+void LogBodyLock() {
+    const bool on = g_bodyLock.load(std::memory_order_relaxed) && camera::BodyTurnWanted();
+    BodyStats s;
+    {
+        std::lock_guard lock(g_bodyMutex);
+        s = g_bodyStats;
+        g_bodyStats = BodyStats{};
+        if (on) {  // logged once a scripted run: a gap of a second or more starts another
+            g_bodyStats.loggedView = s.loggedView;
+            g_bodyStats.loggedOdd = s.loggedOdd;
+        }
+    }
+    const uint32_t notPerView = g_bodyNotPerView.exchange(0, std::memory_order_relaxed);
+    const uint32_t turned = s.byEye[0] + s.byEye[1] + s.byEye[2];
+    if (turned || s.world) {
+        char unknown[48] = "";
+        if (s.byEye[0])
+            std::snprintf(unknown, sizeof(unknown), ", %u eye not known", s.byEye[0]);
+        Log("Camera: the body's first-person views turned with the head: %u uploads this second (%u left eye, %u right "
+            "eye%s); %u of its view-projections in the world (80 bytes) too; frames turned by the view build the main "
+            "view's own upload named %u (the newest %u, the one before %u, older %u), by the newest with none named "
+            "%u; left as they were: %u the main view's, %u turned already, %u looking away from the scripted camera, "
+            "%u other views; a frame's body views' eyes up to %.0f mm apart",
+            turned, s.byEye[1], s.byEye[2], unknown, s.world, s.named[0] + s.named[1] + s.named[2] + s.named[3],
+            s.named[0], s.named[1], s.named[2] + s.named[3], s.newest, s.main, s.before, s.away, s.elsewhere,
+            s.spread * 1000.0);
+    } else if (on) {
+        Log("Camera: the body's first-person views: none seen this second in a scripted picture (left as they were: %u "
+            "the main view's, %u turned already, %u looking away from the scripted camera, %u other views; %u 352-byte "
+            "uploads not per-view constants)",
+            s.main, s.before, s.away, s.elsewhere, notPerView);
+    }
+}
+
 void HandleUpload(const PendingMap& p) {
     auto data = static_cast<uint8_t*>(p.data);
     bool research = g_research.load(std::memory_order_relaxed);
@@ -1700,6 +1922,9 @@ void HandleUpload(const PendingMap& p) {
             ++t_uploadSerial;
             if (g_weaponWatch.load(std::memory_order_relaxed))
                 NoteRecentUpload(p.resource, data, p.size);  // before the rescale changes it
+            // In a scripted picture the body's own views turned with the head, before anything else reads them.
+            if (p.size == viewturn::kPerViewBytes || p.size == viewturn::kWorldViewBytes)
+                LockBody(data, p.size);
             t_uploadResource = p.resource;
             RescaleProjections(data, p.size, kSmall);
             t_uploadResource = nullptr;
@@ -4622,6 +4847,7 @@ void Probe() {
         }
         Log("First-person FOV: uploads by size:%s", sizes);
     }
+    LogBodyLock();
     if (g_weaponShift.load())
         Log("Weapon: last second's gun draws: %u shifted, %u left alone (another soldier's)",
             g_weaponShifted.exchange(0), g_weaponFar.exchange(0));

@@ -78,12 +78,35 @@ void SetViewsMode(bool on);
 // unchanged) while no view turn is set, or if it isn't a camera. A scripted camera (a cutscene's or a
 // ride's, its rows' w lanes filled: viewturn.h) is turned too, made level about its yaw with the head
 // put on it, its w lanes left as they are; weapon.txt "cutsceneturn 0" refuses it as before. body: the
-// view's first-person camera, which the player's own arms, gun and legs are drawn with (views.cpp), or
-// nullptr. With a scripted camera and no look angles written, it's turned by the same turn about its
-// own place (the turn as the main camera's own frame has it, put on it in its own: viewturn.h TurnWith),
-// so the body stays where the scene puts it while the head looks about; with the player's kind it's left
-// as it is (the mod places the gun and arms itself), and with a refused camera too.
+// view's first-person camera (+0x930) when transform is the view's main camera (views.cpp), or nullptr.
+// With a scripted camera and no look angles written, it's turned by the same turn about its own place
+// (the turn as the main camera's own frame has it, put on it in its own: viewturn.h TurnWith); with the
+// player's kind it's left as it is (the mod places the gun and arms itself), and with a refused camera too.
+// The body isn't drawn from it: the main camera's turn goes to skin.cpp as well (BodyTurns), which turns
+// the views the body is drawn with as they're uploaded.
 bool TurnToHead(float* transform, float* body = nullptr);
+// A view build's turn of its main camera, for the body lock (skin.cpp): build, BeginViews' count of view
+// builds; at, when (GetTickCount64); turn, the main camera's turn as its own frame has it (viewturn.h
+// OwnFrameTurn: turn[3 * row + k], the turned row's part along the game's row k); before and after, its
+// rows (right, up, back) as the game made them and as turned; place, where the game put it (the world);
+// firstPersonMade and firstPerson, the view's first-person camera's rows as the game made them and as
+// turned with it (zeros if it isn't a camera).
+struct BodyTurn {
+    uint32_t build = 0;
+    uint64_t at = 0;
+    float turn[9] = {};
+    float before[9] = {}, after[9] = {};
+    float place[3] = {};
+    float firstPersonMade[9] = {}, firstPerson[9] = {};
+};
+// The last view builds' turns, the newest first, up to most of them: only while the newest build turned a
+// scripted main camera (a cutscene's or a ride's) with no look angles written, within the last quarter of
+// a second, and then as many before it as did too, in a row. 0 in a normal picture, an unturned one, with
+// "cutsceneturn 0", or with the look angles written (the mod places the gun and arms itself then). Any
+// thread.
+int BodyTurns(BodyTurn* out, int most);
+// Whether BodyTurns has any: two atomics read, for every upload to ask cheaply. Any thread.
+bool BodyTurnWanted();
 // views.cpp, once a frame before its TurnToHead calls (on the same thread): the turn published now is the one
 // they all use, so a turn published in between can't give the two eyes and their cull cameras different ones.
 void BeginViews();

@@ -23,16 +23,18 @@
 // last frame's by its turn about the world's up), the head put on that: the game's camera is the body, the head
 // stays the user's, the horizon level (the user's choice for cutscenes, 2026-10-30).
 //
-// The player's own body (its first-person arms, gun and legs) is drawn with a camera of its own, the view's
-// first-person one (views.cpp), posed where the game put it for that camera. In ordinary play the mod places the gun
-// and arms itself, in that camera's own space, and leaves the camera as it is. In a scripted picture the game draws
-// them, and with the main camera alone turned they were drawn as if the head hadn't moved, glued to the view (the
-// user, 2026-11-01, in the drive of Comrades and the interrogation: "I can see like my gun and my legs kind of moving
-// wherever I turn my head ... Only the head moves"). So a scripted picture's first-person camera is turned with its
-// main camera, by the same turn, about its own place (TurnWith): the turn as the main camera's own frame has it, put
-// on the first-person camera in its own, so that what either showed at a place in the picture moves across it alike.
-// The body is drawn where the scene puts it, seen from where the head looks, even with the first-person camera's rows
-// turned from the main one's.
+// The player's own body (its first-person arms, gun and legs) is drawn with first-person views of its own, posed where
+// the game put it for them. In ordinary play the mod places the gun and arms itself, in those views' space, and leaves
+// them as they are. In a scripted picture the game draws them, and with the main camera alone turned they were drawn
+// as if the head hadn't moved, glued to the view (the user, 2026-11-01, in the drive of Comrades and the
+// interrogation: "I can see like my gun and my legs kind of moving wherever I turn my head ... Only the head moves").
+// The turn to put on them is the main camera's, as its own frame has it, put on each in its own (TurnWith), so that
+// what either showed at a place in the picture moves across it alike: the body is drawn where the scene puts it,
+// seen from where the head looks, even with the first-person rows turned from the main one's. The view description's
+// first-person camera (+0x930, views.cpp) is turned so (3cbdb33), but the body is not drawn from it: turned, the body
+// still moved with the head (09:24, the drive of Comrades). Both eyes' first-person views come from one camera of the
+// game's own (the weapon camera's), so they're turned where they're uploaded to the graphics card instead (skin.cpp,
+// with LockBodyPerView and LockBodyWorldView below), by the same turn.
 
 #include <algorithm>
 #include <cmath>
@@ -264,21 +266,11 @@ inline void MakeLevel(float* m, int hand, Level& level) {
     m[8] = x, m[9] = 0.0f, m[10] = z;
 }
 
-// m's rows turned by the turn that took a camera's rows from before to after, about m's own place: that turn as
-// before's own frame has it (each of after's rows taken apart along before's rows: its dots with the columns of
-// before's inverse, exact for rows a little off unit length or square), put on m in m's own frame (each of m's rows
-// put together again from m's rows in the same parts). With one FOV and aspect for both (views.cpp), what m showed at
-// a place in the picture then shows where after shows what before showed there: the player's body stays on the scene
-// it was drawn over, however m's rows are turned from before's. m as before comes out as after; m turned from before
-// about a line in the world comes out turned so from after. Put on m from the world's side instead (3cbdb33), the
-// body slid off the scene about as far as the two cameras' rows were apart, or further: up to 3.9 degrees for a
-// first-person camera 2 degrees pitched from the main one, 19.7 for 10 (found by the review, 2026-11-01; measured in
-// tools/viewturntest.cpp 15b, the head up to 70 degrees round). Its w lanes and its translation are left as they are.
-// False, m left as it is, if it isn't a camera of either kind (Classify), or if before's rows have no inverse (never
-// for a camera Classify passes).
-inline bool TurnWith(float* m, const float* before, const float* after) {
-    if (Classify(m, true) == kNone)
-        return false;
+// The turn that took a camera's rows from before to after, as before's own frame has it: each of after's rows taken
+// apart along before's rows (its dots with the columns of before's inverse, exact for rows a little off unit length
+// or square), turn[3 * row + k] its part along before's row k. False if before's rows have no inverse (never for a
+// camera Classify passes). TurnWith puts it on the first-person camera, skin.cpp on the body's own views.
+inline bool OwnFrameTurn(const float* before, const float* after, float* turn) {
     // The columns of before's inverse, times its determinant: the crosses of its rows.
     const float* a = before;
     const float* b = before + 4;
@@ -289,18 +281,36 @@ inline bool TurnWith(float* m, const float* before, const float* after) {
     const float det = a[0] * across[0][0] + a[1] * across[0][1] + a[2] * across[0][2];
     if (!(std::fabs(det) > 0.5f))  // also rejects NaN
         return false;
-    // The turn in before's own frame: each of after's rows in parts along before's.
-    float turn[3][3];
     for (int row = 0; row < 3; ++row) {
         const float* v = after + 4 * row;
         for (int k = 0; k < 3; ++k)
-            turn[row][k] = (v[0] * across[k][0] + v[1] * across[k][1] + v[2] * across[k][2]) / det;
+            turn[3 * row + k] = (v[0] * across[k][0] + v[1] * across[k][1] + v[2] * across[k][2]) / det;
     }
+    return true;
+}
+
+// m's rows turned by the turn that took a camera's rows from before to after, about m's own place: that turn as
+// before's own frame has it (OwnFrameTurn), put on m in m's own frame (each of m's rows put together again from m's
+// rows in the same parts). With one FOV and aspect for both (views.cpp), what m showed at a place in the picture then
+// shows where after shows what before showed there: the player's body stays on the scene it was drawn over, however
+// m's rows are turned from before's. m as before comes out as after; m turned from before about a line in the world
+// comes out turned so from after. Put on m from the world's side instead (3cbdb33), the body slid off the scene about
+// as far as the two cameras' rows were apart, or further: up to 3.9 degrees for a first-person camera 2 degrees
+// pitched from the main one, 19.7 for 10 (found by the review, 2026-11-01; measured in tools/viewturntest.cpp 15b, the
+// head up to 70 degrees round). Its w lanes and its translation are left as they are. False, m left as it is, if it
+// isn't a camera of either kind (Classify), or if before's rows have no inverse (never for a camera Classify passes).
+inline bool TurnWith(float* m, const float* before, const float* after) {
+    if (Classify(m, true) == kNone)
+        return false;
+    float turn[9];
+    if (!OwnFrameTurn(before, after, turn))
+        return false;
     // Put on m in its own frame: each row made of m's rows in those parts.
     float rows[9];
     for (int row = 0; row < 3; ++row)
         for (int i = 0; i < 3; ++i)
-            rows[3 * row + i] = turn[row][0] * m[i] + turn[row][1] * m[4 + i] + turn[row][2] * m[8 + i];
+            rows[3 * row + i] =
+                turn[3 * row] * m[i] + turn[3 * row + 1] * m[4 + i] + turn[3 * row + 2] * m[8 + i];
     for (int row = 0; row < 3; ++row)
         for (int i = 0; i < 3; ++i)
             m[4 * row + i] = rows[3 * row + i];
@@ -311,11 +321,12 @@ inline bool TurnWith(float* m, const float* before, const float* after) {
 // ViewTurnLocal, the yaw it took out returned; a scripted one made level about its yaw (MakeLevel, going on from
 // level, the last frame's; hand: its rows' handedness), then the head alone put on it, none taken out. mirrored:
 // its rows mirrored from the player's camera's (camera.cpp tells), so the head's turn is mirrored the same way
-// across its right row: yaw and roll the other way, pitch as it is. body: the view's first-person camera, which the
-// player's own body is drawn with, or nullptr. With a scripted camera it's turned by the same turn, in its own frame,
-// about its own place (TurnWith), unless the look angles are written (a scripted camera's first pictures can come
-// with them still written): the mod places the gun and arms itself then. With the player's kind it's always left as
-// it is.
+// across its right row: yaw and roll the other way, pitch as it is. body: the view's first-person camera (+0x930), or
+// nullptr. With a scripted camera it's turned by the same turn, in its own frame, about its own place (TurnWith),
+// unless the look angles are written (a scripted camera's first pictures can come with them still written): the mod
+// places the gun and arms itself then. With the player's kind it's always left as it is. The body isn't drawn from it
+// (skin.cpp turns the views it is drawn with), but it's kept in step with them, as the cull camera is with the main
+// one: whatever the game takes from it for the first-person pass then goes where the head looks too.
 inline float Turn(float* m, const camera::ViewTurn& turn, bool scripted, int hand, bool mirrored, Level& level,
                   float* body = nullptr) {
     const bool withBody = body && scripted && !turn.haveLook;
@@ -344,6 +355,303 @@ inline float Turn(float* m, const camera::ViewTurn& turn, bool scripted, int han
 inline void PitchRoll(const float* m, float& pitch, float& roll) {
     pitch = std::asin(std::clamp(-m[9], -1.0f, 1.0f));
     roll = std::atan2(m[1], m[5]);
+}
+
+// ---- The body's own views, turned where they go to the graphics card (skin.cpp) ----
+// The game uploads the views it draws the player's own body with as constants: 352 bytes of them per view (the view at
+// +48, its rows with points taken as columns; the projection at +112; the view-projection, the projection times the
+// view, at +176; the one for points less the eye, the projection times the view's turn alone, at +240; the eye at
+// +320), in the arms' space (the world's axes, its origin whole metres near the feet), and the view-projection alone,
+// in the world, in 80 bytes at +0. The main view's own come in 352 bytes too (in the world: the flash probe,
+// 2026-10-31). In a scripted picture each of the body's is turned by the turn the view build put on the main camera
+// (camera::BodyTurn: OwnFrameTurn's), in its own frame, about its eye, as TurnWith turns the first-person camera; the
+// projection, the eye and the rest are left as they are. Whatever the game made a view from, it's turned once: a view
+// with the turned main camera's rows (the main view's, which also tells the build the frame is drawn from) or the
+// turned first-person camera's is left as it is.
+constexpr unsigned kPerViewBytes = 352, kWorldViewBytes = 80;
+constexpr int kViewAt = 48 / 4, kProjectionAt = 112 / 4, kViewProjectionAt = 176 / 4, kFromEyeAt = 240 / 4,
+              kEyeAt = 320 / 4;  // where in a 352-byte upload, in floats
+// Rows alike to within this, number by number (about 0.01 degrees): the same camera's, turned or as the game made it.
+constexpr float kRowsAlike = 2e-4f;
+// The arms' space: a view whose eye is within this of the origin on every axis (metres; kFirstPersonReach's).
+constexpr float kBodyReach = 5.0f;
+// The body's view looks within 45 degrees of the scripted camera as the game made it (the cos), and its view in the
+// world has its eye within 1.5 m of that camera's place: neither, it's another view, and left as it is.
+constexpr float kBodyToward = 0.7071f;
+constexpr float kBodyNear = 1.5f;
+
+// A view as the body lock reads it: its camera's rows (right, up, back, as a camera's rows are: the view's own rows,
+// its z row times zSign, -1 if that row points forward) and its eye.
+struct BodyView {
+    float rows[9] = {};
+    double eye[3] = {};
+    float zSign = 1.0f;
+};
+
+// Why a 352-byte upload isn't read as per-view constants (ReadPerView), for the log.
+enum PerViewFault { kPerViewOk, kNotRigid, kNotPerspective, kNotProduct, kNotFromEye };
+
+// Two numbers alike, as the game worked them out in floats and as made again here: within a ten thousandth of their
+// size, or of 1 (NaN or infinite: never).
+inline bool Alike(float a, float b) {
+    return std::isfinite(a) && std::isfinite(b) && std::fabs(a - b) <= 1e-4f * (1.0f + std::fmax(std::fabs(a), std::fabs(b)));
+}
+
+// Row-major 4x4 times 4x4, points taken as columns: out = a b.
+inline void Mul4(const float* a, const float* b, float* out) {
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+            out[4 * r + c] = a[4 * r] * b[c] + a[4 * r + 1] * b[4 + c] + a[4 * r + 2] * b[8 + c] + a[4 * r + 3] * b[12 + c];
+}
+
+// A 352-byte upload read as per-view constants: the view rigid (its rows unit and square, its last 0 0 0 1), the
+// projection a perspective one (its w row 0 0 +-1 0, its x and y scales positive), the view-projection the projection
+// times the view, and the one for points less the eye the projection times the view's turn alone (its last column the
+// projection's). v: the view's camera rows and eye.
+inline PerViewFault ReadPerView(const float* f, BodyView& v) {
+    const float* view = f + kViewAt;
+    const float* p = f + kProjectionAt;
+    for (int r = 0; r < 3; ++r) {
+        const float* a = view + 4 * r;
+        if (!(std::fabs(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - 1.0f) < 2e-3f))  // also rejects NaN
+            return kNotRigid;
+        for (int s = r + 1; s < 3; ++s) {
+            const float* b = view + 4 * s;
+            if (!(std::fabs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) < 2e-3f))
+                return kNotRigid;
+        }
+    }
+    if (!(std::fabs(view[12]) < 1e-4f && std::fabs(view[13]) < 1e-4f && std::fabs(view[14]) < 1e-4f &&
+          std::fabs(view[15] - 1.0f) < 1e-4f && std::isfinite(view[3]) && std::isfinite(view[7]) &&
+          std::isfinite(view[11])))
+        return kNotRigid;
+    if (!(std::fabs(p[12]) < 1e-4f && std::fabs(p[13]) < 1e-4f && std::fabs(p[15]) < 1e-4f &&
+          std::fabs(std::fabs(p[14]) - 1.0f) < 1e-3f && p[0] > 0.05f && p[5] > 0.05f))
+        return kNotPerspective;
+    float made[16];
+    Mul4(p, view, made);
+    for (int i = 0; i < 16; ++i)
+        if (!Alike(f[kViewProjectionAt + i], made[i]))
+            return kNotProduct;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            const float turnAlone =
+                p[4 * r] * view[c] + p[4 * r + 1] * view[4 + c] + p[4 * r + 2] * view[8 + c];
+            if (!Alike(f[kFromEyeAt + 4 * r + c], turnAlone))
+                return kNotFromEye;
+        }
+        if (!Alike(f[kFromEyeAt + 4 * r + 3], p[4 * r + 3]))
+            return kNotFromEye;
+    }
+    // The w row is the forward (positive ahead): along the view's z row, the projection's -1 if that row is the
+    // camera's back row, +1 if it's the forward.
+    v.zSign = p[14] < 0.0f ? 1.0f : -1.0f;
+    for (int r = 0; r < 3; ++r)
+        for (int i = 0; i < 3; ++i)
+            v.rows[3 * r + i] = (r == 2 ? v.zSign : 1.0f) * view[4 * r + i];
+    for (int i = 0; i < 3; ++i)
+        v.eye[i] = -(static_cast<double>(view[i]) * view[3] + static_cast<double>(view[4 + i]) * view[7] +
+                     static_cast<double>(view[8 + i]) * view[11]);
+    return kPerViewOk;
+}
+
+// The view of a 352-byte upload read so turned by turn (OwnFrameTurn's parts) in its own frame, about its eye: its
+// camera's rows as TurnWith turns a camera's, its translation made again from the eye; the view-projection and the one
+// for points less the eye made again from the projection and the turned view. The projection, the eye at +320, the
+// last row and column they keep, and the rest of the upload are left as they are.
+inline void TurnPerView(float* f, const BodyView& v, const float* turn) {
+    float* view = f + kViewAt;
+    const float* p = f + kProjectionAt;
+    float rows[9];
+    for (int r = 0; r < 3; ++r) {
+        const float s = r == 2 ? v.zSign : 1.0f;
+        for (int i = 0; i < 3; ++i)
+            rows[3 * r + i] =
+                s * (turn[3 * r] * v.rows[i] + turn[3 * r + 1] * v.rows[3 + i] + turn[3 * r + 2] * v.rows[6 + i]);
+    }
+    for (int r = 0; r < 3; ++r) {
+        for (int i = 0; i < 3; ++i)
+            view[4 * r + i] = rows[3 * r + i];
+        view[4 * r + 3] = static_cast<float>(-(rows[3 * r] * v.eye[0] + rows[3 * r + 1] * v.eye[1] +
+                                               rows[3 * r + 2] * v.eye[2]));
+    }
+    Mul4(p, view, f + kViewProjectionAt);
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 3; ++c)
+            f[kFromEyeAt + 4 * r + c] = p[4 * r] * view[c] + p[4 * r + 1] * view[4 + c] + p[4 * r + 2] * view[8 + c];
+}
+
+// A view-projection alone (the 80-byte upload's, in the world) read as the body lock reads one: its w row the forward
+// (unit), its z row along it (a perspective one's depth comes from the view's z row alone), its y and x rows less their
+// parts along it the camera's up and right (square), the eye where its x, y and w rows are 0. Worked out in double:
+// in the world the eye is hundreds of metres out.
+inline bool ReadViewProjection(const float* vp, BodyView& v) {
+    const double w[3] = {vp[12], vp[13], vp[14]};
+    const double wl = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+    if (!(std::fabs(wl - 1.0) < 4e-3))  // also rejects NaN
+        return false;
+    const double scale = 1.0 / std::sqrt(wl);
+    const double back[3] = {-w[0] * scale, -w[1] * scale, -w[2] * scale};
+    auto along = [&back](const float* row) { return row[0] * back[0] + row[1] * back[1] + row[2] * back[2]; };
+    const float* z = vp + 8;
+    const double zl = std::sqrt(static_cast<double>(z[0]) * z[0] + static_cast<double>(z[1]) * z[1] +
+                                static_cast<double>(z[2]) * z[2]);
+    const double zAlong = along(z);
+    if (!(zl > 0.1 && std::fabs(std::fabs(zAlong) - zl) < 2e-3 * zl))
+        return false;
+    double axes[2][3];  // right, up
+    for (int k = 0; k < 2; ++k) {
+        const float* row = vp + 4 * k;
+        const double a = along(row);
+        double l = 0.0;
+        for (int i = 0; i < 3; ++i) {
+            axes[k][i] = row[i] - a * back[i];
+            l += axes[k][i] * axes[k][i];
+        }
+        l = std::sqrt(l);
+        if (!(l > 0.05))
+            return false;
+        for (double& x : axes[k])
+            x /= l;
+    }
+    if (!(std::fabs(axes[0][0] * axes[1][0] + axes[0][1] * axes[1][1] + axes[0][2] * axes[1][2]) < 2e-3))
+        return false;
+    // The eye: the x, y and w rows' parts times it, less their last numbers, 0 (Cramer's rule).
+    const float* r[3] = {vp, vp + 4, vp + 12};
+    double a[3][3], b[3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j)
+            a[i][j] = r[i][j];
+        b[i] = -static_cast<double>(r[i][3]);
+    }
+    auto det3 = [](const double m[3][3]) {
+        return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    };
+    const double det = det3(a);
+    if (!(std::fabs(det) > 1e-6))
+        return false;
+    for (int k = 0; k < 3; ++k) {
+        double c[3][3];
+        std::memcpy(c, a, sizeof(c));
+        for (int i = 0; i < 3; ++i)
+            c[i][k] = b[i];
+        v.eye[k] = det3(c) / det;
+        if (!std::isfinite(v.eye[k]))
+            return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        v.rows[i] = static_cast<float>(axes[0][i]);
+        v.rows[3 + i] = static_cast<float>(axes[1][i]);
+        v.rows[6 + i] = static_cast<float>(back[i]);
+    }
+    v.zSign = 1.0f;
+    return true;
+}
+
+// A view-projection alone read so turned by turn as TurnPerView turns a view: the turn as the world has it (the
+// camera's rows taken back to the world's axes, turned and put on again), put on it about the eye, what each row gives
+// at the eye kept. Worked out in double.
+inline void TurnViewProjection(float* vp, const BodyView& v, const float* turn) {
+    double world[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double sum = 0.0;
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b)
+                    sum += static_cast<double>(v.rows[3 * a + i]) * turn[3 * a + b] * v.rows[3 * b + j];
+            world[i][j] = sum;
+        }
+    for (int r = 0; r < 4; ++r) {
+        float* row = vp + 4 * r;
+        const double atEye = row[0] * v.eye[0] + row[1] * v.eye[1] + row[2] * v.eye[2] + row[3];
+        double turned[3];
+        for (int c = 0; c < 3; ++c)
+            turned[c] = row[0] * world[0][c] + row[1] * world[1][c] + row[2] * world[2][c];
+        for (int c = 0; c < 3; ++c)
+            row[c] = static_cast<float>(turned[c]);
+        row[3] = static_cast<float>(atEye - (turned[0] * v.eye[0] + turned[1] * v.eye[1] + turned[2] * v.eye[2]));
+    }
+}
+
+// Each of nine numbers within kRowsAlike of the other's.
+inline bool RowsAlike(const float* a, const float* b) {
+    for (int i = 0; i < 9; ++i)
+        if (!(std::fabs(a[i] - b[i]) < kRowsAlike))
+            return false;
+    return true;
+}
+
+// What the body lock made of an upload (skin.cpp counts them). Only the body's own is changed.
+enum BodyVerdict {
+    kNotView,       // not a view as the body lock reads them, or no scripted picture: left as it is
+    kMainView,      // the main camera's turn already in it (the turned main camera's rows): the main view's, which
+                    // names the build the frame is drawn from
+    kTurnedBefore,  // the turned first-person camera's rows (+0x930), should the game draw from it: left as it is
+    kAway,          // the body's place, but looking away from the scripted camera: left as it is
+    kElsewhere,     // another view (a 352-byte one in the world, or an 80-byte one away from the camera): left
+    kBodyTurned,    // the body's own: turned with the head
+};
+
+// Which of a frame's view builds' turns (builds, the newest first; none in a normal picture) names a view as one they
+// turned already: kMainView or kTurnedBefore, use set to the build if the frame hasn't one yet; else kNotView.
+inline BodyVerdict TurnedAlready(const BodyView& v, const camera::BodyTurn* builds, int count, int& use) {
+    for (int b = 0; b < count; ++b)
+        if (RowsAlike(v.rows, builds[b].after)) {
+            if (use < 0)
+                use = b;
+            return kMainView;
+        }
+    for (int b = 0; b < count; ++b)
+        if (RowsAlike(v.rows, builds[b].firstPerson))
+            return kTurnedBefore;
+    return kNotView;
+}
+
+// A 352-byte upload (f, as uploaded) in a frame whose view builds' turns are builds (the newest first; count 0 in a
+// normal picture: nothing is read or changed): the body's own view (per-view constants in the arms' space, looking
+// within 45 degrees of the scripted camera as the game made it, not turned already) turned by the frame's build's turn
+// (use: that build, the newest if the frame hasn't one yet; a main view's upload sets it). v and fault: what was read.
+inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int count, int& use, BodyView& v,
+                                   PerViewFault& fault) {
+    fault = kPerViewOk;
+    if (count <= 0)
+        return kNotView;
+    fault = ReadPerView(f, v);
+    if (fault != kPerViewOk)
+        return kNotView;
+    if (const BodyVerdict already = TurnedAlready(v, builds, count, use); already != kNotView)
+        return already;
+    if (!(std::fabs(v.eye[0]) < kBodyReach && std::fabs(v.eye[1]) < kBodyReach && std::fabs(v.eye[2]) < kBodyReach))
+        return kElsewhere;
+    const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
+    const float* back = build.before + 6;
+    if (!(v.rows[6] * back[0] + v.rows[7] * back[1] + v.rows[8] * back[2] > kBodyToward))
+        return kAway;
+    if (use < 0)
+        use = 0;
+    TurnPerView(f, v, build.turn);
+    return kBodyTurned;
+}
+
+// An 80-byte upload's view-projection (vp, in the world) the same way: the body's own (its eye within 1.5 m of the
+// scripted camera's place, looking within 45 degrees of it, not turned already) turned by the frame's build's turn.
+inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, int count, int& use, BodyView& v) {
+    if (count <= 0 || !ReadViewProjection(vp, v))
+        return kNotView;
+    if (const BodyVerdict already = TurnedAlready(v, builds, count, use); already != kNotView)
+        return already;
+    const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
+    const double d[3] = {v.eye[0] - build.place[0], v.eye[1] - build.place[1], v.eye[2] - build.place[2]};
+    if (!(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < static_cast<double>(kBodyNear) * kBodyNear))
+        return kElsewhere;
+    const float* back = build.before + 6;
+    if (!(v.rows[6] * back[0] + v.rows[7] * back[1] + v.rows[8] * back[2] > kBodyToward))
+        return kAway;
+    if (use < 0)
+        use = 0;
+    TurnViewProjection(vp, v, build.turn);
+    return kBodyTurned;
 }
 
 }

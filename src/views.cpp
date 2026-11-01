@@ -16,8 +16,10 @@ namespace {
 // The function that builds the frame's view descriptions (bf3.exe 1.6, not relocated). It takes
 // the game's camera state, and fills a count and an array of descriptions 0x1100 bytes each: a
 // name pointer at +4, the viewport at +0x10, then three camera blocks of 0x480 bytes, each starting
-// with its transform: the main view +0x30, the one BF3 culls with +0x4B0, the first person (the
-// player's own arms, gun and legs) +0x930. Within a camera block: FOV pair +0x48, aspect +0x58.
+// with its transform: the main view +0x30, the one BF3 culls with +0x4B0, the first person +0x930.
+// Within a camera block: FOV pair +0x48, aspect +0x58. The first-person views the player's own arms,
+// gun and legs are drawn with aren't made from that block (both eyes' come from one camera, the
+// weapon camera's; turned, the body still moved with the head): skin.cpp turns those as they're uploaded.
 constexpr uintptr_t kBuildViews = 0x01018E70;
 constexpr uint8_t kBuildViewsStart[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0x74, 0x0E, 0x00, 0x00};
 constexpr size_t kViewSize = 0x1100;
@@ -49,10 +51,11 @@ void WriteFov(uint8_t* camera, float fov) {
 
 // The two views made into the eyes: both start from the first view's cameras (the game's own),
 // are turned to the head, and are shifted half the eye distance each way along the head's right.
-// The first-person camera, which the player's own arms, gun and legs are drawn with, is turned only
-// with a scripted main camera (a cutscene's or a ride's), by the same turn (camera.h TurnToHead): in
-// ordinary play the mod places the gun and arms itself, and left as the game made it in a cutscene the
-// body moved with the head (the user, 2026-11-01: "Only the head moves").
+// The first-person camera is turned only with a scripted main camera (a cutscene's or a ride's), by
+// the same turn (camera.h TurnToHead), which also goes to skin.cpp: the views the player's own arms,
+// gun and legs are drawn with are turned by it as they're uploaded (the user, 2026-11-01: "Only the
+// head moves"). The first-person camera isn't what they're made from, but it's kept in step with them,
+// as the cull camera is with the main one. In ordinary play the mod places the gun and arms itself.
 // The second is also put at the window's left edge, where the first is (overlay.cpp moves its
 // finished picture into the right half): placed at the right, its screen effects worked from that
 // place against pictures only an eye wide, and while suppressed the whole right eye was smeared
