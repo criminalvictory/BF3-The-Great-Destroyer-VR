@@ -10,23 +10,29 @@ namespace pistolmag {
 // pouch), so the zone, the squeeze's rules and the body's heading are the same for both guns:
 //   - the well is raked: the magazine goes in along its own y, 16 degrees back from the gun's vertical, and the whole
 //     magazine goes in (its floorplate ends flush with the grip's bottom: the mouth is 11.08 cm below home);
-//   - the hand holds it on one place of the palm (the game's 2.390 s, its floorplate on the palm) in two poses: the
-//     carry (the fingers closed round it) and the flat base (the fingers open, the magazine standing on the palm),
-//     switched by "flat" as the magazine nears the grip, so nothing moves in the hand at the switch. A carry with a
-//     place of its own (the game's pinch, 2.218 s: SetCarry) turns the magazine onto the flat base over 0.15 s as it
-//     nears the grip, and it isn't caught until it has;
-//   - on the flat base the grip may be let go of (the hand opens with the picture): the magazine stands on the palm
-//     while it's under the grip; let go away from it, it falls;
-//   - once its top is in the grip, it stays there (held by the well) if the hand drops away or lets go ("parked");
-//     the palm under its floorplate pushes it the rest of the way; X drops it out (hands.cpp);
-//   - the hands can't close up under the grip as the game's do (the controllers can't overlap: the review), so once
-//     the palm has held its top within the snap distance of home for two frames running it goes home by itself, the
-//     hand seen or not (SetSnap); each try on the grip's line says how near the palm brought it, to set that from;
+//   - the hand carries it in the carry's own place and fingers (G2, the index along its front: the default; C2, closed
+//     round its base, the flat base's own place; the game's pinch), never the flat base before it's caught, so
+//     nothing in the hand changes on the way to the grip;
+//   - it's caught magnetically (the first headset test: "it takes a couple of attempts"; the user: from any direction,
+//     the hand to the gun or the gun onto the hand): its top within the reach of the grip's mouth or already in the
+//     grip, its length within the angle of the grip's line (SetCatch), unless it's plainly going away or passing fast;
+//   - caught, it glides onto the line (an eased move over the glide's time: SetGlide), its top 1.5 cm into the grip
+//     where the well holds it, and the hand drawn holding it goes with it, going over from the carry onto the flat base
+//     under its floorplate (the game's 2.390 s) as it does, the fingers first, the place turning about the floorplate
+//     (G2's 52 degrees: the hand drawn turns round the magazine, never the magazine in the hand);
+//   - on the line the hand goes on as it was at the catch: its push takes the magazine up the line from there (only
+//     up: the well holds it); the hand leaving it leaves it there ("parked": the palm pushes it on later, X drops it,
+//     hands.cpp); let go of after the catch, it goes on in all the same; let go of in the hand, it falls;
+//   - the hands can't close up under the grip as the game's do (the controllers can't overlap: the review), so once the
+//     push has held its top within the snap distance of home for two frames running (SetSnap), or the hand has held it
+//     there gripped a moment (SetDwell), it goes home by itself, eased over the glide's time, the hand seen or not;
+//     each try on the line says how near the push brought it, to set that from;
 //   - over its last 3 cm the hand goes over to the game's own push home (2.421 s: the palm centred under the
-//     floorplate, its fingers too: Result::push).
+//     floorplate, its fingers too: Result::push), and after the seat (or a park, a fall) it eases back to the
+//     controller over the glide's time.
 // Gun space: the pistol frame bone's (3) bind space (x the gun's left, y up, z to the muzzle). View space: the head's
 // (hands.cpp's). The arms' bind space: the bare arms' (and the gloves') rest pose. Pure: no game calls and no logs
-// (Result::note says why a squeeze took nothing), so tools\pistolmagtest.cpp runs it on scripted paths.
+// (Result::note and missWhy say why nothing happened), so tools\pistolmagtest.cpp runs it on scripted paths.
 
 struct Frame {
     float dt = 0.0f;
@@ -56,17 +62,27 @@ struct Frame {
 struct Result {
     bool mag = false;       // a magazine to draw: where the frame bone would be with it seated (draw: magPose x seat)
     float magPose[12] = {};
-    float glove[12] = {};   // the hand drawn under the magazine on the line ...
-    float gloveBlend = 0;   // ... blended in by this much from where it is
-    float flat = 0;         // the fingers: 0 the carry's, 1 the flat base's ...
+    float glove[12] = {};   // the hand drawn holding the magazine (gliding in, on the line, gliding back out), or
+    float gloveBlend = 0;   // easing back to the controller after it's gone: blended in by this much from where it is
+    float fingers = 0;      // the fingers on the magazine's poses this much (1 holding it, easing in and out with the
+    float flat = 0;         // hand): the carry's (0) or the flat base's (1) ...
     float push = 0;         // ... and over the flat base's, the push home's (0-1)
     bool holding = false;   // a magazine in the hand or on the line under it (the hand is busy)
     float s = 0;            // the magazine's top along the line from home (m; the mouth at -0.1108)
     // Events this frame.
-    bool took = false, flatOn = false, flatOff = false, caught = false, offLine = false, parked = false, pushed = false,
-         seated = false, letGo = false, putBack = false, cancelled = false;
+    bool took = false, caught = false, offLine = false, parked = false, pushed = false, seated = false, letGo = false,
+         putBack = false, cancelled = false;
+    // Caught: how far its top was from the grip's mouth (m) and its length turned from the grip's line (degrees).
+    float caughtFrom = 0.0f, caughtTurned = 0.0f;
+    // Seated: it went home by itself after the hand held it there (the dwell), not pushed within the snap.
+    bool dwelt = false;
+    // A near miss: its top in reach without being caught, told once it's out of reach again (or out of the hand): the
+    // nearest it came to the grip's mouth (m), its length's turn from the line then (degrees) and why it wasn't caught.
+    bool missed = false;
+    float missFrom = 0.0f, missTurned = 0.0f;
+    const char* missWhy = "";
     float dropVelocity[3] = {};  // let go of: the hand's speed (room, m/s, at most 3)
-    // A try on the grip's line over (seated, parked, pulled off it, or gone): the nearest the palm held its top to home
+    // A try on the grip's line over (seated, parked, pulled off it, or gone): the nearest the push held its top to home
     // for two frames running (m along the line: 0 home, below 0 short of it; the snap goes by the same), and how far
     // apart the hands' grip points were then.
     bool tried = false;
@@ -79,16 +95,37 @@ Result Update(const Frame& f);
 // A magazine in the hand, on its way in, or parked in the well.
 bool Holding();
 bool Parked();
-// Gone without a fall (free hands off, the pistol dropped for good, X with it parked: the caller drops it).
+// Gone without a fall (free hands off, the pistol dropped for good, X with it parked: the caller drops it). A hand
+// drawn holding it eases back to the controller from where it was last drawn.
 void Clear();
 
 // The carry, the magazine in the hand away from the grip: where it sits on the palm (pistolposes.h's convention: gun
-// space with it home -> the arms' bind space), or nullptr for the flat base's own place (C2, the closed carry: the
-// default). pistol.txt "carry" (hands.cpp, which has the fingers).
-void SetCarry(const float* hold);
-// pistol.txt "seat 2": the snap, in metres (at least 5 mm; at most 10 cm, a centimetre into the grip).
+// space with it home -> the arms' bind space), or nullptr for the flat base's own place (C2, the closed carry). guide:
+// a carry with a place of its own whose fingers reach up the grip's sides (G2's index along its front:
+// pistolposes::kGuideG2): this far past the mouth (m) the magazine waits while the hand drawn on it is still going over
+// to the flat base (0: never in the way). pistol.txt "carry" (hands.cpp, which has the fingers).
+void SetCarry(const float* hold, float guide = 0.0f);
+// pistol.txt "catch 7.5 55": the catch's reach from the grip's mouth (m: 1-15 cm) and its angle from the grip's line
+// (degrees: 5-80).
+void SetCatch(float metres, float degrees);
+// pistol.txt "glide 0.15": how long each eased move takes (s: 0.05-0.5): the glide onto the line, the snap home, the
+// hand drawn going over to the flat base and easing back to the controller.
+void SetGlide(float seconds);
+// pistol.txt "seat 6.5": the snap, in metres (at least 5 mm; at most 10 cm, a centimetre into the grip).
 void SetSnap(float metres);
-// The hold used to draw a magazine at magPose (tests): the glove that holds it so, with the carry or the flat base.
+// pistol.txt "dwell 0.4": held on the line this long with the grip squeezed and the hand not drawing back, it goes home
+// by itself (s: 0.1-3; 0 never).
+void SetDwell(float seconds);
+// The tunables as in use (as the Set functions keep them: hands.cpp logs these).
+struct Tuning {
+    float reach = 0.0f, angle = 0.0f;  // the catch: m, degrees
+    float glide = 0.0f;                // s
+    float snap = 0.0f;                 // m
+    float dwell = 0.0f;                // s (0: never by itself)
+};
+Tuning Settings();
+// The hold used to draw a magazine at magPose (tests, loadtest): the glove that holds it so, with the carry's hold or
+// the flat base's (an open palm under it).
 void GloveFor(const float* magPose, bool flat, float* glove);
 // A magazine with its top s along the grip's line from home, turned that many degrees about the gun's x through its top
 // (gun space home -> gun space; tests: the scripted hands hold it there with GloveFor).

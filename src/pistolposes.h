@@ -23,6 +23,18 @@ constexpr float kOnPalmSeated[12] = {-0.42094f, -0.80780f, 0.41263f, 0.43129f, 0
 // C1, the game's own pinch (2.218 s): turned 53 degrees from the flat base.
 constexpr float kOnPalmGamePinch[12] = {0.23695f, -0.83662f, 0.49388f, 0.45819f, 0.86753f, 0.41104f,
                                         0.28006f, 1.07070f,  -0.43731f, 0.36210f, 0.82319f, 0.19680f};
+// G2, the index along the front (the carry the user chose, 2026-10-31): a place of its own, the floorplate on the
+// palm's far part; into the flat base the magazine would turn 52 degrees in the hand and its floorplate move 1.7 cm, so
+// it's the hand drawn on it that goes over to the flat base once the magazine is caught, never the magazine in the hand
+// (pistolmag.cpp). The recording's magazine_on_palm times the seat's inverse, as kOnPalmFlat's
+// (screenshots\wf_reload\g2\convert from grasp\G2\pose_carry_g2.txt).
+constexpr float kOnPalmG2[12] = {-0.88827f, -0.45664f, -0.04954f, 0.49120f, 0.42497f, -0.85798f,
+                                 0.28857f,  0.99739f,  -0.17427f, 0.23527f, 0.95618f, 0.20102f};
+// G2's index tip, 2.0 cm under the magazine's top along its front, meets the pistol's frame with the top 3.25 cm past
+// the grip's mouth (the frame's bottom is 1.3 cm above the mouth there: screenshots\wf_reload\g2\C-index-then-palm\
+// geo_report.txt), so the magazine waits 3.1 cm past the mouth while the hand drawn on it is still going over to the
+// flat base (m past the mouth: pistolmag::SetCarry's guide).
+constexpr float kGuideG2 = 0.031f;
 
 // C2, the carry ("closed"): the floorplate on the palm as in the game's 2.390 s, each finger closed onto the magazine
 // (posefit.exe). The user: "great" (2026-10-31).
@@ -130,6 +142,37 @@ constexpr float kGamePinch[23][12] = {
     {0.75654f, 0.39776f, -0.51907f, -0.16892f, -0.58709f, 0.76274f, -0.27120f, 0.64519f, 0.28804f, 0.50991f, 0.81057f, -0.66210f},
     {0.89596f, 0.35323f, -0.26921f, -0.25572f, -0.40979f, 0.89121f, -0.19446f, 0.39217f, 0.17123f, 0.28455f, 0.94324f, -0.38722f},
     {0.78815f, 0.46161f, -0.40709f, -0.26627f, -0.57847f, 0.78147f, -0.23383f, 0.61651f, 0.21020f, 0.41978f, 0.88295f, -0.53378f},
+};
+// G2, the full grasp (pistol.txt "carry g2", the default): the index straight up the magazine's front (the bullets'
+// side), the thumb on its left side, the middle, ring and little fingers curled round its right side, the floorplate on
+// the palm's far part (screenshots\wf_reload\grasp\G2\pose_carry_g2.txt, converted as posegen.exe makes the rest:
+// screenshots\wf_reload\g2\convert, the hand rebuilt from these within 0.014 mm of the pose file's). The user: "i
+// really like G2 ... it seems like G2 is definitely the way to go" (2026-10-31). Its wrist (0) is at rest: skin.cpp
+// takes the wrist from the arm, not from here.
+constexpr float kCarryG2[23][12] = {
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.11358f, -0.99236f, 0.04797f, 1.49738f, 0.38424f, -0.00065f, -0.92322f, 1.11146f, 0.91621f, 0.12329f, 0.38124f, -0.45678f},
+    {-0.45746f, -0.35014f, -0.81738f, 1.36176f, -0.19155f, -0.85882f, 0.47510f, 1.93670f, -0.86834f, 0.37392f, 0.32581f, 0.23346f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.87280f, 0.38618f, -0.29848f, -0.27826f, -0.47170f, 0.82452f, -0.31253f, 0.52809f, 0.12540f, 0.41357f, 0.90180f, -0.49645f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.55745f, 0.54159f, -0.62923f, -0.19725f, -0.82595f, 0.43850f, -0.35429f, 1.15045f, 0.08404f, 0.71721f, 0.69177f, -0.75458f},
+    {-0.15431f, 0.06497f, -0.98588f, 0.82129f, -0.75696f, -0.64906f, 0.07571f, 2.12643f, -0.63497f, 0.75796f, 0.14934f, -0.23338f},
+    {0.83099f, 0.46785f, -0.30094f, -0.34341f, -0.55615f, 0.68687f, -0.46787f, 0.75026f, -0.01219f, 0.55616f, 0.83098f, -0.55498f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.65270f, 0.66813f, -0.35717f, -0.45011f, -0.69919f, 0.34971f, -0.62356f, 1.21357f, -0.29172f, 0.65673f, 0.69541f, -0.47955f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.55755f, 0.54159f, -0.62915f, -0.19732f, -0.82588f, 0.43864f, -0.35430f, 1.15027f, 0.08408f, 0.71714f, 0.69184f, -0.75455f},
+    {-0.22843f, 0.26432f, -0.93698f, 0.61390f, -0.68446f, -0.72802f, -0.03850f, 2.21144f, -0.69232f, 0.63254f, 0.34722f, -0.14509f},
+    {0.19815f, -0.91935f, -0.33985f, 1.47908f, 0.42270f, 0.39298f, -0.81662f, 0.63265f, 0.88433f, 0.01816f, 0.46649f, -0.34858f},
+    {0.24246f, -0.82976f, -0.50268f, 1.39393f, 0.42732f, 0.55651f, -0.71251f, 0.42419f, 0.87097f, -0.04205f, 0.48950f, -0.27993f},
+    {0.55754f, 0.54159f, -0.62915f, -0.19731f, -0.82588f, 0.43862f, -0.35430f, 1.15029f, 0.08408f, 0.71714f, 0.69184f, -0.75455f},
+    {0.21120f, 0.45705f, -0.86400f, 0.16552f, -0.92508f, -0.19196f, -0.32768f, 1.85565f, -0.31562f, 0.86848f, 0.38227f, -0.59796f},
+    {0.34933f, 0.49436f, -0.79598f, 0.03931f, -0.93206f, 0.09620f, -0.34930f, 1.57340f, -0.09611f, 0.86392f, 0.49438f, -0.73842f},
+    {-0.02747f, 0.20932f, -0.97746f, 0.60887f, -0.90058f, -0.42955f, -0.06668f, 2.02560f, -0.43383f, 0.87845f, 0.20031f, -0.47348f},
 };
 
 // ---- The slide (pistolslide.cpp) ----

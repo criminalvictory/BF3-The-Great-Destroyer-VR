@@ -2,8 +2,9 @@
 
 Studied 2026-10-31 from the game's own reload (recorded with `reloadrec`), the M416's manual reload in
 the mod, and the pistol's ammo. Build steps 2-4 are in (behind `build\pistol.txt`, off by default) and had their
-first headset test on 2026-11-01 (below). The working files (prototype modules, offline
-tests, pose matrices and pictures) are in `screenshots\wf_reload\` on the development machine. They
+first headset test on 2026-11-01 (below); the next round's magnetic magazine and G2 carry are in after it. The working
+files (prototype modules, offline tests, pose matrices and pictures) are in `screenshots\wf_reload\` on the development
+machine. They
 stay out of the repository, because the pictures, recordings and pose files are taken from the game's own
 meshes and animations; only the finger matrices the mod needs are in `src\pistolposes.h`, as handpose.cpp's are.
 
@@ -137,6 +138,34 @@ were prototyped offline (`screenshots\wf_reload\g2\`).
 3. The slide: a much larger reach whatever the hand's turn, the hand eased onto it, and the three grips (two new
    poses to fit).
 4. Then the ammo proof and the writes (build order 5-6).
+
+## Next round, step 1 built (2026-11-01): the magazine magnetic, G2 the carry
+
+Off by default as before (`build\pistol.txt` "mag 1"); tested offline only (`tools\pistolmagtest.cpp`, 158 checks).
+- **The catch**: a magazine in the hand is caught once its top is within 7.5 cm of the grip's mouth, or already in the
+  grip, its length within 55 degrees of the grip's line, from any direction (hand to gun or gun onto hand). Not while
+  it's plainly going away or swiping past (where it will be 0.08 s on must be in reach too), nor faster than 4 m/s (a
+  tracking jump). The funnel and the "from above" rule are gone. A near miss is logged once, with why.
+- **The glide**: caught, it glides onto the line over 0.15 s, its top 1.5 cm into the grip (or as deep as it already
+  was); the drawn hand goes with it. The push from then on goes by how far the **palm** moves on up the line from where
+  it was at the catch, so the hand can stop where the controllers meet and still push. Turning the wrist doesn't count:
+  read through the whole hand pose, straightening the magazine after the catch swung its top centimetres away.
+- **G2's regrip** (the three prototypes' findings, their judges never ran): the catch and the push go by the carry's own
+  hold, what the player lines up (A, C). Once caught, the drawn hand goes over from G2 onto the flat base B about the
+  floorplate's middle, the fingers ahead (C's schedule: the thumb at most 2.7 mm into the magazine), and the magazine
+  waits 3.1 cm in until it's done (G2's index meets the frame 3.25 cm in: C). So the magazine never turns in the hand.
+  Prototype B (G2's place all the way in, with two new finger poses) wasn't used: the user hasn't seen those poses.
+  C2 and the game's pinch go the same way (C2 only opens its fingers).
+- **The snap**: 6.5 cm by default, eased over 0.15 s from the speed the push had, the hand going with it and then
+  easing back to the controller (not 3 cm a frame and 0.35 a frame). A lost frame mid-snap still seats it.
+- **The dwell, decided yes** (0.4 s, "dwell 0" turns it off): held at the grip with the grip squeezed, it goes home by
+  itself. Why: the controllers can't overlap, so the last centimetres are the hard part; the first test had every caught
+  magazine pushed home anyway; the user asked for magnetic. Gripped only, so letting go and dropping away still parks it.
+- **No flicker**: the flat base comes only with the catch now, never before it; leaving needs three frames beyond wider
+  limits than the catch; a magazine pulled back out isn't caught again until it's been out of reach; a hand lost a
+  moment (0.25 s) keeps it on the line. Each change is one log line.
+- **Tunables** (re-read live, logged once when read): "catch 7.5 55", "glide 0.15", "seat 6.5", "dwell 0.4"; "carry g2"
+  is the default, "carry c2" and "carry game" stay.
 
 ## Open questions for the user
 

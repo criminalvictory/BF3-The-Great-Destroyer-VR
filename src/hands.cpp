@@ -768,17 +768,26 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 //                   rides back with the hand and springs home when let go; while it's held the right trigger does
 //                   nothing. No rounds change yet ("slide 0", or no "slide": not worked)
 //   "mag 1"         the magazine by hand (PistolMagazine), a rehearsal: no rounds change. X drops it out of the grip
-//                   (one part way in: that one); the left grip squeezed at the pelvis takes one, carried in the hand,
-//                   the fingers open under the grip, the palm pushes it up and it snaps home; while it's out the right
-//                   trigger does nothing. X held is still the game's own reload ("mag 0", or no "mag": as before)
-//   "carry c2"      the carry: C2, the hand closed round it (the default), or "carry game", the game's own pinch (to
-//                   compare). A full grasp is being fitted: it comes as "carry <file>" (PistolCarry)
-//   "seat 2"        the snap: once the palm has held the magazine's top within this of home for two frames running, it
-//                   goes home by itself (the hands can't close up under the grip as the game's do: the review); each
-//                   try at the grip is logged with how near the palm brought it, to set this from (2 by default)
+//                   (one part way in: that one); the left grip squeezed at the pelvis takes one, carried in the hand;
+//                   brought near the grip it's caught (magnetic, from any direction) and glides in, the hand drawn on
+//                   it going over to the flat base under it; the hand pushes it on and it snaps home; while it's out
+//                   the right trigger does nothing. X held is still the game's own reload ("mag 0", or no "mag": as
+//                   before)
+//   "carry g2"      the carry: G2, every finger on it, the index along its front (the default, the user's choice);
+//                   "carry c2", the hand closed round its base, or "carry game", the game's own pinch (to compare)
+//   "catch 7.5 55"  the magnetic catch: the magazine's top within this of the grip's mouth (or already in the grip),
+//                   its length within that many degrees of the grip's line (7.5 cm, 55 degrees by default)
+//   "glide 0.15"    how long each eased move takes, in seconds: the glide in, the snap home, the hand drawn going over
+//                   to the flat base and back to the controller (0.15 by default)
+//   "seat 6.5"      the snap: once the hand's push has held the magazine's top within this of home for two frames
+//                   running, it goes home by itself (the hands can't close up under the grip as the game's do: the
+//                   review); each try at the grip is logged with how near the push brought it, to set this from (6.5 by
+//                   default: the first headset test's came 2.1-3.7 cm short)
+//   "dwell 0.4"     held on the grip's line this long with the grip squeezed, it goes home by itself too ("dwell 0":
+//                   only when pushed within the snap; 0.4 by default)
 //   "loadtest"      with "mag 1" and no left controller tracked: a scripted left hand reloads the pistol every 6 s (X,
-//                   a magazine from the pelvis, up under the grip and home); "loadtest park": it leaves it 4 cm into
-//                   the grip (7 cm short of home), drops away and comes back to push it home
+//                   a magazine from the pelvis, up towards the grip, caught, pushed home); "loadtest park": it lets go
+//                   once it's caught, leaving it part way in, drops away and comes back to push it home
 //   "racktest"      with "slide 1" and no left controller tracked: a scripted left hand racks the slide every 3 s
 //   "slidetest"     the slide going back and forth over its whole travel, 2 s a cycle
 //   "locktest 4.1"  the slide held open that far back, where the slide stop will hold it (4.1 by default; over
@@ -791,7 +800,6 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 bool g_pistolReload = false;
 bool g_pistolSlideOn = false;  // "slide 1", with "reload on"
 bool g_pistolMagOn = false;    // "mag 1", with "reload on"
-float g_pistolSnap = 0.02f;    // "seat 2" (m)
 struct PistolTests {
     bool slide = false;
     float lock = -1.0f;       // m back (below 0: off)
@@ -809,21 +817,22 @@ ULONGLONG g_gripEmptyUntil = 0;  // droptest's drop out of the grip leaves it em
 constexpr float kPistolSlideTravel = 0.0457f, kPistolSlideLock = 0.041f;
 
 // The carry, the magazine in the hand away from the grip (pistol.txt "carry"): the fingers round it (pistolposes.h's
-// bones, blended into the flat base's under the grip) and where it sits on the palm (nullptr: the flat base's own
-// place, so nothing moves in the hand as the fingers open; otherwise it's turned onto the flat base there:
-// pistolmag::SetCarry). The user approved C2, closed round its base; the game's pinch (C1) is kept to compare ("Holding
-// it with one finger is not doable"). A full grasp, all the fingers and the thumb on it, is being fitted
-// (screenshots\wf_reload\grasp): it comes as "carry <file>", a pose file as the study's (its magazine_on_palm times the
-// seat's inverse for the hold, its bone_26..51 through skin.cpp's kBareGlove for the fingers) read into a PistolCarry
-// of its own.
+// bones, going over to the flat base's once it's caught), where it sits on the palm (nullptr: the flat base's own
+// place; otherwise the hand drawn on it goes over to the flat base about its floorplate once it's caught:
+// pistolmag::SetCarry) and how far past the grip's mouth its fingers let it go before that's done (0: never in the
+// way). The user chose G2, every finger and the thumb on it, the index along its front (2026-10-31: the default); C2,
+// closed round its base ("great"), and the game's pinch (C1: "Holding it with one finger is not doable") are kept.
 struct PistolCarry {
     const char* name;
     const float (*fingers)[12];
     const float* hold;
+    float guide;
 };
-const PistolCarry kCarryClosed{"C2, closed round its base", pistolposes::kCarry, nullptr};
-const PistolCarry kCarryGame{"the game's own pinch (C1)", pistolposes::kGamePinch, pistolposes::kOnPalmGamePinch};
-const PistolCarry* g_pistolCarry = &kCarryClosed;
+const PistolCarry kCarryIndex{"G2, the index along its front", pistolposes::kCarryG2, pistolposes::kOnPalmG2,
+                              pistolposes::kGuideG2};
+const PistolCarry kCarryClosed{"C2, closed round its base", pistolposes::kCarry, nullptr, 0.0f};
+const PistolCarry kCarryGame{"the game's own pinch (C1)", pistolposes::kGamePinch, pistolposes::kOnPalmGamePinch, 0.0f};
+const PistolCarry* g_pistolCarry = &kCarryIndex;
 // The pistol's own magazine out of the grip, as the mod draws it (PistolMagazine): X drops it, one pushed home by hand
 // or the game's own reload (X held) puts it back.
 bool g_pistolMagOut = false;
@@ -851,9 +860,9 @@ void ReadPistolTuning() {
         return;  // still being written (the open isn't shared): read at the next check
     lastWrite = info.ftLastWriteTime;
     bool on = false, off = false, slide = false, mag = false;
-    const PistolCarry* carry = &kCarryClosed;
+    const PistolCarry* carry = &kCarryIndex;
     char unknownCarry[64] = "";
-    float snap = 0.02f;
+    float snap = 0.065f, reach = 0.075f, angle = 55.0f, glide = 0.15f, dwell = 0.4f;
     PistolTests tests;
     if (f) {
         char line[512];
@@ -877,18 +886,36 @@ void ReadPistolTuning() {
             } else if (Word(line, "mag", &rest)) {  // "mag 1" (or "on", or alone); "mag 0" / "mag off"
                 mag = !Word(rest, "0") && !Word(rest, "off");
             } else if (Word(line, "carry", &rest)) {
-                // "carry c2" (or "closed"), "carry game"; anything else will be a pose file's name ("carry <file>").
+                // "carry g2" (or "index"), "carry c2" (or "closed"), "carry game"; anything else: the default, said so.
                 if (Word(rest, "game")) {
                     carry = &kCarryGame;
                 } else if (Word(rest, "c2") || Word(rest, "closed")) {
                     carry = &kCarryClosed;
+                } else if (Word(rest, "g2") || Word(rest, "index")) {
+                    carry = &kCarryIndex;
                 } else {
-                    carry = &kCarryClosed;
+                    carry = &kCarryIndex;
                     sscanf_s(rest, "%63s", unknownCarry, static_cast<unsigned>(sizeof(unknownCarry)));
                 }
             } else if (Word(line, "seat", &rest)) {
                 if (sscanf_s(rest, "%f", &cm) == 1 && cm >= 0.0f)
-                    snap = std::fmin(std::fmax(cm / 100.0f, 0.005f), 0.10f);  // as pistolmag::SetSnap keeps it
+                    snap = cm / 100.0f;  // (pistolmag::SetSnap keeps it to 0.5-10 cm)
+            } else if (Word(line, "catch", &rest)) {
+                // "catch 7.5 55": the reach in cm, then (if given) the angle in degrees.
+                float degrees = 0.0f;
+                const int read = sscanf_s(rest, "%f %f", &cm, &degrees);
+                if (read >= 1 && cm >= 0.0f)
+                    reach = cm / 100.0f;
+                if (read == 2 && degrees >= 0.0f)
+                    angle = degrees;
+            } else if (Word(line, "glide", &rest)) {
+                float seconds = 0.0f;
+                if (sscanf_s(rest, "%f", &seconds) == 1 && seconds >= 0.0f)
+                    glide = seconds;
+            } else if (Word(line, "dwell", &rest)) {
+                float seconds = 0.0f;
+                if (sscanf_s(rest, "%f", &seconds) == 1 && seconds >= 0.0f)
+                    dwell = seconds;
             } else if (Word(line, "loadtest", &rest)) {
                 tests.load = Word(rest, "park") ? 2 : (Word(rest, "0") || Word(rest, "off")) ? 0 : 1;
             } else if (Word(line, "racktest", &rest)) {
@@ -924,9 +951,11 @@ void ReadPistolTuning() {
         g_pistolMagOut = false;
     }
     g_pistolCarry = carry;
-    pistolmag::SetCarry(carry->hold);
-    g_pistolSnap = snap;
+    pistolmag::SetCarry(carry->hold, carry->guide);
+    pistolmag::SetCatch(reach, angle);
+    pistolmag::SetGlide(glide);
     pistolmag::SetSnap(snap);
+    pistolmag::SetDwell(dwell);
     if (!g_pistolReload) {
         Log("Pistol reload: off, the train pistol as before%s", exists ? " (build\\pistol.txt)" : "");
         return;
@@ -939,20 +968,31 @@ void ReadPistolTuning() {
         g_pistolMagOn      ? "the magazine by hand (X, the pelvis, the grip)"
         : !g_pistolSlideOn ? "by its tests"
                            : "");
-    if (g_pistolMagOn)
-        Log("Pistol reload: mag 1: X drops the magazine; the left grip at the pelvis takes one, carried %s; under the "
-            "grip the fingers open flat and the palm pushes it up; it snaps home once the palm has held it within %.1f "
-            "cm (seat); the right trigger held off while it's out; no rounds change (a rehearsal), X held is the "
-            "game's own reload",
-            g_pistolCarry->name, g_pistolSnap * 100.0f);
+    if (g_pistolMagOn) {
+        const pistolmag::Tuning m = pistolmag::Settings();
+        char dwelt[64];
+        if (m.dwell > 0.0f)
+            std::snprintf(dwelt, sizeof(dwelt), "or held there gripped %.1f s (dwell)", m.dwell);
+        else
+            std::snprintf(dwelt, sizeof(dwelt), "and never only held there (dwell 0)");
+        Log("Pistol reload: mag 1: X drops the magazine; the left grip at the pelvis takes one, carried %s; near the "
+            "grip it's caught and glides in, the hand drawn going over to the flat base under it; the hand pushes it "
+            "on; the right trigger held off while it's out; no rounds change (a rehearsal), X held is the game's own "
+            "reload",
+            g_pistolCarry->name);
+        Log("Pistol reload: the magazine caught within %.1f cm of the grip's mouth, its length within %.0f degrees of "
+            "the grip's line (catch); each eased move %.2f s (glide); home by itself once pushed within %.1f cm (seat) "
+            "%s",
+            m.reach * 100.0f, m.angle, m.glide, m.snap * 100.0f, dwelt);
+    }
     if (*unknownCarry)
-        Log("Pistol reload: carry \"%s\" isn't known: %s (\"carry c2\" or \"carry game\"; a pose file comes later)",
-            unknownCarry, g_pistolCarry->name);
+        Log("Pistol reload: carry \"%s\" isn't known: %s (\"carry g2\", \"carry c2\" or \"carry game\")", unknownCarry,
+            g_pistolCarry->name);
     if (p.load)
         Log("Pistol reload: loadtest%s: %s", p.load == 2 ? " park" : "",
             !g_pistolMagOn ? "does nothing without \"mag 1\""
-            : p.load == 2  ? "a scripted left hand reloads every 6 s while no left controller is tracked, leaving the "
-                             "magazine 4 cm into the grip (7 cm short of home), then pushing it home"
+            : p.load == 2  ? "a scripted left hand reloads every 6 s while no left controller is tracked, letting go "
+                             "once the magazine's caught (it's left part way in), then pushing it home"
                            : "a scripted left hand reloads every 6 s while no left controller is tracked");
     if (p.rack)
         Log("Pistol reload: racktest: %s",
@@ -1142,8 +1182,8 @@ void OnTheSlide(skin::HandTargets& t, bool pistolHeld) {
 // PistolMagazineOut), as if the pistol were empty.
 std::atomic<ULONGLONG> g_pistolMagOutAt{0};  // when Update last saw it out with the pistol in hand (0: it's in)
 ULONGLONG g_pistolSeatedAt = 0;  // when one was last pushed home: that push isn't a grab of the slide
-// The left fingers on the magazine: how far they're on it (1 at the take, easing out 0.35 a frame after the seat or a
-// fall, as the M416's), and the flat base's and the push home's shares as last held (kept while they ease out).
+// The left fingers on the magazine, as pistolmag has them this frame: how far they're on it (1 at the take, easing
+// out with the hand drawn on it after the seat, a park or a fall), and the flat base's and the push home's shares.
 float g_pistolMagFingers = 0.0f, g_pistolMagFlat = 0.0f, g_pistolMagPush = 0.0f;
 
 // X (input.cpp MagazineTap) with "mag 1" and the train pistol in the right hand: its magazine release (the M9's button
@@ -1180,13 +1220,13 @@ bool PistolMagazineRelease(bool fromScript) {
 
 // pistol.txt "loadtest" (with "mag 1"): a scripted left hand stands in for the left controller (none tracked) while the
 // pistol is in the right hand. Every 6 s: X; at the pelvis (40 cm down the grip's line, turned 35 degrees) the squeeze
-// takes a magazine (0.6 s); carried up under the grip, straightening (to 2.4 s); pushed up to half the snap short of
-// home, where it goes home by itself (to 3.4 s), held there, then the hand lets go and drops away. "loadtest park"
-// leaves it 4 cm into the grip (3.4 s), lets go and drops 10 cm (it's parked), comes back up under it and pushes it
-// home (to 5.2 s). The hand is drawn holding the magazine there (pistolmag::GloveFor), with the carry's hold until the
-// fingers are flat (a carry with its own place turns the magazine onto the flat base there). flat: the module's flat
-// base share last frame while a magazine's held.
-void LoadTest(skin::HandTargets& t, pistolmag::Frame& f, bool standIn, float flat) {
+// takes a magazine (0.6 s); carried up towards the grip, straightening, to 6 cm under it (to 2.0 s): it's caught on the
+// way (with the catch's reach at 6 cm or more) and glides in; pushed on 4 cm (to 2.6 s), it snaps home; held there,
+// then the hand lets go and drops away (3.0-4.0 s). "loadtest park": the hand lets go under the grip and drops 10 cm
+// (2.0-2.6 s), leaving the magazine part way in (parked); it comes back up under it and pushes it on (to 4.2 s): home;
+// then drops away. The hand holds the magazine as the carry does (pistolmag::GloveFor) all the way: the module reads
+// its push on the line from where it was caught, and draws the hand going over to the flat base itself.
+void LoadTest(skin::HandTargets& t, pistolmag::Frame& f, bool standIn) {
     static ULONGLONG s_start = 0, s_cycle = 0;
     static bool s_took = false, s_on = false;
     if (!g_pistolTests.load || !standIn) {
@@ -1216,28 +1256,25 @@ void LoadTest(skin::HandTargets& t, pistolmag::Frame& f, bool standIn, float fla
     };
     auto between = [&](float from, float to, float a, float b) { return a + (b - a) * ease((u - from) / (to - from)); };
     const bool park = g_pistolTests.load == 2;
-    const float home = -0.5f * g_pistolSnap;
     float s = -0.40f, turn = 0.0f, squeeze = u >= 0.6f ? 1.0f : 0.0f;
     if (u < 0.8f) {
         turn = 35.0f;
-    } else if (u < 2.4f) {
-        s = between(0.8f, 2.4f, -0.40f, -0.14f);
-        turn = between(0.8f, 2.4f, 35.0f, 0.0f);
+    } else if (u < 2.0f) {
+        s = between(0.8f, 2.0f, -0.40f, -0.17f);
+        turn = between(0.8f, 2.0f, 35.0f, 0.0f);
     } else if (!park) {
-        s = u < 3.4f ? between(2.4f, 3.4f, -0.14f, home) : u < 4.0f ? home : between(4.0f, 5.0f, home, home - 0.15f);
-        squeeze = u < 4.0f ? 1.0f : 0.0f;
+        s = u < 2.6f ? between(2.0f, 2.6f, -0.17f, -0.13f) : u < 3.0f ? -0.13f : between(3.0f, 4.0f, -0.13f, -0.28f);
+        squeeze = u < 3.0f ? 1.0f : 0.0f;
     } else {
-        s = u < 3.4f   ? between(2.4f, 3.4f, -0.14f, -0.07f)
-            : u < 3.6f ? -0.07f
-            : u < 4.2f ? between(3.6f, 4.2f, -0.07f, -0.17f)
-            : u < 5.2f ? between(4.2f, 5.2f, -0.17f, home)
-                       : between(5.2f, 6.0f, home, home - 0.15f);
-        squeeze = u < 3.4f ? 1.0f : 0.0f;
+        s = u < 2.6f   ? between(2.0f, 2.6f, -0.17f, -0.27f)
+            : u < 4.2f ? between(2.6f, 4.2f, -0.27f, -0.05f)
+                       : between(4.2f, 5.2f, -0.05f, -0.25f);
+        squeeze = 0.0f;
     }
     float inGun[12], magPose[12];
     pistolmag::PlaceOnLine(s, turn, inGun);
     Compose(t.pistolPose, inGun, magPose);
-    pistolmag::GloveFor(magPose, flat > 0.95f, f.glove);
+    pistolmag::GloveFor(magPose, false, f.glove);
     f.left = true;
     f.leftGrip = {};
     f.squeeze = squeeze;
@@ -1285,25 +1322,30 @@ pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouc
         f.wellEmpty = g_pistolMagOut;
         f.slideLocked = false;  // the slide stop comes with the ammo
         f.spare = true;         // a rehearsal: there's always one at the pelvis
-        LoadTest(t, f, pistolHeld && !trackedLeft, pistolmag::Holding() ? g_pistolMagFlat : 0.0f);
+        LoadTest(t, f, pistolHeld && !trackedLeft);
         r = pistolmag::Update(f);
+        const pistolmag::Tuning tuning = pistolmag::Settings();
         if (r.took) {
             g_freshSqueeze = false;  // not the two-handed hold's as well
             Log("Pistol reload: a magazine taken at the pelvis, carried %s", g_pistolCarry->name);
         } else if (f.reached && *r.note) {
             Log("Pistol reload: the squeeze at the pelvis took nothing: %s", r.note);
         }
-        if (r.flatOn)
-            Log("Pistol reload: the hand opens flat under the grip, the magazine's top %.0f cm short of home",
-                -r.s * 100.0f);
-        if (r.flatOff)
-            Log("Pistol reload: the hand closes round the magazine again, away from under the grip");
+        // One line each: what the magnetic catch did (to set its reach and angle from), and a near miss once it's out
+        // of reach again.
+        if (r.missed)
+            Log("Pistol reload: the magazine came within %.1f cm of the grip's mouth, its length %.0f degrees off the "
+                "grip's line, and wasn't caught: %s (catch %.1f cm, %.0f degrees)",
+                r.missFrom * 100.0f, r.missTurned, r.missWhy, tuning.reach * 100.0f, tuning.angle);
         if (r.caught)
-            Log("Pistol reload: the magazine caught under the grip");
+            Log("Pistol reload: the magazine caught %.1f cm from the grip's mouth, its length %.0f degrees off the "
+                "grip's line (catch %.1f cm, %.0f degrees): it glides in, %.1f cm short of home, the hand onto its "
+                "flat base",
+                r.caughtFrom * 100.0f, r.caughtTurned, tuning.reach * 100.0f, tuning.angle, -r.s * 100.0f);
         if (r.pushed)
             Log("Pistol reload: the palm pushes the magazine on from %.1f cm short", -r.s * 100.0f);
         if (r.offLine)
-            Log("Pistol reload: the magazine pulled off the grip's line: back in the hand");
+            Log("Pistol reload: the magazine pulled back out of the grip as it glided in: back in the hand");
         if (r.parked)
             Log("Pistol reload: the magazine left %.1f cm short in the grip (the palm pushes it on, X drops it)",
                 -r.s * 100.0f);
@@ -1324,10 +1366,11 @@ pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouc
             g_pistolMagOut = false;
             g_pistolSeatedAt = GetTickCount64();
             sounds::Play("pistol_mag_in");
-            Log("Pistol reload: the magazine pushed home (a rehearsal: no rounds change)");
+            Log("Pistol reload: the magazine %s (a rehearsal: no rounds change)",
+                r.dwelt ? "held at the grip went home by itself" : "pushed home");
         }
         if (r.tried) {
-            // Each try at the grip: how near the palm brought it, to set the snap from (the first headset test).
+            // Each try at the grip: how near the hand's push brought it, to set the snap from (the headset tests).
             char nearest[48], hands[64] = "";
             if (r.closest >= 0.0f)
                 std::snprintf(nearest, sizeof(nearest), "home");
@@ -1336,10 +1379,10 @@ pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouc
             if (r.apartThen > 0.0f)
                 std::snprintf(hands, sizeof(hands), ", the hands' grip points %.0f cm apart then",
                               r.apartThen * 100.0f);
-            Log("Pistol reload: a try at the grip %s: the palm held the magazine's top %s at the nearest%s (it snaps "
+            Log("Pistol reload: a try at the grip %s: the push held the magazine's top %s at the nearest%s (it snaps "
                 "home within %.1f cm: pistol.txt seat)",
                 r.seated ? "seated it" : r.parked ? "left it part way in" : r.offLine ? "came off the line" : "ended",
-                nearest, hands, g_pistolSnap * 100.0f);
+                nearest, hands, tuning.snap * 100.0f);
         }
         if (r.mag) {
             t.pistolMag = true;  // over magtest's
@@ -1353,14 +1396,10 @@ pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouc
         g_pistolMagOutAt = 0;
     else if (pistolHeld)
         g_pistolMagOutAt = GetTickCount64();
-    // The fingers on it: on at the take, easing in and out as it's held (onto the line from parked too).
-    if (r.took)
-        g_pistolMagFingers = 1.0f;
-    g_pistolMagFingers += ((r.holding ? 1.0f : 0.0f) - g_pistolMagFingers) * 0.35f;
-    if (g_pistolMagFingers < 0.001f)
-        g_pistolMagFingers = 0.0f;
-    if (r.holding)
-        g_pistolMagFlat = r.flat, g_pistolMagPush = r.push;
+    // The fingers on it as the module has them: on at the take, going over to the flat base with the hand drawn on it,
+    // easing off it with the hand (it eases the hand back to the controller over the glide's time: fingers easing off
+    // faster swept the index through the right hand, screenshots\wf_reload\g2\C-index-then-palm).
+    g_pistolMagFingers = r.fingers, g_pistolMagFlat = r.flat, g_pistolMagPush = r.push;
     return r;
 }
 
@@ -2221,8 +2260,8 @@ void Update(const XrPosef& head) {
             } else {
                 std::memcpy(t.bareLeftFingers[b], own, sizeof(own));
             }
-            // On the pistol's magazine (PistolMagazine): the carry round it, opening into the flat base under the grip,
-            // going over to the push home near the top, eased in and out with the hand.
+            // On the pistol's magazine (PistolMagazine): the carry round it, opening into the flat base once it's
+            // caught, going over to the push home near the top, eased in and out with the hand.
             if (g_pistolMagFingers > 0.0f) {
                 float pivot[3], carried[12], target[12], blended[12];
                 handpose::Pivot(b, pivot);
