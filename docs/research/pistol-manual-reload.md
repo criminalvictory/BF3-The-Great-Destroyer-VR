@@ -80,9 +80,26 @@ and none in the reload; it proves the field before anything is written.
 6. The mechanism with writes, each re-checked before writing. **Second headset test.**
 7. The user's answers, the slide sounds, remembering a proven pistol across weapon switches.
 
+## The user's verdict on the pictures (2026-10-31)
+
+- The closed carry (C2), the flat base (B), the push into the grip and the overhand slide rack are
+  "great".
+- **The game's own pinch (C1) is out as it is:** "Holding it with one finger is not doable." Wanted: a
+  carry where all the fingers grasp the magazine, the thumb too. To be studied again (new candidates
+  with every finger and the thumb on the magazine's body, pictures from the same four views).
+
+The user's answers to the mechanics:
+- After a new magazine in an empty pistol, the first trigger pull only sends the slide home; the next
+  one fires.
+- The slide is grabbed with the left trigger, as the M416's charging handle.
+- Racking with a round chambered throws that round out, lost, like a real gun.
+- The magazine may snap home by itself once it's most of the way in (the distance set from the first
+  headset test).
+
 ## Open questions for the user
 
-1. Carry the magazine with the hand closed round its base (C2, recommended), or the game's loose pinch (C1)?
+1. ~~Carry the magazine with the hand closed round its base (C2, recommended), or the game's loose pinch
+   (C1)?~~ C1 to be redone as a full grasp (above).
 2. The flat base: the game's palm cupped about 45 degrees under the magazine with the fingers up the
    grip, or a flat palm square under it?
 3. May the magazine snap home by itself once it's most of the way in (the controllers can't overlap)?
