@@ -697,6 +697,7 @@ float g_pistolBlend = 0.0f;  // 0 the left hand where its controller is, 1 on th
 float g_pistolLeftHold[12] = {};  // the game's left palm from the pistol's frame (skin::BarePistolLeft)
 float g_pistolLeftFingers[handpose::kBones][12] = {};
 bool g_havePistolLeft = false;
+bool SlideHeld();  // the left hand has the pistol's slide (PistolSlide, below)
 
 // pistol: the pistol in the right hand; tracked: the left hand as its controller holds it.
 void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const float* tracked) {
@@ -713,6 +714,13 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
     if (!g_pistolSupport && g_havePistolLeft && test) {
         g_pistolSupport = s_byTest = true;
         Log("Hands: the stand-in left hand took hold of the pistol (pistoltest)");
+    } else if (!g_pistolSupport && squeeze > 0.6f && g_freshSqueeze && SlideHeld()) {
+        // The left hand on the slide (PistolSlide, pistol.txt "slide 1"): a squeeze then is the hand closing on it, not
+        // a hold, as the handguard's isn't with the charging handle held. Nor once the slide's let go with the grip
+        // still squeezed: 22 cm reaches anywhere on the pistol, so the hand would go off its controller onto the
+        // game's hold. Let go and squeezed again, it takes hold.
+        g_freshSqueeze = false;
+        Log("Hands: the left grip squeezed with the slide in the left hand: not a hold of the pistol");
     } else if (!g_pistolSupport && g_havePistolLeft && trackedLeft && squeeze > 0.6f && g_freshSqueeze) {
         float at[3];
         Transform(hold, g_leftAnchor, at);
@@ -924,6 +932,10 @@ std::atomic<ULONGLONG> g_slideHeldAt{0};  // when the hand last had the slide (0
 // (Profile::grip) does.
 constexpr float kLeftPalmCentre[3] = {0.5182f, 1.1075f, 0.1756f};
 
+bool SlideHeld() {
+    return g_pistolSlide.Held();
+}
+
 // pistolHeld: the train pistol in the right hand; tracked: the left hand as its controller holds it (before any hold);
 // busy: why the hand can't take the slide now (nullptr: it can).
 void PistolSlide(skin::HandTargets& t, bool pistolHeld, bool trackedLeft, const float* tracked, const char* busy,
@@ -969,13 +981,20 @@ void PistolSlide(skin::HandTargets& t, bool pistolHeld, bool trackedLeft, const 
     const pistolslide::Output o = g_pistolSlide.Update(in);
     const pistolslide::Profile& p = g_pistolSlide.Settings();
     const char* lost = noPalm ? noPalm : "the left hand's place isn't known";
-    if (o.pressed) {  // one line a press: grabbed, or why not
+    // One line a press: grabbed, or why not, with the left grip and the two-handed hold (the slide can be grabbed in
+    // both hands, as the M416's handle with the handguard held: a fist taking that hold with the palm within 7 cm of
+    // the slide's rear grabs it too, and the right trigger then waits for the left trigger's let go).
+    if (o.pressed) {
+        const float squeeze = input::LeftSqueeze();
+        const char* both = g_pistolSupport ? ", the pistol in both hands" : "";
         if (o.grabbed)
-            Log("Pistol reload: the left trigger pressed %.0f mm from the slide's hold: the slide grabbed%s",
-                o.palmFrom * 1000.0f, in.locked ? " on the slide stop (locktest)" : "");
+            Log("Pistol reload: the left trigger pressed %.0f mm from the slide's hold (the left grip at %.2f%s): the "
+                "slide grabbed%s",
+                o.palmFrom * 1000.0f, squeeze, both, in.locked ? " on the slide stop (locktest)" : "");
         else if (o.palmFrom >= 0.0f)
-            Log("Pistol reload: the left trigger pressed %.0f mm from the slide's hold: too far to grab it (within %.0f)",
-                o.palmFrom * 1000.0f, p.reach * 1000.0f);
+            Log("Pistol reload: the left trigger pressed %.0f mm from the slide's hold (the left grip at %.2f%s): too "
+                "far to grab it (within %.0f mm)",
+                o.palmFrom * 1000.0f, squeeze, both, p.reach * 1000.0f);
         else
             Log("Pistol reload: the left trigger pressed with the pistol in hand: the slide not grabbed (%s)", lost);
     }

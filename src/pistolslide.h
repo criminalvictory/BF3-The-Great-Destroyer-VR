@@ -11,6 +11,9 @@ namespace pistolslide {
 //   - pulled back along the frame's -z as far as the hand goes, at most its full travel (4.57 cm, the game's own
 //     shots), and let go: past 4.0 cm it feeds (racked: the caller tells the mechanism); from the slide stop (locked
 //     open on an empty magazine) a tug 4 mm further back drops the stop;
+//   - the palm lost a moment (the left controller's tracking, a broken pose) with the trigger still pressed: held
+//     where it was for up to 0.2 s, then let go (a lost frame far back would otherwise rack it, and once the rounds
+//     move a rack with one in the chamber throws it out);
 //   - it springs home in 70 ms from fully back (the game's shot cycle comes forward in about 80), or onto the stop;
 //   - while the mechanism holds it open (locked) it's drawn there, not where the game's animation has it (the game
 //     still has its hidden round, so its own slide goes home after the last shot);
@@ -25,6 +28,7 @@ struct Profile {
     float rackAt = 0.0400f;    // m, pulled at least this far and let go: it feeds
     float tug = 0.004f;        // m, from the stop this much further and let go: the stop drops
     float springHome = 0.07f;  // s, from fully back to home
+    float coast = 0.2f;        // s, held with the palm lost (the trigger still pressed), then let go
     // The palm centre (the bare left palm bone's vertex middle: hands.cpp kLeftPalmCentre) with the hand overhand on
     // the slide's rear, the slide closed, in gun space (posefit.exe; pistolposes.h kSlidePalm puts the palm there):
     // the grab is measured from here, moved back with the slide.
@@ -72,6 +76,7 @@ private:
     bool m_armed = true;  // the trigger below 0.4 since the last press: past 0.6 is a press
     bool m_startLocked = false;
     float m_grabZ = 0.0f, m_start = 0.0f, m_pull = 0.0f, m_maxPull = 0.0f;
+    float m_lost = 0.0f;  // s, held with no palm
     bool m_springing = false, m_cycleBack = false;
     float m_springFrom = 0.0f, m_springT = 0.0f;
     float m_drawn = -1.0f;

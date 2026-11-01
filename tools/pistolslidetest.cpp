@@ -5,7 +5,7 @@
 // view by that pose, unless a check holds it still in the view instead. pistolslide's numbers (its Profile): the hold
 // on the slide's rear at (0.0123 0.0959 0.0551), grabbed within 7 cm by a fresh press of the left trigger (past 0.6
 // after it was last below 0.4); 4.57 cm of travel; let go past 4.0 cm it racks; the slide stop at 4.1 cm, a tug of
-// 4 mm off it; home in 70 ms from fully back; the trigger's rack back in 30 ms.
+// 4 mm off it; home in 70 ms from fully back; the trigger's rack back in 30 ms; held through 0.2 s of a lost palm.
 //   1  the overhand hold: pistolposes.h kSlidePalm is rigid and puts the bare palm centre (hands.cpp kLeftPalmCentre)
 //      on the Profile's hold, within 0.5 mm
 //   2  the reach: a press on the hold grabs (0 mm), 6.9 cm off grabs, 7.1 cm off doesn't (pressed, its distance told),
@@ -22,8 +22,9 @@
 //   7  the slide stop: drawn there; grabbed there; never forward of it while held; a 3 mm tug goes back onto it, a
 //      4.5 mm one racks and, the stop dropped, it springs home from it (63 ms), not in one jump
 //   8  the trigger's rack (Release): from home back to 4.57 cm and home again within 10 frames; from the stop, home
-//   9  lost: the hand lost while held lets go (racked if it was back), the pistol out of hand lets go (nothing drawn,
-//      not racked); neither grabs again until the trigger's let go and pressed
+//   9  lost: the hand lost a frame while held keeps it where it was, and found again it rides on with the hand; lost
+//      for good it lets go 0.2 s on (racked if it was back), at once if the trigger's let go; the pistol out of hand
+//      lets go at once (nothing drawn, not racked); neither grabs again until the trigger's let go and pressed
 //  10  frame times of 0, 1 s, -1 and not a number, and palms not a number: nothing drawn past its travel or not a
 //      number
 // Usage: pistolslidetest [-v]   (-v prints every check)
@@ -441,11 +442,31 @@ void Lost() {
     r.PullTo(0.045f);
     r.hand = false;
     r.Step();
-    Check(r.letGos == 1 && r.racks == 1 && !r.o.held, "the hand lost 4.5 cm back: let go, racked");
+    Check(r.letGos == 0 && r.racks == 0 && r.o.held && std::fabs(r.o.back - 0.045f) < 1e-5f,
+          "the hand lost a frame 4.5 cm back: still held there (%.2f cm), not racked", r.o.back * 100.0f);
+    r.hand = true;
+    r.PullTo(0.02f);
+    Check(r.letGos == 0 && r.o.held && std::fabs(r.o.back - 0.02f) < 1e-5f,
+          "found again: it rides on with the hand (%.2f cm)", r.o.back * 100.0f);
+    r.PullTo(0.045f);
+    r.hand = false;
+    int frames = 0;
+    for (; frames < 72 && r.letGos == 0; ++frames)
+        r.Step();
+    Check(r.letGos == 1 && r.racks == 1 && frames * kDt >= kProfile.coast && (frames - 1) * kDt < kProfile.coast,
+          "lost for good 4.5 cm back: let go %d frames on (%.0f ms), racked", frames, frames * kDt * 1000.0f);
     r.hand = true;
     r.Hold();
     r.Steps(10);
     Check(r.grabs == 1, "found again on the hold with the trigger still held: not grabbed again");
+    Rig q;
+    q.Press();
+    q.PullTo(0.045f);
+    q.hand = false;
+    q.Step();
+    q.Release();
+    Check(q.letGos == 1 && q.racks == 1 && !q.o.held,
+          "the trigger let go a frame after the hand's lost: let go then, racked");
     Rig p;
     p.Press();
     p.PullTo(0.045f);
@@ -490,9 +511,11 @@ void Degenerate() {
 int main(int argc, char** argv) {
     g_verbose = argc > 1 && std::strcmp(argv[1], "-v") == 0;
     std::printf("pistolslidetest: src/pistolslide.cpp at 72 Hz. The hold (%.4f %.4f %.4f) within %.0f cm, %.2f cm of "
-                "travel, racked past %.1f, the stop at %.1f (a %.0f mm tug), home in %.0f ms.\n",
+                "travel, racked past %.1f, the stop at %.1f (a %.0f mm tug), home in %.0f ms, held %.0f ms with the "
+                "palm lost.\n",
                 kProfile.grip[0], kProfile.grip[1], kProfile.grip[2], kProfile.reach * 100, kProfile.travel * 100,
-                kProfile.rackAt * 100, kProfile.lockAt * 100, kProfile.tug * 1000, kProfile.springHome * 1000);
+                kProfile.rackAt * 100, kProfile.lockAt * 100, kProfile.tug * 1000, kProfile.springHome * 1000,
+                kProfile.coast * 1000);
     OverhandHold();
     Reach();
     FreshPresses();

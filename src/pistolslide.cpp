@@ -63,18 +63,24 @@ Output Slide::Update(const Input& in) {
         }
     }
     if (m_held) {
+        m_lost = have ? 0.0f : m_lost + dt;
         if (have && in.trigger >= 0.4f) {
             // As far back as the hand has come since the grab (the frame's -z), on the stop's side of it while locked.
             const float low = m_startLocked ? m_p.lockAt : 0.0f;
             m_pull = std::min(std::max(m_start + (m_grabZ - palm[2]), low), m_p.travel);
             m_maxPull = std::max(m_maxPull, m_pull);
             m_drawn = m_pull;
+        }
+        // The palm lost a moment (the left controller's tracking, a broken pose) with the trigger still pressed: held
+        // where it was for up to coast, not let go (a lost frame far back would rack it).
+        if (in.trigger >= 0.4f && (have || m_lost < m_p.coast)) {
             o.held = true;
             o.back = m_drawn;
             return o;
         }
-        // Let go (or the hand lost): far enough back, it feeds; from the stop, a tug past it drops the stop (the same as
-        // a rack then: the chamber is empty on the stop). Either way it springs forward from where it was let go.
+        // Let go (or the hand lost for longer): far enough back, it feeds; from the stop, a tug past it drops the stop
+        // (the same as a rack then: the chamber is empty on the stop). Either way it springs forward from where it was
+        // let go.
         m_held = false;
         o.letGo = true;
         o.pulled = m_maxPull;
