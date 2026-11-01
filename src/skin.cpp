@@ -2152,7 +2152,12 @@ void LockBody(uint8_t* data, UINT size) {
     else if (n >= 2 && n % 2 == 0)
         pass = k < n / 2 ? 0 : 1;
     double moved = 0.0;
-    if (pass >= 0 && l.lastPasses == 2 && g_bodyStereo.load(std::memory_order_relaxed)) {
+    // Moved only with its pass told by this frame's eye pictures: the learned order and the halves stay for the
+    // per-eye counts. They go wrong in any frame with another number of body views than the last (looking down, the
+    // legs' views come and go), and a view moved to the other eye's place is the black holes of the first try. With
+    // no eye pictures counted (a mission whose eyes' pictures are drawn another way), the body stays flat, as the game
+    // draws it (the review, 2026-11-01).
+    if (pass >= 0 && l.lastPictures == 2 && l.lastPasses == 2 && g_bodyStereo.load(std::memory_order_relaxed)) {
         const double mid = 0.5 * (l.lastPassAlong[0] + l.lastPassAlong[1]);
         moved = l.lastPassAlong[pass] - mid;
         viewturn::ShiftPerView(f, v, moved);
