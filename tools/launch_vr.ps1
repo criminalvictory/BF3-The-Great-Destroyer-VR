@@ -39,6 +39,92 @@ if (-not $gameDir) { $gameDir = 'E:\SteamLibrary\steamapps\common\Battlefield 3'
 $hooks = foreach ($name in 'dxgi.dll', 'd3d11.dll', 'd3d9.dll', 'dinput8.dll') { if (Test-Path (Join-Path $gameDir $name)) { $name } }
 if ($hooks) { Say ("Heads up: {0} in the game folder may fight the mod's view (ReShade or similar). Move it out if the headset shows nothing." -f ($hooks -join ', ')) }
 
+# SteamVR first, always (the user, 2026-11-01): without it the mod's tries to reach the headset stalled the game
+# every few seconds ("the game is running really slow").
+# And streaming over the Steam Frame's dongle (Valve's USB Wi-Fi adapter), not the home Wi-Fi: SteamVR takes the
+# dongle only if the dongle's link to the headset is up when SteamVR starts; started before that, it streams over
+# the home network and stays on it. The user's fix by hand: close SteamVR, wait for the headset to show the dongle
+# active, start SteamVR again. This does the same.
+function SteamVrUp { (Get-Process vrserver -ErrorAction SilentlyContinue) -and (Get-Process vrcompositor -ErrorAction SilentlyContinue) }
+function DongleNic { Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'for Valve' } | Select-Object -First 1 }
+# The PC's address on the dongle's link to the headset, while it's up.
+function DongleIp {
+    $nic = DongleNic
+    if (-not $nic -or $nic.Status -ne 'Up') { return $null }
+    Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress
+}
+# The PC's address SteamVR streams to the headset from, the newest since $since in its link driver's log
+# ("Found primary link 10.35.78.25"); none before the headset connects.
+$steamDir = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
+function SteamVrLink([datetime]$since) {
+    $file = if ($steamDir) { Join-Path $steamDir 'logs\driver_vrlink.txt' }
+    if (-not $file -or -not (Test-Path $file)) { return $null }
+    $link = $null
+    foreach ($line in (Get-Content $file -Tail 4000 -ErrorAction SilentlyContinue)) {
+        if ($line -match '^\w{3} (\w{3} \d{2} \d{4} \d{2}:\d{2}:\d{2}\.\d{3}) .*Found primary link (\S+)') {
+            $when = [datetime]::ParseExact($Matches[1], 'MMM dd yyyy HH:mm:ss.fff', [Globalization.CultureInfo]::InvariantCulture)
+            if ($when -ge $since) { $link = $Matches[2] }
+        }
+    }
+    $link
+}
+function StopSteamVr {
+    Get-Process vrmonitor, vrdashboard, vrcompositor, vrserver, vrwebhelper, vrstartup -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    $t = 0
+    while ((Get-Process vrserver, vrcompositor, vrmonitor -ErrorAction SilentlyContinue) -and $t -lt 20) { Start-Sleep 1; $t++ }
+    Start-Sleep 3
+}
+function WaitForDongle {
+    if (DongleIp) { return $true }
+    Say 'Waiting for the Steam Frame''s dongle: turn the headset on and wait until it shows the adapter active...'
+    $t = 0
+    while (-not (DongleIp) -and $t -lt 300) { Start-Sleep 1; $t++ }
+    [bool](DongleIp)
+}
+
+$dongle = DongleNic  # none plugged in (a cable, another headset): SteamVR's own choice
+if ($dongle -and (SteamVrUp)) {
+    $link = SteamVrLink (Get-Process vrserver | Select-Object -First 1).StartTime
+    if ($link -and $link -ne (DongleIp)) {
+        Say "SteamVR is streaming over the home network ($link), not the dongle: restarting it."
+        StopSteamVr
+    }
+}
+for ($try = 1; -not (SteamVrUp) -and $try -le 2; $try++) {
+    if ($dongle -and -not (WaitForDongle)) {
+        Say 'The dongle''s link to the headset didn''t come up in 5 minutes. Check the headset is on and the dongle plugged in, then run this again.'
+        Read-Host 'Press Enter to close'
+        exit 1
+    }
+    $since = Get-Date
+    Start-Process 'steam://rungameid/250820'
+    Say 'Starting SteamVR...'
+    $t = 0
+    while (-not (SteamVrUp) -and $t -lt 90) { Start-Sleep 1; $t++ }
+    if (-not (SteamVrUp)) {
+        Say 'SteamVR didn''t start. Start it from Steam (and turn the headset on), then run this again.'
+        Read-Host 'Press Enter to close'
+        exit 1
+    }
+    if ($dongle) {
+        # Which way it streams once the headset connects (up to a minute; with the headset asleep, left be).
+        $link = $null; $t = 0
+        while (-not $link -and $t -lt 60) { Start-Sleep 1; $t++; $link = SteamVrLink $since }
+        if ($link -and $link -ne (DongleIp) -and $try -lt 2) {
+            Say "SteamVR took the home network ($link), not the dongle: restarting it."
+            StopSteamVr
+            continue
+        }
+    }
+    Start-Sleep 5  # settled before the game asks for the headset
+}
+$link = if ($dongle) { SteamVrLink (Get-Process vrserver | Select-Object -First 1).StartTime }
+if ($link -and $link -eq (DongleIp)) { Say 'SteamVR is running, streaming over the dongle.' }
+elseif ($link) { Say "SteamVR is running, but streaming over the home network ($link). If the picture stutters: close the game and SteamVR, wait for the headset to show the dongle active, and run this again." }
+else { Say 'SteamVR is running.' }
+
 # The injector waits for bf3.exe and loads the mod into it as it starts. Any left over from before is stopped.
 Get-Process injector -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $started = Get-Date
@@ -59,11 +145,11 @@ if ($steam -and (Test-Path $steam)) {
 Say 'In Battlelog, click PLAY CAMPAIGN (the one click left: the game''s own launch).'
 Say '(If it asks you to sign in, sign in there and tick "Remember me". This window never touches your account.)'
 
-# The game, within 5 minutes.
+# The game, within 10 minutes.
 $t = 0
-while (-not (Get-Process bf3 -ErrorAction SilentlyContinue) -and $t -lt 300) { Start-Sleep 1; $t++ }
+while (-not (Get-Process bf3 -ErrorAction SilentlyContinue) -and $t -lt 600) { Start-Sleep 1; $t++ }
 if (-not (Get-Process bf3 -ErrorAction SilentlyContinue)) {
-    Say 'The game didn''t start within 5 minutes. Stopping the mod''s injector; run this again when you''re ready.'
+    Say 'The game didn''t start within 10 minutes. Stopping the mod''s injector; run this again when you''re ready.'
     if (-not $inject.HasExited) { Stop-Process -Id $inject.Id -Force -ErrorAction SilentlyContinue }
     Read-Host 'Press Enter to close'
     exit 1
