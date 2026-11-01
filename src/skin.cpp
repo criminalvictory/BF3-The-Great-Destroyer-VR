@@ -909,6 +909,8 @@ void ReadWeaponSelection() {
     //   "tail"               log the next frame's draws to window-sized targets (effects.cpp)
     //   "viewdiff 60"        for 60 s, log where the two eye views' descriptions differ (views.cpp)
     //   "turnby 30"          the view turned 30 degrees right at once, -30 left (input.cpp)
+    //   "cutsceneturn 0"     a scripted camera (a cutscene's or a ride's) not turned to the head: the picture
+    //                        held still in the room as before ("cutsceneturn 1", the default, turns it; camera.cpp)
     //   "steer 35 65"        the left hand on the handguard steers the gun only within 35 degrees of the
     //                        right hand's line, not at all past 65 (without it: while out ahead of the
     //                        body, the left hand aims and the right levels: hands.cpp, steer.h)
@@ -1096,6 +1098,13 @@ void ReadWeaponSelection() {
             int on = 1;
             sscanf_s(mf + 9, "%d", &on);
             camera::SetMirrorFix(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* ct = std::strstr(line, "cutsceneturn")) {  // a scripted camera turned to the head (camera.cpp)
+            int on = 1;
+            sscanf_s(ct + 12, "%d", &on);
+            camera::SetCutsceneTurn(on != 0);
             line = next;
             continue;
         }

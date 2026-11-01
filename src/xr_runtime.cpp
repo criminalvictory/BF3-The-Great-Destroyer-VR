@@ -154,6 +154,13 @@ enum ViewMode { kViewLook, kViewFollow };
 bool g_viewTurnOn = false;
 float g_viewTurnYaw = 0.0f;
 bool g_unturnedLogged = false;
+// A scripted camera (a cutscene's or a ride's, its rows' w lanes filled: the opening drive of Comrades) is
+// turned to the head about its own yaw (camera.cpp), so its picture is handed over seen from the head like the
+// player's own: no edges show as the head turns (the user, 2026-11-01: "without having to ruin the resolution").
+// Turned or not, the game's camera is still the game's: g_cutscene, either kind of picture three in a row, keeps
+// the look angles alone and the free hands off, as the unturned picture alone did.
+bool g_scriptedLogged = false;
+bool g_cutscene = false;
 
 bool Check(XrResult result, const char* what) {
     if (XR_SUCCEEDED(result))
@@ -1042,14 +1049,29 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     // cleared it, so it stayed on and kept the aim, mouse aim and the free hands off (the self-test, 20:34).
     bool unturned = false;
     if (perEye) {
-        static int s_unturnedRun = 0;
-        s_unturnedRun = g_viewTurnOn && camera::TakeTurned() == 0 ? s_unturnedRun + 1 : 0;
+        static int s_unturnedRun = 0, s_scriptedRun = 0, s_cutsceneRun = 0;
+        int scripted = 0;
+        const bool none = g_viewTurnOn && camera::TakeTurned(&scripted) == 0;
+        s_unturnedRun = none ? s_unturnedRun + 1 : 0;
         unturned = s_unturnedRun >= 3;
         if (unturned != g_unturnedLogged) {
             g_unturnedLogged = unturned;
             Log("Views: %s", unturned ? "the game draws without the head's turn (a cutscene's camera): the picture "
                                         "is kept still in the room, the head looks about it"
                                       : "the head's turn is in the game's camera again");
+        }
+        // Counted as one run with the unturned ones: a cutscene going from one to the other (a load's empty views,
+        // then the drive) never leaves the look angles to be written or looked for in between.
+        s_scriptedRun = scripted > 0 ? s_scriptedRun + 1 : 0;
+        s_cutsceneRun = none || scripted > 0 ? s_cutsceneRun + 1 : 0;
+        g_cutscene = s_cutsceneRun >= 3;
+        if ((s_scriptedRun >= 3) != g_scriptedLogged) {
+            g_scriptedLogged = s_scriptedRun >= 3;
+            Log("Views: %s", g_scriptedLogged ? "the game draws from a scripted camera (a cutscene's or a ride's): "
+                                                "it's turned to the head about its own yaw, the horizon level, and "
+                                                "the rest is as in a cutscene (the look angles left alone, no free "
+                                                "hands)"
+                                              : "the game draws from its scripted camera no more");
         }
     }
     if (headless) {
@@ -1139,7 +1161,8 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         // with the angles still written 144 times a second; afterwards they're taken up from where
         // the game left them, without a jump. Paused alone that wasn't enough: it crashed 2 s after the
         // picture was turned again, the angles written where they had been found before the jump.
-        // They're forgotten and looked for again (aim::Forget).
+        // They're forgotten and looked for again (aim::Forget). A scripted camera's picture, turned to the head
+        // now (camera.cpp), is the game's camera all the same: g_cutscene, not "unturned", decides.
         // The picture's body (below), the latest picture's, read first: the aim starts its look yaw from it.
         static float s_body = 0.0f, s_heldYaw = 0.0f;
         static bool s_haveBody = false;
@@ -1158,7 +1181,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             s_haveBody = true;
         }
         const float stick = input::TakeTurn();
-        if (g_unturnedLogged) {
+        if (g_cutscene) {
             aim::Forget();
             g_turnDirect = false;
         } else {
@@ -1176,10 +1199,10 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             // Half a second after a cutscene's picture or a load (the game's own hands showed 3 s longer:
             // "it's not right away", 16:25); 3 s after a scripted turn, which the QTE fight is made of.
             static bool s_afterScripted = false;
-            const bool calm = !g_unturnedLogged && !aim::Scripted();
+            const bool calm = !g_cutscene && !aim::Scripted();
             if (aim::Scripted())
                 s_afterScripted = true;
-            else if (g_unturnedLogged)
+            else if (g_cutscene)
                 s_afterScripted = false;
             if (!calm)
                 s_calmSince = 0;
@@ -1218,6 +1241,12 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         } else {
             if (s_viewMode != kViewFollow)
                 s_heldYaw = aim::Scripted() || !shown || s_viewMode < 0 ? viewYaw : shownTaken;
+            // A scripted camera's picture takes no yaw out of it (camera.cpp: the room's straight ahead shows its own
+            // yaw), so the body and the walk go by that, and the player's camera, should it come back before the look
+            // does, carries on from it. Held from the hand as the follow began, the body was off by the hand's yaw,
+            // and the look after the cutscene would have started from there.
+            if (g_scriptedLogged && shown)
+                s_heldYaw = shownTaken;
             if (shown)
                 s_body = std::remainder(shownCamera + s_heldYaw, 2 * kPi);
             s_viewMode = kViewFollow;
@@ -1254,13 +1283,13 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
                 input::NoteTurnStep(1, turn.lookSign * turn.lookYaw - yaw);
             // Pictures turned from the game camera's own yaw (the hand's frozen) instead of the aim's: each hand-
             // over between the two moves the picture by the gap between them (the interrogation room's
-            // "teleporting", 2026-10-31). Counted while the game draws with the head's turn, logged once a second
-            // when there were any.
+            // "teleporting", 2026-10-31). Counted outside cutscenes (a scripted camera's picture takes nothing out),
+            // logged once a second when there were any.
             {
                 static int s_own = 0, s_pictures = 0, s_switches = 0;
                 static bool s_lastLook = true;
                 static ULONGLONG s_countedAt = 0;
-                if (!g_unturnedLogged) {
+                if (!g_cutscene) {
                     ++s_pictures;
                     s_own += turn.haveLook ? 0 : 1;
                     s_switches += turn.haveLook != s_lastLook ? 1 : 0;

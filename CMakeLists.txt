@@ -127,6 +127,13 @@ target_compile_definitions(armtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_executable(steertest tools/steertest.cpp)
 target_compile_definitions(steertest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
+# The view cameras' turn to the head (src/viewturn.h, header only, as camera.cpp TurnToHead runs it): the player's
+# camera turned bit for bit as before (synthetic and recorded turns), a scripted camera (a cutscene's or a ride's, its
+# rows' w lanes filled) turned about its own yaw with the horizon level and its w lanes kept, the camera check, the
+# eye shift, mirrored rows, a forward near the vertical, a camera offered again, the w lanes' finding, the time.
+add_executable(viewturntest tools/viewturntest.cpp)
+target_compile_definitions(viewturntest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
 # Where the game's threads spend their time, sampled from outside the game.
 add_executable(sampler tools/sampler.cpp)
 target_compile_definitions(sampler PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

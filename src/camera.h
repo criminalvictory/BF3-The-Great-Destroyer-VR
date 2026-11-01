@@ -75,7 +75,9 @@ float WantedFov();
 // weapon camera.
 void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
-// unchanged) while no view turn is set.
+// unchanged) while no view turn is set, or if it isn't a camera. A scripted camera (a cutscene's or a
+// ride's, its rows' w lanes filled: viewturn.h) is turned too, made level about its own yaw with the head
+// put on it, its w lanes left as they are; weapon.txt "cutsceneturn 0" refuses it as before.
 bool TurnToHead(float* transform);
 // views.cpp, once a frame before its TurnToHead calls (on the same thread): the turn published now is the one
 // they all use, so a turn published in between can't give the two eyes and their cull cameras different ones.
@@ -85,8 +87,9 @@ void BeginViews();
 // none was turned for a quarter of a second (a cutscene, the view turn off, theater mode): it's stale then.
 bool ShownTurn(float& cameraYaw, float& takenYaw);
 // How many cameras TurnToHead turned since the last call (xr_runtime.cpp, once a picture: none means
-// the game drew it facing its own way, as in the cutscenes of The Great Destroyer).
-int TakeTurned();
+// the game drew it facing its own way, as in the cutscenes of The Great Destroyer). scripted: how many
+// of them were scripted cameras (a cutscene's or a ride's), turned about their own yaw.
+int TakeTurned(int* scripted = nullptr);
 // weapon.txt "viewlog N": for N seconds, log each frame's view turn (hand, written look, game
 // camera's yaw and place, head, shown).
 void LogTurns(int seconds);
@@ -94,6 +97,11 @@ void LogTurns(int seconds);
 // weapon.txt "mirrorfix 0/1": a camera whose rows are mirrored from the player's own (a cutscene's)
 // gets the head's turn mirrored to match (on by default).
 void SetMirrorFix(bool on);
+
+// weapon.txt "cutsceneturn 0/1": a scripted camera (a cutscene's or a ride's, its rows' w lanes filled)
+// turned to the head about its own yaw (on by default), or refused, the picture held still in the room as
+// before. Logged each time it's read.
+void SetCutsceneTurn(bool on);
 
 // The game's own field of view this frame (radians; 0 if unreadable), from bf3.exe+1F8B4F8.
 float SourceFov();

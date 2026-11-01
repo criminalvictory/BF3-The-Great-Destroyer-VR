@@ -14,11 +14,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
 #include "log.h"
+#include "viewturn.h"
 
 namespace {
 
@@ -113,7 +115,13 @@ ViewTurnState g_view[2] = {};
 std::atomic<int> g_viewIndex{0};
 std::atomic<ULONGLONG> g_turnLogUntil{0};  // weapon.txt "viewlog N" (TurnToHead)
 std::atomic<bool> g_mirrorFix{true};       // weapon.txt "mirrorfix 0": a mirrored camera turned as any (TurnToHead)
-std::atomic<int> g_turned{0};              // cameras turned to the head since TakeTurned
+// weapon.txt "cutsceneturn 0": a scripted camera (its rows' w lanes filled: viewturn.h) refused as before, the
+// picture held still in the room (TurnToHead).
+std::atomic<bool> g_cutsceneTurn{true};
+// Cameras turned to the head since TakeTurned, and in the high half how many of them were scripted ones: one
+// word, so a picture's two counts are taken together.
+std::atomic<uint64_t> g_turned{0};
+constexpr uint64_t kScriptedTurned = 1ull << 32;
 std::atomic<uint32_t> g_refusedInactive{0}, g_refusedNotCamera{0};  // TurnToHead's refusals (TakeTurned logs them)
 float g_refusedMatrix[16] = {};
 // views.cpp's cameras of one frame (both eyes and their cull cameras) turned with one published turn (BeginViews,
@@ -186,96 +194,11 @@ void RecordWriter(uintptr_t ip) {
     }
 }
 
-// A LinearTransform's three direction rows are unit length with a zero fourth component;
-// arbitrary data almost never is.
-bool IsCamera(const float* m) {
-    if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f)
-        return false;
-    for (int row = 0; row < 3; ++row) {
-        const float* v = m + 4 * row;
-        float len = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-        if (!(std::fabs(len - 1.0f) < 0.05f))  // also rejects NaN
-            return false;
-    }
-    return true;
-}
-
-// Quaternions are (x, y, z, w), in OpenXR's axes: x right, y up, -z forward.
-void QuatMul(const float* a, const float* b, float* out) {
-    out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
-    out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
-    out[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
-    out[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
-}
-
-void QuatRotate(const float* q, const float* v, float* out) {
-    float t[3] = {2 * (q[1] * v[2] - q[2] * v[1]), 2 * (q[2] * v[0] - q[0] * v[2]), 2 * (q[0] * v[1] - q[1] * v[0])};
-    out[0] = v[0] + q[3] * t[0] + (q[1] * t[2] - q[2] * t[1]);
-    out[1] = v[1] + q[3] * t[1] + (q[2] * t[0] - q[0] * t[2]);
-    out[2] = v[2] + q[3] * t[2] + (q[0] * t[1] - q[1] * t[0]);
-}
-
-// BF3's camera rows are right (row0), up (row1) and backwards (row2): the true view direction
-// is -row2. That's a left-handed basis, a mirror image of OpenXR's right-handed axes; mapping
-// through it keeps turning, up/down and tilt all the right way round (confirmed in game: with
-// row0 taken as left, both turning and tilt came out mirrored).
-
-// The turn, in the camera's own frame, from where the hand aims to where the head looks.
-// The game camera is body yaw * controller yaw * game pitch (the look angles follow the
-// controller), so removing the controller yaw and the game's own pitch and applying the head
-// leaves body yaw * head. taken: the yaw it removed (the picture shows the camera's + taken - head).
-void ViewTurnLocal(const float* m, const camera::ViewTurn& turn, float* local, float* taken = nullptr) {
-    float pitch = std::asin(std::clamp(-m[9], -1.0f, 1.0f));  // true forward = -row2
-    float yaw = turn.controllerYaw;
-    if (turn.haveLook) {
-        // The look yaw this camera was built from, by BF3's own formula (the angle finder found
-        // atan2(x, -z) of row 2), against the one written this frame: the difference is how far
-        // the hand has turned since, so the hand's turn in this camera needs no lag guess. A
-        // fixed frame lag (view_lag) was a frame too short or too long at a lower frame rate:
-        // the picture swayed against or with the hand.
-        float behind = std::atan2(m[8], -m[10]) - turn.lookYaw;
-        if (behind > kPi)
-            behind -= 2 * kPi;
-        if (behind < -kPi)
-            behind += 2 * kPi;
-        yaw = turn.currentYaw + turn.lookSign * behind;
-    }
-    if (taken)
-        *taken = yaw;
-    float qYaw[4] = {0.0f, std::sin(yaw / 2), 0.0f, std::cos(yaw / 2)};
-    float qPitch[4] = {std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
-    float aim[4];
-    QuatMul(qYaw, qPitch, aim);
-    float aimInverse[4] = {-aim[0], -aim[1], -aim[2], aim[3]};
-    QuatMul(aimInverse, turn.head, local);
-}
-
-// Rotates camera m by local, a quaternion in its own (OpenXR-style) frame.
-void TurnLocal(float* m, const float* local) {
-    float right[3] = {m[0], m[1], m[2]};
-    float up[3] = {m[4], m[5], m[6]};
-    float forward[3] = {-m[8], -m[9], -m[10]};
-
-    // Local OpenXR axes onto the game camera's true axes.
-    auto toWorld = [&](const float* v, float* out) {
-        for (int i = 0; i < 3; ++i)
-            out[i] = v[0] * right[i] + v[1] * up[i] - v[2] * forward[i];
-    };
-    const float x[3] = {1, 0, 0}, y[3] = {0, 1, 0}, minusZ[3] = {0, 0, -1};
-    float axis[3], newRight[3], newUp[3], newForward[3];
-    QuatRotate(local, x, axis);
-    toWorld(axis, newRight);
-    QuatRotate(local, y, axis);
-    toWorld(axis, newUp);
-    QuatRotate(local, minusZ, axis);
-    toWorld(axis, newForward);
-
-    for (int i = 0; i < 3; ++i) {
-        m[i] = newRight[i];
-        m[4 + i] = newUp[i];
-        m[8 + i] = -newForward[i];
-    }
-}
+// The camera check and the turn's maths (viewturn.h, so tools/viewturntest.cpp runs them too): IsCamera, the
+// player's camera's kind, is the check everything here keeps to; only TurnToHead takes scripted ones as well.
+using viewturn::IsCamera;
+using viewturn::TurnLocal;
+using viewturn::ViewTurnLocal;
 
 // The handler wrote a watched float itself (a camera's translation y, where the breakpoint sits):
 // the breakpoint fires again inside it. Writing it unguarded recursed until the stack overflowed
@@ -673,40 +596,25 @@ bool TurnToHead(float* transform) {
         g_haveLast = false;  // nothing turned: no last picture to tell a repeated camera by
         return false;
     }
-    if (!IsCamera(transform)) {
+    // A scripted camera (a cutscene's or a ride's, its rows' w lanes filled: viewturn.h) is turned as well, unless
+    // weapon.txt says "cutsceneturn 0": made level about its own yaw and the head put on it, so the game draws
+    // where the head looks and there are no edges to see (the opening drive of Comrades, the user 2026-11-01). The
+    // player's kind of camera (IsCamera) goes as it always went; anything else is refused.
+    const viewturn::Kind kind = viewturn::Classify(transform, g_cutsceneTurn.load(std::memory_order_relaxed));
+    if (kind == viewturn::kNone) {
         if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
             std::memcpy(g_refusedMatrix, transform, sizeof(g_refusedMatrix));
         return false;
     }
+    const bool scripted = kind == viewturn::kScripted;
     float before[16];
     std::memcpy(before, transform, sizeof(before));
-    // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
-    // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
-    // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
-    // whether it turns or the game's camera slides. Marked " | nudge" (mouse aim holding its corrections for the
-    // search's nudge) or " | again" (a camera already turned, left as it was: below).
-    static ULONGLONG lastLog = 0;
-    auto logView = [&](const char* mark) {
-        const ULONGLONG now = GetTickCount64();
-        if (now >= g_turnLogUntil.load(std::memory_order_relaxed) || now - lastLog < 10)
-            return;
-        lastLog = now;
-        const float* q = view.turn.head;
-        const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
-                                  -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
-        const float deg = 57.29578f;
-        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f%s",
-            view.turn.currentYaw * deg, view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12],
-            before[13], before[14], std::atan2(-forward[0], -forward[2]) * deg,
-            std::atan2(transform[8], -transform[10]) * deg, mark);
-    };
-    float local[4], taken = 0.0f;
-    ViewTurnLocal(transform, view.turn, local, &taken);
     // A cutscene's camera can come mirrored (the user, The Great Destroyer 2026-10-31: as Kovac walks
     // in, turning the head left turned the view right; the look angles weren't even known then, so
     // nothing fought the game): its rows the other handedness from the player's own camera, learned
-    // while the look angles are written (that camera follows them). The turn is then mirrored the
-    // same way, across its right row: yaw and roll the other way, pitch as it is.
+    // while the look angles are written (that camera follows them; never from a scripted camera, which
+    // the player's never is, though its first pictures can come with the look still written). The turn
+    // is then mirrored the same way, across its right row: yaw and roll the other way, pitch as it is.
     static std::atomic<int> s_normalHand{0};
     static int s_lastHand = 0;
     const float* r0 = transform;
@@ -715,7 +623,7 @@ bool TurnToHead(float* transform) {
     const float det = r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
                       r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
     const int hand = det < 0.0f ? -1 : 1;
-    if (view.turn.haveLook && s_normalHand.exchange(hand) != hand)
+    if (view.turn.haveLook && !scripted && s_normalHand.exchange(hand) != hand)
         Log("Camera: the player's camera has %s rows", hand > 0 ? "right-handed" : "left-handed");
     const int normal = s_normalHand.load(std::memory_order_relaxed);
     const bool mirrored = normal != 0 && hand != normal && g_mirrorFix.load(std::memory_order_relaxed);
@@ -726,10 +634,34 @@ bool TurnToHead(float* transform) {
         Log("Camera: the camera turned to the head has %s rows (det %.3f)%s", hand > 0 ? "right-handed" : "left-handed",
             det, mirrored ? ": mirrored from the player's own, the head's turn mirrored to match" : "");
     }
-    if (mirrored) {
-        local[1] = -local[1];
-        local[2] = -local[2];
-    }
+    // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
+    // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
+    // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
+    // whether it turns or the game's camera slides. Marked " | nudge" (mouse aim holding its corrections for the
+    // search's nudge), " | again" (a camera already turned, left as it was: below), and " | scripted" with the
+    // pitch and roll the game gave a scripted camera, left out.
+    static ULONGLONG lastLog = 0;
+    auto logView = [&](const char* mark) {
+        const ULONGLONG now = GetTickCount64();
+        if (now >= g_turnLogUntil.load(std::memory_order_relaxed) || now - lastLog < 10)
+            return;
+        lastLog = now;
+        const float* q = view.turn.head;
+        const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
+                                  -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
+        const float deg = 57.29578f;
+        char how[64] = "";
+        if (scripted) {
+            float pitch = 0.0f, roll = 0.0f;
+            viewturn::PitchRoll(before, pitch, roll);
+            std::snprintf(how, sizeof(how), " | scripted, pitch %.1f roll %.1f left out", pitch * deg,
+                          hand * roll * deg);
+        }
+        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f%s%s",
+            view.turn.currentYaw * deg, view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12],
+            before[13], before[14], std::atan2(-forward[0], -forward[2]) * deg,
+            std::atan2(transform[8], -transform[10]) * deg, how, mark);
+    };
     // A camera the mod had already turned, offered again in this frame's views: its yaw the last frame's shown yaw
     // within 0.04 degrees after a jump of 5 to 75 degrees (19 frames in The Great Destroyer, 18:30-18:44; at the
     // game's own place, no eye shift: the weapon camera as OnException turned it). With a look yaw the turn reads
@@ -741,7 +673,8 @@ bool TurnToHead(float* transform) {
         std::fabs(std::remainder(cameraYaw - g_refShownYaw, 2 * kPi)) < kRepeatSame &&
         std::fabs(std::remainder(cameraYaw - g_refCameraYaw, 2 * kPi)) > kRepeatJump &&
         std::fabs(std::asin(std::clamp(-before[9], -1.0f, 1.0f)) - g_refShownPitch) < kRepeatPitch) {
-        g_turned.fetch_add(1, std::memory_order_relaxed);  // turned (before): no cutscene
+        // Turned (before): the picture isn't an unturned one.
+        g_turned.fetch_add(scripted ? 1 + kScriptedTurned : 1, std::memory_order_relaxed);
         static ULONGLONG s_repeatLogged = 0;
         ++g_repeats;
         if (GetTickCount64() - s_repeatLogged >= 1000) {
@@ -756,13 +689,32 @@ bool TurnToHead(float* transform) {
     }
     const bool first = g_frameFirst;
     g_frameFirst = false;
-    TurnLocal(transform, local);
-    g_turned.fetch_add(1, std::memory_order_relaxed);
+    // A scripted camera's yaw is kept for a forward too near the vertical to tell it by (viewturn::MakeLevel) only
+    // within one run of them; the first of a run is logged with what was left out of it.
+    static viewturn::Level s_level;
+    static ULONGLONG s_scriptedAt = 0;
+    if (scripted) {
+        const ULONGLONG now = GetTickCount64();
+        if (now - s_scriptedAt > kShownFresh)
+            s_level.have = false;
+        if (now - s_scriptedAt > 1000) {
+            float pitch = 0.0f, roll = 0.0f;
+            viewturn::PitchRoll(before, pitch, roll);
+            Log("Camera: a scripted camera (its rows' w lanes %.3f %.3f %.3f) turned to the head about its own yaw "
+                "%.1f, its pitch %.1f and roll %.1f degrees left out",
+                before[3], before[7], before[11], cameraYaw * 57.29578f, pitch * 57.29578f, hand * roll * 57.29578f);
+        }
+        s_scriptedAt = now;
+    }
+    const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, s_level);
+    g_turned.fetch_add(scripted ? 1 + kScriptedTurned : 1, std::memory_order_relaxed);
     // What the frame's first camera showed, for xr_runtime.cpp's picture body (not a mirrored one: its turn is
-    // the other way round), and for the next frame's check above.
+    // the other way round), and for the next frame's check above. A scripted camera's body is its own yaw as made
+    // level, with nothing taken out.
     if (first && !mirrored) {
+        const float shownCamera = scripted ? std::atan2(s_level.back[0], -s_level.back[1]) : cameraYaw;
         uint32_t low = 0, high = 0;
-        std::memcpy(&low, &cameraYaw, sizeof(low));
+        std::memcpy(&low, &shownCamera, sizeof(low));
         std::memcpy(&high, &taken, sizeof(high));
         g_shown.store(static_cast<uint64_t>(high) << 32 | low, std::memory_order_release);
         g_shownAt.store(GetTickCount64(), std::memory_order_release);
@@ -796,27 +748,52 @@ bool ShownTurn(float& cameraYaw, float& takenYaw) {
     return std::isfinite(cameraYaw) && std::isfinite(takenYaw);
 }
 
-int TakeTurned() {
-    const int turned = g_turned.exchange(0, std::memory_order_relaxed);
+int TakeTurned(int* scripted) {
+    const uint64_t both = g_turned.exchange(0, std::memory_order_relaxed);
+    const int turned = static_cast<int>(both % kScriptedTurned);
+    const int scriptedTurned = static_cast<int>(both / kScriptedTurned);
+    if (scripted)
+        *scripted = scriptedTurned;
     // While none are turned, once a second: why (the view turn off, or the matrix not a camera: then its
     // translation and its rows' lengths, the first refused one), and whether the views were built at all.
     static ULONGLONG s_logged = 0;
     const ULONGLONG now = GetTickCount64();
     const uint32_t inactive = g_refusedInactive.exchange(0), notCamera = g_refusedNotCamera.exchange(0);
+    const float* m = g_refusedMatrix;
+    auto row = [m](int r) { return std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]); };
+    // Its up (row 1) and true forward (-row 2) too: a cutscene's camera upside down shows up y below 0 (the
+    // interrogation's QTE fight, "completely upside down", 2026-10-31 20:50).
+    auto logRefused = [&] {
+        Log("Camera: the first refused: rows %.3f %.3f %.3f, w %.3f %.3f %.3f, at (%.2f %.2f %.2f), up (%.2f %.2f %.2f) "
+            "forward (%.2f %.2f %.2f)",
+            row(0), row(1), row(2), m[3], m[7], m[11], m[12], m[13], m[14], m[4], m[5], m[6], -m[8], -m[9], -m[10]);
+    };
     if (turned == 0 && now - s_logged >= 1000) {
         s_logged = now;
-        const float* m = g_refusedMatrix;
-        auto row = [m](int r) { return std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]); };
         Log("Camera: no camera turned this picture: %u refused with the view turn off, %u not a camera%s", inactive,
             notCamera, notCamera ? "" : " (none offered: the views not built?)");
-        // Its up (row 1) and true forward (-row 2) too: a cutscene's camera upside down shows up y below 0 (the
-        // interrogation's QTE fight, "completely upside down", 2026-10-31 20:50).
         if (notCamera)
-            Log("Camera: the first refused: rows %.3f %.3f %.3f, w %.3f %.3f %.3f, at (%.2f %.2f %.2f), up (%.2f %.2f %.2f) "
-                "forward (%.2f %.2f %.2f)",
-                row(0), row(1), row(2), m[3], m[7], m[11], m[12], m[13], m[14], m[4], m[5], m[6], -m[8], -m[9], -m[10]);
+            logRefused();
+    } else if (scriptedTurned > 0 && (scriptedTurned < turned || notCamera > 0) && now - s_logged >= 1000) {
+        // A picture only partly from scripted cameras, once a second: the cameras BF3 draws and culls it with
+        // weren't all turned alike (each is turned as it comes).
+        s_logged = now;
+        Log("Camera: this picture's cameras turned unalike: %d scripted, %d the player's kind, %u refused (not a "
+            "camera)",
+            scriptedTurned, turned - scriptedTurned, notCamera);
+        if (notCamera)
+            logRefused();
     }
     return turned;
+}
+
+void SetCutsceneTurn(bool on) {
+    g_cutsceneTurn = on;
+    Log("Camera: a scripted camera (a cutscene's or a ride's, its rows' w lanes filled) is %s (weapon.txt "
+        "cutsceneturn %d)",
+        on ? "turned to the head about its own yaw, the horizon level"
+           : "left as the game made it: the picture held still in the room",
+        on ? 1 : 0);
 }
 
 void SetMirrorFix(bool on) {
