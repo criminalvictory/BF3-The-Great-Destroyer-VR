@@ -747,7 +747,8 @@ bool Scripted() {
 
 void Forget() {
     if (g_yawAddress.exchange(0))
-        Log("Aim: the look angles forgotten (the game drew without the head's turn: they're looked for again after)");
+        Log("Aim: the look angles forgotten (a cutscene: the game draws from its own camera, unturned or scripted; "
+            "they're looked for again after)");
     g_foundFor = 0;
     g_havePrevious = false;
     g_haveTarget = false;

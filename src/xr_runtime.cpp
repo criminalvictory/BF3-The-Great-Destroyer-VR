@@ -1244,7 +1244,12 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             // A scripted camera's picture takes no yaw out of it (camera.cpp: the room's straight ahead shows its own
             // yaw), so the body and the walk go by that, and the player's camera, should it come back before the look
             // does, carries on from it. Held from the hand as the follow began, the body was off by the hand's yaw,
-            // and the look after the cutscene would have started from there.
+            // and the look after the cutscene would have started from there. Going into one, the picture moves once by
+            // the hand's yaw it was held with (the car's forward put at the room's), at its first scripted picture, not
+            // at the game's own cut: in the drive the cut into the car (00:35:03.277) came 16 pictures of the player's
+            // kind of camera before it (the last at .499), so the move shows a quarter of a second after the cut. Back
+            // to the player's camera before the look, nothing moves (the held yaw stays 0); in the interrogation it's
+            // once at each hand-over from the look.
             if (g_scriptedLogged && shown)
                 s_heldYaw = shownTaken;
             if (shown)

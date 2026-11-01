@@ -142,6 +142,17 @@ float g_lastCameraYaw = 0.0f, g_lastShownYaw = 0.0f, g_lastShownPitch = 0.0f;
 float g_refCameraYaw = 0.0f, g_refShownYaw = 0.0f, g_refShownPitch = 0.0f;
 bool g_haveLast = false, g_haveRef = false;
 uint32_t g_repeats = 0;  // left as they were since the last log
+// A scripted camera's level yaw goes on from the last frame's (viewturn::MakeLevel): from the one BeginViews latched
+// (g_levelRef), so all of a frame's cameras are made level alike, and the frame's first scripted camera gives the
+// one the next frame goes on from (g_level). Gone on from as each came, the eyes and their cull cameras would each
+// have been taken a share further to their own yaw. The view builder's thread only.
+viewturn::Level g_level, g_levelRef;
+bool g_levelTaken = false;
+// What one view build's cameras (BeginViews to BeginViews) came as: turned as the player's kind, turned as scripted
+// ones, refused as not a camera. A build with a scripted camera and another kind as well is counted for TakeTurned's
+// log, with its three counts (a byte each, in that order from the low one).
+int g_buildKinds[3] = {};
+std::atomic<uint32_t> g_unalikeBuilds{0}, g_unalikeKinds{0};
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -597,16 +608,18 @@ bool TurnToHead(float* transform) {
         return false;
     }
     // A scripted camera (a cutscene's or a ride's, its rows' w lanes filled: viewturn.h) is turned as well, unless
-    // weapon.txt says "cutsceneturn 0": made level about its own yaw and the head put on it, so the game draws
-    // where the head looks and there are no edges to see (the opening drive of Comrades, the user 2026-11-01). The
+    // weapon.txt says "cutsceneturn 0": made level about its yaw (viewturn::MakeLevel) and the head put on it, so the
+    // game draws where the head looks and there are no edges to see (the opening drive of Comrades, 2026-11-01). The
     // player's kind of camera (IsCamera) goes as it always went; anything else is refused.
     const viewturn::Kind kind = viewturn::Classify(transform, g_cutsceneTurn.load(std::memory_order_relaxed));
     if (kind == viewturn::kNone) {
         if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
             std::memcpy(g_refusedMatrix, transform, sizeof(g_refusedMatrix));
+        ++g_buildKinds[2];
         return false;
     }
     const bool scripted = kind == viewturn::kScripted;
+    ++g_buildKinds[scripted ? 1 : 0];
     float before[16];
     std::memcpy(before, transform, sizeof(before));
     // A cutscene's camera can come mirrored (the user, The Great Destroyer 2026-10-31: as Kovac walks
@@ -689,14 +702,14 @@ bool TurnToHead(float* transform) {
     }
     const bool first = g_frameFirst;
     g_frameFirst = false;
-    // A scripted camera's yaw is kept for a forward too near the vertical to tell it by (viewturn::MakeLevel) only
-    // within one run of them; the first of a run is logged with what was left out of it.
-    static viewturn::Level s_level;
+    // A scripted camera's level yaw goes on from the last frame's only within one run of them (a quarter of a second
+    // without one ends it): the run's first takes its own yaw (viewturn::MakeLevel), and is logged with what was left
+    // out of it.
     static ULONGLONG s_scriptedAt = 0;
     if (scripted) {
         const ULONGLONG now = GetTickCount64();
         if (now - s_scriptedAt > kShownFresh)
-            s_level.have = false;
+            g_levelRef.have = false;  // for the rest of this frame's cameras too
         if (now - s_scriptedAt > 1000) {
             float pitch = 0.0f, roll = 0.0f;
             viewturn::PitchRoll(before, pitch, roll);
@@ -706,13 +719,18 @@ bool TurnToHead(float* transform) {
         }
         s_scriptedAt = now;
     }
-    const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, s_level);
+    viewturn::Level level = g_levelRef;
+    const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, level);
+    if (scripted && !g_levelTaken) {
+        g_level = level;
+        g_levelTaken = true;
+    }
     g_turned.fetch_add(scripted ? 1 + kScriptedTurned : 1, std::memory_order_relaxed);
     // What the frame's first camera showed, for xr_runtime.cpp's picture body (not a mirrored one: its turn is
-    // the other way round), and for the next frame's check above. A scripted camera's body is its own yaw as made
+    // the other way round), and for the next frame's check above. A scripted camera's body is its yaw as made
     // level, with nothing taken out.
     if (first && !mirrored) {
-        const float shownCamera = scripted ? std::atan2(s_level.back[0], -s_level.back[1]) : cameraYaw;
+        const float shownCamera = scripted ? std::atan2(level.back[0], -level.back[1]) : cameraYaw;
         uint32_t low = 0, high = 0;
         std::memcpy(&low, &shownCamera, sizeof(low));
         std::memcpy(&high, &taken, sizeof(high));
@@ -728,6 +746,14 @@ bool TurnToHead(float* transform) {
 }
 
 void BeginViews() {
+    // The last build's cameras, if a scripted one came with another kind (TakeTurned logs it).
+    if (g_buildKinds[1] > 0 && (g_buildKinds[0] > 0 || g_buildKinds[2] > 0)) {
+        auto byte = [](int n) { return static_cast<uint32_t>(std::min(n, 255)); };
+        g_unalikeKinds.store(byte(g_buildKinds[0]) | (byte(g_buildKinds[1]) << 8) | (byte(g_buildKinds[2]) << 16),
+                             std::memory_order_relaxed);
+        g_unalikeBuilds.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_buildKinds[0] = g_buildKinds[1] = g_buildKinds[2] = 0;
     g_frameView = g_view[g_viewIndex.load(std::memory_order_acquire)];
     g_frameLatched = true;
     g_frameFirst = true;
@@ -735,6 +761,8 @@ void BeginViews() {
     g_refShownYaw = g_lastShownYaw;
     g_refShownPitch = g_lastShownPitch;
     g_haveRef = g_haveLast;
+    g_levelRef = g_level;
+    g_levelTaken = false;
 }
 
 bool ShownTurn(float& cameraYaw, float& takenYaw) {
@@ -774,13 +802,16 @@ int TakeTurned(int* scripted) {
             notCamera, notCamera ? "" : " (none offered: the views not built?)");
         if (notCamera)
             logRefused();
-    } else if (scriptedTurned > 0 && (scriptedTurned < turned || notCamera > 0) && now - s_logged >= 1000) {
-        // A picture only partly from scripted cameras, once a second: the cameras BF3 draws and culls it with
-        // weren't all turned alike (each is turned as it comes).
+    } else if (now - s_logged >= 1000 && g_unalikeBuilds.load(std::memory_order_relaxed) > 0) {
+        // View builds with a scripted camera and another kind as well, once a second: the cameras BF3 drew and culled
+        // a picture with weren't all turned alike (each is turned as it comes). Told by each build (BeginViews), not
+        // by these counts: a picture's can take in builds on both sides of a hand-over from the player's camera.
         s_logged = now;
-        Log("Camera: this picture's cameras turned unalike: %d scripted, %d the player's kind, %u refused (not a "
-            "camera)",
-            scriptedTurned, turned - scriptedTurned, notCamera);
+        const uint32_t builds = g_unalikeBuilds.exchange(0, std::memory_order_relaxed);
+        const uint32_t kinds = g_unalikeKinds.load(std::memory_order_relaxed);
+        Log("Camera: %u view build%s turned their cameras unalike (the last: %u scripted, %u the player's kind, %u "
+            "refused, not a camera)",
+            builds, builds == 1 ? "" : "s", (kinds >> 8) & 0xFF, kinds & 0xFF, (kinds >> 16) & 0xFF);
         if (notCamera)
             logRefused();
     }

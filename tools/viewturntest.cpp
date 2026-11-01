@@ -31,16 +31,31 @@
 //      head's yaw and roll the other way (as "mirrorfix 0" always did); a level camera, or one only pitched, comes out
 //      as the turn before this change gave it with nothing taken out (1e-5), mirrored or not, while a rolled one
 //      kept its roll that way and is level this way
-//   8  a forward near the vertical: pitching down to 90 degrees and back up at 90 deg/s, the yaw still: the yaw kept
-//      (0.01 deg), no frame turning it; straight down with no yaw kept, along the ground the way the picture's top
-//      points; straight up, the other way; random ones within 6 degrees of the vertical, with and without a yaw kept:
-//      never NaN, always level and square
+//   8  a forward near the vertical: pitching down to 90 degrees and back up at 90 deg/s, the yaw still (rolled 25
+//      degrees and not): the yaw kept (0.01 deg), no frame turning it; straight down with no last frame, along the
+//      ground the way the picture's top points; straight up, the other way; random ones within 6 degrees of the
+//      vertical, going on from a last frame a few degrees away and not: never NaN, always level and square
 //   9  offered again once turned (camera.cpp's again guard): turned a second time, the head's yaw counts twice; the
 //      turned camera's yaw and pitch are the ones shown, as the guard looks for (0.01 deg), and no fresh camera of a
 //      swaying, turning drive passes for one (the guard's tolerances, copied from camera.cpp)
 //  10  the w lanes (the finding): in the logged scripted cameras they're their rotation quaternion's 2(yw - xy),
 //      -2(xy + yw) and ww + xx - yy - zz (0.06: the log's rounding)
 //  11  a scripted camera's turn takes under 1 us
+//  12  the review's finding (2026-11-01): a scripted camera held still, then turned 1 degree about its own up, right
+//      or back row or a random line (the logged ones, 10000 random, and every half degree from level to straight
+//      down): the yaw it's made level about turns at most 1.45 degrees at once and 2 within a second (at 833abbd,
+//      from its back row's own yaw alone: 5.8 for the interrogation's camera of 23:57:12, 9.5 at 84 degrees, and up
+//      to 180 for a rolled camera leaving the 6-degree cone), and from level to straight down it changes smoothly
+//      (at 833abbd it fell from 9.5 to 0 at 85 degrees)
+//  13  the drive of Comrades as at 833abbd: cameras within 45 degrees of level (20000 random, any roll within 30,
+//      either hand, with no last frame, one a few degrees away and a far one; a drive frame by frame) made level bit
+//      for bit as at 833abbd; the logged drive cameras going on from one a degree away within 0.01 degrees of it
+//  14  going on from the last frame: a steep camera spinning about the world's up followed (0.01 deg a frame);
+//      panning about its own up, its yaw turns as far as the camera turned about the world's up (0.01 deg), its own
+//      yaw much further; a cut (45 degrees in a frame) takes its own yaw; tumbling over the top or rolling through
+//      upside down: never NaN, always level and square, the largest step a frame shown; a frame's cameras made level
+//      from the same last frame alike, bit for bit (made one after another from one Level they'd differ: camera.cpp
+//      latches it)
 // Usage: viewturntest   The exit code is the number of failed checks.
 
 #include <windows.h>
@@ -148,6 +163,38 @@ float Turn(float* transform, const camera::ViewTurn& turn, bool mirrored) {
     }
     TurnLocal(transform, local);
     return taken;
+}
+
+// A scripted camera made level as at 833abbd (viewturn.h then), copied as it was, for checks 12 and 13.
+constexpr float kVertical = 0.1f;
+
+struct Level {
+    bool have = false;
+    float back[2] = {};  // the level back row's x and z
+};
+
+void MakeLevel(float* m, int hand, Level& level) {
+    float x = m[8], z = m[10];
+    if (x * x + z * z < kVertical * kVertical) {
+        if (level.have) {
+            x = level.back[0], z = level.back[1];
+        } else {
+            const float away = m[9] > 0.0f ? -1.0f : 1.0f;  // the back row up: looking down
+            x = away * m[4], z = away * m[6];
+        }
+    }
+    const float length = std::sqrt(x * x + z * z);
+    if (length > 1e-6f) {
+        x /= length, z /= length;
+    } else {
+        x = 0.0f, z = 1.0f;  // never for a camera Classify passes (its up row then lies along the ground)
+    }
+    level.have = true;
+    level.back[0] = x, level.back[1] = z;
+    const float h = hand < 0 ? -1.0f : 1.0f;
+    m[0] = h * z, m[1] = 0.0f, m[2] = -h * x;
+    m[4] = 0.0f, m[5] = 1.0f, m[6] = 0.0f;
+    m[8] = x, m[9] = 0.0f, m[10] = z;
 }
 
 }  // namespace old
@@ -760,21 +807,23 @@ void Check7() {
         float twin[16], mirror[16];
         MakeCamera(twin, q, 1, at, true);
         MakeCamera(mirror, q, -1, at, true);
-        viewturn::Level level;
+        // Each made level from no last frame (a run's first), as the twins would each be.
+        viewturn::Level forTwin, forMirror;
         // With mirrorfix: the twin's picture, its right row the other way.
         float a[16], b[16];
         std::memcpy(a, twin, sizeof(a));
         std::memcpy(b, mirror, sizeof(b));
-        viewturn::Turn(a, TurnFor(head), true, 1, false, level);
-        viewturn::Turn(b, TurnFor(head), true, -1, true, level);
+        viewturn::Turn(a, TurnFor(head), true, 1, false, forTwin);
+        viewturn::Turn(b, TurnFor(head), true, -1, true, forMirror);
         fixedOff =
             std::max({fixedOff, Len(Row(b, 0) + Row(a, 0)), Len(Row(b, 1) - Row(a, 1)), Len(Row(b, 2) - Row(a, 2))});
         // Without ("mirrorfix 0"): the twin's picture for the head's yaw and roll the other way.
         const Q reversed{head.x, -head.y, -head.z, head.w};
         std::memcpy(a, twin, sizeof(a));
         std::memcpy(b, mirror, sizeof(b));
-        viewturn::Turn(a, TurnFor(reversed), true, 1, false, level);
-        viewturn::Turn(b, TurnFor(head), true, -1, false, level);
+        forTwin = forMirror = viewturn::Level{};
+        viewturn::Turn(a, TurnFor(reversed), true, 1, false, forTwin);
+        viewturn::Turn(b, TurnFor(head), true, -1, false, forMirror);
         unfixedOff =
             std::max({unfixedOff, Len(Row(b, 0) + Row(a, 0)), Len(Row(b, 1) - Row(a, 1)), Len(Row(b, 2) - Row(a, 2))});
     }
@@ -862,17 +911,22 @@ void Check8() {
                               std::fabs(Wrap(Deg(YawOf(forward) - yaw)))});
         }
     }
-    // Random ones within 6 degrees of the vertical, with a yaw kept and without, any roll, the head any way.
+    // Random ones within 6 degrees of the vertical, going on from a last frame a few degrees away (its yaw any way)
+    // and from none, any roll, the head any way.
     int bad = 0;
     double square = 0;
     for (int n = 0; n < 20000; ++n) {
         const double pitch = (Coin() ? 1 : -1) * Uniform(84, 90);
+        const Q q = Ypr(Uniform(-kPi, kPi), Rad(pitch), Rad(Uniform(-180, 180)));
+        const int camHand = Coin(0.25) ? -1 : 1;
         float m[16];
-        MakeCamera(m, Ypr(Uniform(-kPi, kPi), Rad(pitch), Rad(Uniform(-180, 180))), Coin(0.25) ? -1 : 1, RandomPlace(),
-                   true);
+        MakeCamera(m, q, camHand, RandomPlace(), true);
         viewturn::Level level;
         if (Coin()) {
-            level.have = true;
+            float last[16];
+            MakeCamera(last, Mul(AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5))), q),
+                       camHand, RandomPlace(), true);
+            viewturn::MakeLevel(last, camHand, level);
             const double kept = Uniform(-kPi, kPi);
             level.back[0] = static_cast<float>(std::sin(kept)), level.back[1] = static_cast<float>(std::cos(kept));
         }
@@ -1004,12 +1058,344 @@ void Check11() {
     Report("11", "the time a scripted camera's turn takes", us < 1.0, "%.3f us a turn (< 1)", us);
 }
 
+// ---- Made level frame after frame ----
+// A camera made level (the Level going on), the camera itself left as it was: the yaw it was made level about, BF3's
+// sense, degrees.
+double NewLevel(const float* cam, viewturn::Level& level) {
+    float m[16];
+    std::memcpy(m, cam, sizeof(m));
+    viewturn::MakeLevel(m, Hand(cam), level);
+    return Deg(std::atan2(level.back[0], -level.back[1]));
+}
+double OldLevel(const float* cam, old::Level& level) {
+    float m[16];
+    std::memcpy(m, cam, sizeof(m));
+    old::MakeLevel(m, Hand(cam), level);
+    return Deg(std::atan2(level.back[0], -level.back[1]));
+}
+// A camera's own yaw, BF3's sense, degrees (viewturn::OwnYaw).
+double OwnLevel(const float* cam) {
+    float x = 0.0f, z = 0.0f;
+    viewturn::OwnYaw(cam, x, z);
+    return Deg(std::atan2(x, -z));
+}
+// A camera's rows turned by degrees about a line in the world (OpenXR's sense: about up, turning left), the rest kept.
+void TurnedAbout(const float* cam, const V3& line, double degrees, float* out) {
+    std::memcpy(out, cam, 16 * sizeof(float));
+    const Q q = AxisAngle(line, Rad(degrees));
+    for (int r = 0; r < 3; ++r) {
+        const V3 v = Rotate(q, Row(cam, r));
+        out[4 * r] = static_cast<float>(v.x), out[4 * r + 1] = static_cast<float>(v.y);
+        out[4 * r + 2] = static_cast<float>(v.z);
+    }
+}
+// Level, square and finite: a camera's rows as MakeLevel leaves them.
+bool LevelAndSquare(const float* m) {
+    if (!Finite(m) || std::fabs(m[1]) > 1e-6 || std::fabs(m[9]) > 1e-6 || Len(Row(m, 1) - kY) > 1e-6)
+        return false;
+    for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b)
+            if (std::fabs(Dot(Row(m, a), Row(m, b)) - (a == b ? 1.0 : 0.0)) > 1e-5)
+                return false;
+    return true;
+}
+
+// ---- 12. The finding: how far a turn of the camera turns the yaw it's made level about ----
+struct Response {
+    double atOnce = 0, inASecond = 0, oldAtOnce = 0, pan = 0, oldPan = 0;
+};
+
+// A camera held still (200 frames), then turned 1 degree about its own up, right and back rows and two random lines,
+// both ways: the most the yaw it's made level about turns at once and within a second held there (72 frames), and
+// at 833abbd at once (from the still camera's frame, as the game ran it); the turn about its own up (a pan) alone.
+Response RespondTo(const float* cam) {
+    Response r;
+    viewturn::Level still;
+    double y0 = 0;
+    for (int f = 0; f < 200; ++f)
+        y0 = NewLevel(cam, still);
+    old::Level oldStill;
+    const double oldY0 = OldLevel(cam, oldStill);
+    const V3 lines[5] = {Row(cam, 1), Row(cam, 0), Row(cam, 2), {Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)},
+                         {Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}};
+    for (int k = 0; k < 5; ++k) {
+        for (double way : {-1.0, 1.0}) {
+            float t[16];
+            TurnedAbout(cam, lines[k], way, t);
+            viewturn::Level a = still;
+            const double atOnce = std::fabs(Wrap(NewLevel(t, a) - y0));
+            viewturn::Level b = still;
+            double y = 0;
+            for (int f = 0; f < 72; ++f)
+                y = NewLevel(t, b);
+            old::Level o = oldStill;
+            const double oldAtOnce = std::fabs(Wrap(OldLevel(t, o) - oldY0));
+            r.atOnce = std::max(r.atOnce, atOnce);
+            r.inASecond = std::max({r.inASecond, atOnce, std::fabs(Wrap(y - y0))});
+            r.oldAtOnce = std::max(r.oldAtOnce, oldAtOnce);
+            if (k == 0) {
+                r.pan = std::max(r.pan, atOnce);
+                r.oldPan = std::max(r.oldPan, oldAtOnce);
+            }
+        }
+    }
+    return r;
+}
+
+void Check12() {
+    // The logged scripted cameras: the drive's and the interrogation's.
+    Response logged, interrogation;
+    for (int n = 0; n < kLoggedCount; ++n) {
+        float m[16];
+        LoggedCamera(kLogged[n], m);
+        const Response r = RespondTo(m);
+        logged.atOnce = std::max(logged.atOnce, r.atOnce);
+        logged.inASecond = std::max(logged.inASecond, r.inASecond);
+        logged.oldAtOnce = std::max(logged.oldAtOnce, r.oldAtOnce);
+        if (std::strcmp(kLogged[n].at, "Destroyer 23:57:12.775") == 0)
+            interrogation = r;
+    }
+    // Random cameras, any way at all, either hand.
+    Response random;
+    for (int n = 0; n < 10000; ++n) {
+        float m[16];
+        MakeCamera(m, RandomRotation(), Coin(0.25) ? -1 : 1, RandomPlace(), true);
+        const Response r = RespondTo(m);
+        random.atOnce = std::max(random.atOnce, r.atOnce);
+        random.inASecond = std::max(random.inASecond, r.inASecond);
+        random.oldAtOnce = std::max(random.oldAtOnce, r.oldAtOnce);
+    }
+    // Every half degree from level to straight down, not rolled and rolled 90 degrees: the pan's turn at once, and how
+    // much it changes from one half degree to the next.
+    Response sweep;
+    double step = 0, oldStep = 0, old84 = 0, old85 = 0;
+    for (double roll : {0.0, 90.0}) {
+        double lastPan = 0, lastOldPan = 0;
+        for (int k = 0; k <= 180; ++k) {
+            float m[16];
+            MakeCamera(m, Ypr(Rad(30), Rad(-0.5 * k), Rad(roll)), 1, {0, 0, 0}, true);
+            const Response r = RespondTo(m);
+            sweep.atOnce = std::max(sweep.atOnce, r.atOnce);
+            sweep.inASecond = std::max(sweep.inASecond, r.inASecond);
+            if (k > 0) {
+                step = std::max(step, std::fabs(r.pan - lastPan));
+                oldStep = std::max(oldStep, std::fabs(r.oldPan - lastOldPan));
+            }
+            lastPan = r.pan, lastOldPan = r.oldPan;
+            if (roll == 0.0 && k == 168)
+                old84 = r.oldPan;
+            if (roll == 0.0 && k == 170)
+                old85 = r.oldPan;
+        }
+    }
+    const double atOnce = std::max({logged.atOnce, random.atOnce, sweep.atOnce});
+    const double inASecond = std::max({logged.inASecond, random.inASecond, sweep.inASecond});
+    Report("12", "the review's finding: a 1-degree turn of a scripted camera turns its level yaw at most 1.45 at once",
+           atOnce < 1.45 && inASecond < 2.0 && step < 0.15 && interrogation.inASecond < 1.01,
+           "at most %.3f deg at once, %.3f within a second (the logged %.3f and %.3f, %d of them; 10000 random %.3f and "
+           "%.3f; level to straight down %.3f and %.3f); the interrogation's camera of 23:57:12 %.3f at once (at "
+           "833abbd %.2f); a pan's turn changing at most %.3f deg from one half degree of pitch to the next (at 833abbd "
+           "%.2f: %.2f at 84 degrees, %.2f at 85); at 833abbd at once the logged ones up to %.2f, random ones %.2f",
+           atOnce, inASecond, logged.atOnce, logged.inASecond, kLoggedCount, random.atOnce, random.inASecond,
+           sweep.atOnce, sweep.inASecond, interrogation.atOnce, interrogation.oldAtOnce, step, oldStep, old84, old85,
+           logged.oldAtOnce, random.oldAtOnce);
+}
+
+// ---- 13. The drive of Comrades as at 833abbd ----
+void Check13() {
+    // Cameras within 45 degrees of level, any roll within 30, either hand: from no last frame, from one a few degrees
+    // away (going on) and from a far one (a cut).
+    int bad = 0, runs = 0;
+    for (int n = 0; n < 20000; ++n) {
+        const Q q = Ypr(Uniform(-kPi, kPi), Rad(Uniform(-44.9, 44.9)), Rad(Uniform(-30, 30)));
+        const int hand = Coin(0.25) ? -1 : 1;
+        float cam[16], nearby[16], faraway[16];
+        MakeCamera(cam, q, hand, RandomPlace(), true);
+        MakeCamera(nearby, Mul(AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5))), q),
+                   hand, RandomPlace(), true);
+        MakeCamera(faraway, RandomRotation(), hand, RandomPlace(), true);
+        for (int k = 0; k < 3; ++k) {
+            viewturn::Level level;
+            if (k > 0)
+                NewLevel(k == 1 ? nearby : faraway, level);
+            float a[16], b[16];
+            std::memcpy(a, cam, sizeof(a));
+            std::memcpy(b, cam, sizeof(b));
+            viewturn::MakeLevel(a, hand, level);
+            old::Level oldLevel;
+            old::MakeLevel(b, hand, oldLevel);
+            bad += std::memcmp(a, b, sizeof(a)) != 0;
+            ++runs;
+        }
+    }
+    // A drive frame by frame (as check 9's: the car turning at up to 60 deg/s and swaying, the camera bobbing).
+    int driveBad = 0, frames = 0;
+    {
+        viewturn::Level level;
+        old::Level oldLevel;
+        double carYaw = 0;
+        for (int frame = 0; frame < 72 * 120; ++frame) {
+            const double t = frame / 72.0;
+            carYaw += Rad(60 * std::sin(t * 0.7)) / 72.0;
+            float cam[16], a[16], b[16];
+            MakeCamera(cam, Ypr(carYaw, Rad(3 * std::sin(t * 9) - 5), Rad(4 * std::sin(t * 5.3))), 1,
+                       {100 * t, 1.4, 20 * std::sin(t)}, true);
+            std::memcpy(a, cam, sizeof(a));
+            std::memcpy(b, cam, sizeof(b));
+            viewturn::MakeLevel(a, 1, level);
+            old::MakeLevel(b, 1, oldLevel);
+            driveBad += std::memcmp(a, b, sizeof(a)) != 0;
+            ++frames;
+        }
+    }
+    // The logged drive cameras, going on from themselves a degree away: the steepest (45.3 down) goes on a hair.
+    double loggedOff = 0;
+    int logged = 0;
+    for (const Logged& l : kLogged) {
+        if (std::strncmp(l.at, "Comrades", 8) != 0)
+            continue;
+        float cam[16], last[16];
+        LoggedCamera(l, cam);
+        TurnedAbout(cam, {0.3, 1, 0.2}, 1.0, last);
+        viewturn::Level level;
+        NewLevel(last, level);
+        old::Level oldLevel;
+        loggedOff = std::max(loggedOff, std::fabs(Wrap(NewLevel(cam, level) - OldLevel(cam, oldLevel))));
+        ++logged;
+    }
+    Report("13", "the drive of Comrades as at 833abbd: within 45 degrees of level, the rows made level bit for bit",
+           bad == 0 && driveBad == 0 && loggedOff < 0.01,
+           "%d of %d random cameras (no last frame, a near one, a far one) and %d of %d frames of a drive differ from "
+           "833abbd's; the %d logged drive cameras going on from a degree away at most %.5f deg from it",
+           bad, runs, driveBad, frames, logged, loggedOff);
+}
+
+// ---- 14. Going on from the last frame ----
+void Check14() {
+    // A steep camera spinning about the world's up, 30 deg/s for 2 s (BF3's yaw falls as it turns left).
+    double spinOff = 0;
+    for (double pitch : {65.0, 75.0, 85.0, 89.0}) {
+        for (double roll : {0.0, 40.0}) {
+            float cam[16];
+            MakeCamera(cam, Ypr(Rad(20), Rad(-pitch), Rad(roll)), 1, {0, 0, 0}, true);
+            viewturn::Level level;
+            const double y0 = NewLevel(cam, level);
+            for (int f = 1; f <= 144; ++f) {
+                float t[16];
+                TurnedAbout(cam, kY, 30.0 * f / 72, t);
+                spinOff = std::max(spinOff, std::fabs(Wrap(NewLevel(t, level) - y0 + 30.0 * f / 72)));
+            }
+        }
+    }
+    // Panning about its own up, 20 degrees in 2 s, looking 70, 80 and 85 degrees down: the yaw turns as far as the
+    // camera turned about the world's up (each frame's turn's twist about it, summed), its own yaw much further.
+    double panOff = 0, ownMost = 0, levelMost = 0;
+    for (double pitch : {70.0, 80.0, 85.0}) {
+        float cur[16];
+        MakeCamera(cur, Ypr(0, Rad(-pitch), 0), 1, {0, 0, 0}, true);
+        viewturn::Level level;
+        const double y0 = NewLevel(cur, level), own0 = OwnLevel(cur);
+        double aboutUp = 0;
+        for (int f = 0; f < 144; ++f) {
+            const V3 up = Row(cur, 1);
+            const Q step = AxisAngle(up, Rad(20.0 / 144));
+            aboutUp += Deg(2 * std::atan2(step.y, step.w));
+            float t[16];
+            TurnedAbout(cur, up, 20.0 / 144, t);
+            std::memcpy(cur, t, sizeof(cur));
+            NewLevel(cur, level);
+        }
+        const double turned = Wrap(Deg(std::atan2(level.back[0], -level.back[1])) - y0);
+        panOff = std::max(panOff, std::fabs(turned + aboutUp));
+        levelMost = std::max(levelMost, std::fabs(turned));
+        ownMost = std::max(ownMost, std::fabs(Wrap(OwnLevel(cur) - own0)));
+    }
+    // A cut: 45 degrees from the last frame's camera, its own yaw, bit for bit (as from no last frame).
+    int cutBad = 0;
+    for (int n = 0; n < 2000; ++n) {
+        const Q q = RandomScripted(89);
+        float last[16], cam[16];
+        MakeCamera(last, q, 1, RandomPlace(), true);
+        MakeCamera(cam, Mul(AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(45)), q), 1, RandomPlace(),
+                   true);
+        viewturn::Level level, none;
+        NewLevel(last, level);
+        float a[16], b[16];
+        std::memcpy(a, cam, sizeof(a));
+        std::memcpy(b, cam, sizeof(b));
+        viewturn::MakeLevel(a, 1, level);
+        viewturn::MakeLevel(b, 1, none);
+        cutBad += std::memcmp(a, b, sizeof(a)) != 0;
+    }
+    // Tumbling, 2 degrees a frame through 360: over the top, rolling at 17 and 75 degrees down, about a random line.
+    int tumbleBad = 0;
+    double tumbleStep[4] = {};
+    for (int kind = 0; kind < 4; ++kind) {
+        const Q start = kind == 1 ? Pitch(Rad(-17)) : kind == 2 ? Pitch(Rad(-75)) : Q{};
+        const V3 line = kind == 0 ? kX : kind == 3 ? V3(0.4, 0.7, -0.3) : Rotate(start, kZ);
+        viewturn::Level level;
+        double last = 0;
+        for (int f = 0; f <= 180; ++f) {
+            float m[16];
+            MakeCamera(m, Mul(AxisAngle(line, Rad(2.0 * f)), start), 1, {0, 0, 0}, true);
+            float flat[16];
+            std::memcpy(flat, m, sizeof(flat));
+            viewturn::MakeLevel(flat, 1, level);
+            tumbleBad += !LevelAndSquare(flat);
+            const double y = Deg(std::atan2(level.back[0], -level.back[1]));
+            if (f > 0)
+                tumbleStep[kind] = std::max(tumbleStep[kind], std::fabs(Wrap(y - last)));
+            last = y;
+        }
+    }
+    // A frame's cameras (an eye's and the other eye's copy), looking 55 degrees down, its yaw going on from a last frame
+    // 2 degrees away whose yaw was 10 off its own: from the same last frame alike; one after the other from one Level
+    // (the second taken a share further), apart.
+    int frameBad = 0;
+    double apart = 0;
+    for (int n = 0; n < 1000; ++n) {
+        const Q q = Ypr(Uniform(-kPi, kPi), Rad(-55), Rad(Uniform(-30, 30)));
+        float last[16], cam[16];
+        MakeCamera(last, Mul(AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(2)), q), 1, RandomPlace(),
+                   true);
+        MakeCamera(cam, q, 1, RandomPlace(), true);
+        viewturn::Level latched;
+        NewLevel(last, latched);
+        const float c = std::cos(0.1745f), s = std::sin(0.1745f);
+        const float x = latched.back[0], z = latched.back[1];
+        latched.back[0] = x * c + z * s, latched.back[1] = z * c - x * s;
+        viewturn::Level forOne = latched, forOther = latched, shared = latched;
+        float one[16], other[16];
+        std::memcpy(one, cam, sizeof(one));
+        std::memcpy(other, cam, sizeof(other));
+        viewturn::MakeLevel(one, 1, forOne);
+        viewturn::MakeLevel(other, 1, forOther);
+        frameBad += std::memcmp(one, other, sizeof(one)) != 0;
+        const double first = NewLevel(cam, shared), second = NewLevel(cam, shared);
+        apart = std::max(apart, std::fabs(Wrap(second - first)));
+    }
+    Report("14", "going on from the last frame: the turns about the world's up, a cut, tumbling, a frame's cameras",
+           spinOff < 0.01 && panOff < 0.01 && levelMost < 7.0 && ownMost > 40 && cutBad == 0 && tumbleBad == 0 &&
+               tumbleStep[1] < 0.01 && frameBad == 0 && apart > 0.01,
+           "spinning about the world's up at 65-89 down followed within %.5f deg a frame; panning 20 degrees about its "
+           "own up at 70-85 down, the yaw turned at most %.2f deg, %.5f from the turn about the world's up, its own yaw "
+           "up to %.1f; %d of 2000 cuts not their own yaw; tumbling, %d frames not level and square, the largest step "
+           "a frame %.2f (over the top), %.4f and %.2f (rolling at 17 and 75 down), %.2f (a random line); %d of 1000 "
+           "frames' two cameras apart (one after the other from one Level they'd be up to %.2f deg apart)",
+           spinOff, levelMost, panOff, ownMost, cutBad, tumbleBad, tumbleStep[0], tumbleStep[1], tumbleStep[2],
+           tumbleStep[3], frameBad, apart);
+}
+
 }  // namespace
 
 int main() {
     std::printf("viewturntest: src/viewturn.h, the view cameras' turn to the head. A scripted camera's w lanes up to "
-                "%.0f, its rows square within %.2f, its yaw kept with the forward within %.1f degrees of the vertical.\n",
-                viewturn::kMostW, viewturn::kSquare, Deg(std::asin(viewturn::kVertical)));
+                "%.0f, its rows square within %.2f; its own yaw all of the yaw it's made level about up to %.0f "
+                "degrees of pitch, none past %.0f, the picture's top within %.1f of the vertical; a cut past %.0f "
+                "degrees a frame.\n",
+                viewturn::kMostW, viewturn::kSquare, Deg(std::acos(viewturn::kOwnWhole)),
+                Deg(std::acos(viewturn::kOwnNone)), Deg(std::asin(viewturn::kVertical)),
+                Deg(std::acos((viewturn::kCut - 1) / 2)));
     Check1();
     Check2();
     Check3();
@@ -1021,6 +1407,9 @@ int main() {
     Check9();
     Check10();
     Check11();
+    Check12();
+    Check13();
+    Check14();
     std::printf("%d of %d checks failed\n", g_failed, g_counted);
     return g_failed;
 }

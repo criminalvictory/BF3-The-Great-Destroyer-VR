@@ -130,7 +130,9 @@ target_compile_definitions(steertest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 # The view cameras' turn to the head (src/viewturn.h, header only, as camera.cpp TurnToHead runs it): the player's
 # camera turned bit for bit as before (synthetic and recorded turns), a scripted camera (a cutscene's or a ride's, its
 # rows' w lanes filled) turned about its own yaw with the horizon level and its w lanes kept, the camera check, the
-# eye shift, mirrored rows, a forward near the vertical, a camera offered again, the w lanes' finding, the time.
+# eye shift, mirrored rows, a forward near the vertical, a camera offered again, the w lanes' finding, the time; how
+# far a 1-degree turn of a scripted camera turns its level yaw (the review's finding), the drive of Comrades as at
+# 833abbd, the yaw going on from frame to frame (spins, pans, cuts, tumbling, a frame's cameras alike).
 add_executable(viewturntest tools/viewturntest.cpp)
 target_compile_definitions(viewturntest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 

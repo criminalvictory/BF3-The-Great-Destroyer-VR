@@ -19,9 +19,10 @@ bool Update(float headYaw, float headPitch, float turn = 0.0f, const float* body
 // again from the game's own yaw (a recenter turns the hand and the head together).
 void Reset();
 
-// Drops the look angles found, so they're looked for again: after the game drew without the head's
-// turn (a cutscene, the jump onto the train in The Great Destroyer), the place they were found can
-// hold something else, and writing there crashed the game 2 s after the jump (2026-10-31).
+// Drops the look angles found, so they're looked for again: after the game drew from its own camera (a
+// cutscene, the jump onto the train in The Great Destroyer; unturned, or a scripted camera turned to the
+// head), the place they were found can hold something else, and writing there crashed the game 2 s after
+// the jump (2026-10-31).
 void Forget();
 
 // weapon.txt "mouseaim 0/1": the view steered with the mouse while the look angles aren't found (on by default).

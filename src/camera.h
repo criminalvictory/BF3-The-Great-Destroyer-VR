@@ -76,15 +76,17 @@ float WantedFov();
 void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
 // unchanged) while no view turn is set, or if it isn't a camera. A scripted camera (a cutscene's or a
-// ride's, its rows' w lanes filled: viewturn.h) is turned too, made level about its own yaw with the head
+// ride's, its rows' w lanes filled: viewturn.h) is turned too, made level about its yaw with the head
 // put on it, its w lanes left as they are; weapon.txt "cutsceneturn 0" refuses it as before.
 bool TurnToHead(float* transform);
 // views.cpp, once a frame before its TurnToHead calls (on the same thread): the turn published now is the one
 // they all use, so a turn published in between can't give the two eyes and their cull cameras different ones.
 void BeginViews();
 // The latest frame's first camera turned (the left eye's): its yaw as the game built it and the yaw the turn
-// took out of it (radians; shown = camera + taken - head, in the look yaw's sense). False before any, and when
-// none was turned for a quarter of a second (a cutscene, the view turn off, theater mode): it's stale then.
+// took out of it (radians; shown = camera + taken - head, in the look yaw's sense); for a scripted camera (a
+// cutscene's or a ride's), its yaw as made level and nothing taken out. False before any, and when none was
+// turned for a quarter of a second (a cutscene drawn unturned, the view turn off, theater mode): it's stale then.
+// A scripted camera's picture, turned to the head, keeps it fresh.
 bool ShownTurn(float& cameraYaw, float& takenYaw);
 // How many cameras TurnToHead turned since the last call (xr_runtime.cpp, once a picture: none means
 // the game drew it facing its own way, as in the cutscenes of The Great Destroyer). scripted: how many
