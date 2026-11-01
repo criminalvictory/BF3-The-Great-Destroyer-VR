@@ -4,6 +4,42 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-11-01, night: The Great Destroyer: the pistol reloaded by hand, first try (stage: pre-alpha, experimental)
+
+Tried in the headset by the user at the train: walking, racking the slide, X dropping the magazine, taking a
+magazine at the belt and pushing it home, firing and the two-handed hold as before, and X held for the game's
+reload all work. Grabbing the slide and getting the magazine in still take too precise a hand; they become
+magnetic in the next round.
+
+### New
+- **The pistol's manual reload by hand, a rehearsal: the rounds don't change yet.** All of it is behind
+  build\pistol.txt ("reload on", "slide 1", "mag 1"), off by default, so nothing changes without it.
+  - The left trigger on the back of the slide grabs it. Pulled back its full 4.57 cm and let go, it springs
+    home. The right trigger doesn't fire while the slide is held.
+  - X drops the magazine out of the grip and it falls to the floor. The right trigger stays dead while the grip
+    is empty.
+  - The left grip at the front of the belt takes a magazine. The fingers open flat under the grip, the palm
+    pushes it up, and it snaps home near the end ("seat N" cm; each try logs how close the palm came).
+  - A magazine left part way in stays there. Let go anywhere else, it falls. X held is still the game's own
+    reload.
+  - Offline tests: 83 checks for the magazine, 60 for the slide.
+- **The study behind it** (docs/research/pistol-manual-reload.md): the game's own reload measured from a
+  recording, the pistol's ammo found in memory (read only), the hand poses, and the user's choices, including
+  the G2 carry (the index finger along the magazine's front) for the next round.
+
+### Fixed
+- **The view keeps one body yaw** for walking and looking, so it no longer jumps when the look starts or stops.
+- With the headset asleep the cutscene flag is still counted (the self-test's headless run).
+- Cutscenes are kept where the hand faced again (the upside-down QTE report), and cameras the mod refuses log
+  their up and forward.
+- A long comment line in pistol.txt could have switched on the scripted test hand by itself.
+
+### Known
+- The slide's grab and the magazine's catch need a precise hand. Next: both magnetic, with animations, two more
+  slide grips (fingers over the left side, and a pinch from behind), and the G2 carry.
+- The pistol's magazine makes no sound yet.
+- The upside-down QTE fix hasn't been checked in the headset yet.
+
 ## 2026-10-31, night: The Great Destroyer: no more teleporting view, a safe aim search, crash guards (stage: pre-alpha, experimental)
 
 Built and pushed on request; not yet tried in the headset.

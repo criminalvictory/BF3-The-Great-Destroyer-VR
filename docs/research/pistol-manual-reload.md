@@ -4,8 +4,8 @@ Studied 2026-10-31 from the game's own reload (recorded with `reloadrec`), the M
 the mod, and the pistol's ammo. Build steps 2-4 are in (behind `build\pistol.txt`, off by default) and had their
 first headset test on 2026-11-01 (below). The working files (prototype modules, offline
 tests, pose matrices and pictures) are in `screenshots\wf_reload\` on the development machine. They
-are not in the repository, because the pictures and poses are taken from the game's own meshes and
-animations.
+stay out of the repository, because the pictures, recordings and pose files are taken from the game's own
+meshes and animations; only the finger matrices the mod needs are in `src\pistolposes.h`, as handpose.cpp's are.
 
 ## What the game does
 
