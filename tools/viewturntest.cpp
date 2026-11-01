@@ -3101,6 +3101,120 @@ void Check16Frames() {
            runs, normalChanged, normalViews, right, wrongAfter, wrongBefore, left, mostLeft, mainBad);
 }
 
+// ---- 16j. A body view's own build (the user, 2026-11-01: in the drive the body went for ten seconds in the tunnel and
+// let go at the crash) ----
+// Frames of builds a shaking camera made (each 0.5 to 3 degrees from the one before), each frame guessing a build its
+// body's views weren't made in: a body view made from a build's camera exactly turned by that build's turn bit for bit,
+// whatever the guess, in the arms' space and with its eye beyond its reach (by the camera in the world, 3 m from it,
+// 5.2 to 7 m above the arms' space's origin as in the drive's tunnel); one a few degrees from every camera, its eye
+// beyond the reach, left as it is; the 80-byte one in the world turned by its own build; a run's first frame (no build
+// to turn by) left as it was.
+void Check16Own() {
+    int ownRight = 0, ownWrong = 0, worldRight = 0, worldWrong = 0, awayBad = 0, vpRight = 0, vpWrong = 0, startBad = 0,
+        frames = 0;
+    for (int n = 0; n < 2000; ++n, ++frames) {
+        const int count = 2 + n % 3;  // 2 to 4 builds, the newest first
+        camera::BodyTurn builds[4];
+        V3 places[4];
+        Q q = RandomScripted(40);
+        const Q head = RandomHead();
+        const V3 start = RandomPlace();
+        for (int b = count - 1; b >= 0; --b) {  // the oldest made first
+            q = Mul(AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 3))), q);
+            places[b] = start + V3(0.3 * (count - b), 0, 0);
+            float made[16];
+            MakeCamera(made, q, 1, places[b], true);
+            builds[b] = MakeBuild(made, head, 1, false, nullptr, nullptr);
+        }
+        double p[16];
+        MakeProjection(p, Uniform(45, 100), 1.0, 0.0, 0.05, 2000, true);
+        const int k = static_cast<int>(Uniform(0, count - 1e-9));  // the build the body's views were made in
+        const int guess = (k + 1 + static_cast<int>(Uniform(0, count - 1 - 1e-9))) % count;  // another one
+        float cam[16];
+        CameraOf(builds[k].before, places[k], cam);
+        // In the arms' space.
+        {
+            float f[kUploadFloats], alike[kUploadFloats];
+            MakeUpload(f, cam, RandomArmsEye(), p, true, Coin());
+            std::memcpy(alike, f, sizeof(f));
+            viewturn::BodyView read, v;
+            viewturn::ReadPerView(alike, read);
+            viewturn::TurnPerView(alike, read, builds[k].turn);
+            viewturn::BodyPick pick;
+            pick.guess = guess;
+            viewturn::PerViewFault fault;
+            const bool turned = viewturn::LockBodyPerView(f, builds, count, pick, v, fault) == viewturn::kBodyTurned;
+            ++(turned && std::memcmp(f, alike, sizeof(f)) == 0 && v.own == k && !v.world ? ownRight : ownWrong);
+        }
+        // Its eye beyond the arms' space's reach, made in its own build all the same: by its camera in the world, 3 m
+        // from it, and 5.2 to 7 m above the arms' space's origin (the drive's tunnel: 6.6): turned by its own build
+        // wherever it is. Then one a few degrees from every build's camera, its eye by that camera: left as it is.
+        for (int where = 0; where < 4; ++where) {
+            float f[kUploadFloats], was[kUploadFloats], alike[kUploadFloats];
+            const V3 eye = where == 0   ? places[k] + V3(Uniform(-0.5, 0.5), Uniform(-0.5, 0.5), Uniform(-0.5, 0.5))
+                           : where == 1 ? places[k] + V3(0, 3, 0)
+                           : where == 2 ? V3(Uniform(-1, 1), Uniform(5.2, 7), Uniform(-1, 1))
+                                        : places[k];
+            float other[16];
+            if (where == 3)
+                TurnedInOwnFrame(cam, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 10))),
+                                 other);
+            MakeUpload(f, where == 3 ? other : cam, eye, p, true, Coin());
+            std::memcpy(was, f, sizeof(f));
+            std::memcpy(alike, f, sizeof(f));
+            viewturn::BodyView read, v;
+            viewturn::ReadPerView(alike, read);
+            viewturn::TurnPerView(alike, read, builds[k].turn);
+            viewturn::BodyPick pick;
+            pick.guess = guess;
+            viewturn::PerViewFault fault;
+            const viewturn::BodyVerdict verdict = viewturn::LockBodyPerView(f, builds, count, pick, v, fault);
+            if (where == 3)
+                awayBad += viewturn::OwnBuild(read, builds, count) < 0 &&
+                           (verdict != viewturn::kElsewhere || std::memcmp(f, was, sizeof(f)) != 0);
+            else
+                ++(verdict == viewturn::kBodyTurned && std::memcmp(f, alike, sizeof(f)) == 0 && v.world && v.own == k
+                       ? worldRight
+                       : worldWrong);
+        }
+        // The 80-byte view-projection in the world.
+        {
+            float w[kWorldFloats], alike[kWorldFloats];
+            MakeWorldUpload(w, cam, places[k] + V3(Uniform(-0.5, 0.5), Uniform(-0.5, 0.5), Uniform(-0.5, 0.5)), p, true);
+            std::memcpy(alike, w, sizeof(w));
+            viewturn::BodyView read, v;
+            const bool read_ = viewturn::ReadViewProjection(alike, read);
+            if (read_)
+                viewturn::TurnViewProjection(alike, read, builds[k].turn);
+            viewturn::BodyPick pick;
+            pick.guess = guess;
+            const bool turned = viewturn::LockBodyWorldView(w, builds, count, pick, v) == viewturn::kBodyTurned;
+            ++(read_ && turned && std::memcmp(w, alike, sizeof(w)) == 0 && v.own == k ? vpRight : vpWrong);
+        }
+        // A run's first frame, one build: left as it was, in the arms' space and in the world.
+        CameraOf(builds[0].before, places[0], cam);
+        for (int world = 0; world < 2; ++world) {
+            float f[kUploadFloats], was[kUploadFloats];
+            MakeUpload(f, cam, world ? places[0] : RandomArmsEye(), p, true, Coin());
+            std::memcpy(was, f, sizeof(f));
+            viewturn::BodyView v;
+            viewturn::BodyPick pick;
+            pick.guess = Coin() ? -1 : 0;
+            viewturn::PerViewFault fault;
+            const viewturn::BodyVerdict verdict = viewturn::LockBodyPerView(f, builds, 1, pick, v, fault);
+            startBad += verdict == viewturn::kBodyTurned || std::memcmp(f, was, sizeof(f)) != 0;
+        }
+    }
+    Report("16j", "a body view turned by the build it was made in, whatever the frame guessed, wherever its eye; one "
+                  "made otherwise beyond the arms' space left; a run's first frame left as it was",
+           ownWrong == 0 && worldWrong == 0 && awayBad == 0 && vpWrong == 0 && startBad == 0,
+           "%d frames of 2 to 4 builds a shaking camera made (0.5 to 3 degrees apart), each guessing another build: in "
+           "the arms' space %d turned by their own build bit for bit, %d not; with the eye beyond its reach (by the "
+           "camera, 3 m from it, 5.2 to 7 m up) %d, %d not; made a few degrees off, %d not left as they were; the "
+           "80-byte one %d, %d not; %d of a run's first frame's changed",
+           frames, ownRight, ownWrong, worldRight, worldWrong, awayBad, vpRight, vpWrong, startBad);
+}
+
 }  // namespace
 
 int main() {
@@ -3130,6 +3244,7 @@ int main() {
     Check16Fov();
     Check16Hand();
     Check16Frames();
+    Check16Own();
     std::printf("%d of %d checks failed\n", g_failed, g_counted);
     return g_failed;
 }

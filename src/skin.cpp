@@ -1805,7 +1805,12 @@ struct BodyStats {
     uint32_t widened = 0, atGame = 0, atPicture = 0, fovLeft = 0;
     float widenedLo = 0.0f, widenedHi = 0.0f;
     double spread = 0.0;  // the most a frame's body views' eyes were apart (m)
+    // Turned by the build they were made in (viewturn::OwnBuild), of those a build off the frame's own pick, and the
+    // 352-byte ones turned in the world (not the arms' space).
+    uint32_t own = 0, offPick = 0, perViewWorld = 0;
     bool loggedView = false, loggedOdd = false;  // this scripted run's first body view and odd upload logged
+    bool loggedElsewhere = false;                // and its first 352-byte view in the world left as it was
+    int namedLogged = 0, namedWorldLogged = 0;   // views of frames the main view named logged this second (LogLeftView)
 };
 std::mutex g_bodyMutex;
 BodyLatch g_bodyLatch;
@@ -1845,6 +1850,32 @@ void LogBodyView(const float* made, const viewturn::BodyView& v, const camera::B
     for (int r = 0; r < 22; ++r)
         Log("Camera:   +%3d: %12.5f %12.5f %12.5f %12.5f", r * 16, made[4 * r], made[4 * r + 1], made[4 * r + 2],
             made[4 * r + 3]);
+}
+
+// A view in a frame the main view named, against each of the frame's builds (the shots the body went in, 2026-11-01):
+// its eye and how far from each build's scripted camera; its rows' most off each build's camera as made (before), as
+// turned (after), and its first-person camera as made and turned; for a 352-byte one its projection's scales.
+void LogLeftView(const float* f, const viewturn::BodyView& v, const BodyLatch& l, bool perView, const char* what) {
+    auto off = [&v](const float* rows) {
+        float most = 0.0f;
+        for (int i = 0; i < 9; ++i)
+            most = std::max(most, std::fabs(v.rows[i] - rows[i]));
+        return most;
+    };
+    char builds[4][160] = {};
+    for (int b = 0; b < l.count && b < 4; ++b) {
+        const camera::BodyTurn& t = l.builds[b];
+        const double d[3] = {v.eye[0] - t.place[0], v.eye[1] - t.place[1], v.eye[2] - t.place[2]};
+        std::snprintf(builds[b], sizeof(builds[b]), " [%d: %.2f m; off made %.4f, turned %.4f, fp made %.4f, fp turned %.4f]",
+                      b, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), off(t.before), off(t.after),
+                      off(t.firstPersonMade), off(t.firstPerson));
+    }
+    char projection[64] = "";
+    if (perView)
+        std::snprintf(projection, sizeof(projection), "; its projection's scales %.3f %.3f, z %+.0f",
+                      f[viewturn::kProjectionAt], f[viewturn::kProjectionAt + 5], v.zSign);
+    Log("Camera: %s in a frame the main view named (build %d): its eye (%.2f %.2f %.2f)%s;%s%s%s%s", what, l.pick.use,
+        v.eye[0], v.eye[1], v.eye[2], projection, builds[0], builds[1], builds[2], builds[3]);
 }
 
 // The body's views turned with the head as they're uploaded, in a scripted picture (above). data: a small upload of
@@ -1901,6 +1932,36 @@ void LockBody(uint8_t* data, UINT size) {
         return;
     case viewturn::kElsewhere:
         ++s.elsewhere;
+        // In a frame the main view has named (the shots the body went in, 2026-11-01): a 352-byte view left as it was,
+        // against each of the frame's builds, two a second at most, to tell what it is.
+        if (perView && l.pick.named && l.count > 0 && s.namedLogged < 2) {
+            static int s_budget = 60;
+            if (s_budget > 0) {
+                --s_budget;
+                ++s.namedLogged;
+                LogLeftView(f, v, l, true, "a 352-byte view left as it was");
+            }
+        }
+        // One a scripted run: a 352-byte view in the world left as it was, against the frame's builds, to tell what it
+        // is (the nearest scripted camera's rows as made, and how far its eye is from that camera).
+        if (perView && !s.loggedElsewhere && l.count > 0) {
+            s.loggedElsewhere = true;
+            int nearest = 0;
+            float nearestOff = 1e9f;
+            for (int b = 0; b < l.count; ++b) {
+                float off = 0.0f;
+                for (int i = 0; i < 9; ++i)
+                    off = std::max(off, std::fabs(v.rows[i] - l.builds[b].before[i]));
+                if (off < nearestOff)
+                    nearestOff = off, nearest = b;
+            }
+            const float* at = l.builds[nearest].place;
+            const double d[3] = {v.eye[0] - at[0], v.eye[1] - at[1], v.eye[2] - at[2]};
+            Log("Camera: a 352-byte view left as it was in a scripted picture (this run's first): its eye (%.2f %.2f %.2f), "
+                "%.2f m from the scripted camera of the build its rows are nearest (%d builds old), its rows up to %.5f "
+                "off that camera's as made",
+                v.eye[0], v.eye[1], v.eye[2], std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), nearest, nearestOff);
+        }
         return;
     case viewturn::kOtherHand:
         ++s.otherHand;
@@ -1946,12 +2007,24 @@ void LockBody(uint8_t* data, UINT size) {
     s.fovLeft += fov == viewturn::kFovLeft;
     if (verdict == viewturn::kTurnedBefore)
         return;
+    s.own += v.own >= 0;
+    s.offPick += v.own >= 0 && v.picked >= 0 && v.own != v.picked;
+    s.perViewWorld += perView && v.world;
     if (!l.counted) {
         l.counted = true;
         ++(l.pick.named ? s.named[l.pick.use] : s.guessed[l.pick.use]);
     }
     if (!perView) {
         ++s.world;
+        // Beside the 352-byte ones left as they were in a frame the main view named: the 80-byte one it turned.
+        if (l.pick.named && s.namedWorldLogged < 1) {
+            static int s_budget = 30;
+            if (s_budget > 0) {
+                --s_budget;
+                ++s.namedWorldLogged;
+                LogLeftView(f, v, l, false, "an 80-byte view-projection turned");
+            }
+        }
         return;
     }
     // Its eye, by its place in the frame: both eyes' come from one camera (so not by their places, as
@@ -1982,6 +2055,7 @@ void LogBodyLock() {
         if (on) {  // logged once a scripted run: a gap of a second or more starts another
             g_bodyStats.loggedView = s.loggedView;
             g_bodyStats.loggedOdd = s.loggedOdd;
+            g_bodyStats.loggedElsewhere = s.loggedElsewhere;
         }
     }
     const uint32_t notPerView = g_bodyNotPerView.exchange(0, std::memory_order_relaxed);
@@ -2009,13 +2083,14 @@ void LogBodyLock() {
             "eye%s); %u of its view-projections in the world (80 bytes) too; their field of view: %s%u at the game's "
             "for the FOV fix, %u at the picture's already, %u left at their own (the FOV fix off); frames turned by "
             "the view build the main view's own upload named %u (the newest %u, the one before %u, older %u), with "
-            "none named yet by the age the last frame's named %u (%u of them then named another); left as they were: "
-            "%u the main view's, %u turned already, %u looking away from the scripted camera, %u other views, %u of "
-            "the other handedness, %u with no build to turn them by yet; a frame's body views' eyes up to %.0f mm "
-            "apart",
+            "none named yet by the age the last frame's named %u (%u of them then named another); %u turned by the "
+            "build they were made in (%u of them a build off the frame's), %u of the 352-byte ones in the world; left "
+            "as they were: %u the main view's, %u turned already, %u looking away from the scripted camera, %u other "
+            "views, %u of the other handedness, %u with no build to turn them by yet; a frame's body views' eyes up to "
+            "%.0f mm apart",
             turned, s.byEye[1], s.byEye[2], unknown, s.world, fov, s.atGame, s.atPicture, s.fovLeft, sum(s.named),
-            s.named[0], s.named[1], s.named[2] + s.named[3], sum(s.guessed), s.renamed, s.main, s.before, s.away,
-            s.elsewhere, s.otherHand, s.unnamed, s.spread * 1000.0);
+            s.named[0], s.named[1], s.named[2] + s.named[3], sum(s.guessed), s.renamed, s.own, s.offPick,
+            s.perViewWorld, s.main, s.before, s.away, s.elsewhere, s.otherHand, s.unnamed, s.spread * 1000.0);
     } else if (on) {
         Log("Camera: the body's first-person views: none seen this second in a scripted picture (left as they were: %u "
             "the main view's, %u turned already, %u looking away from the scripted camera, %u other views, %u of the "

@@ -404,11 +404,15 @@ constexpr float kBodyToward = 0.7071f;
 constexpr float kBodyNear = 1.5f;
 
 // A view as the body lock reads it: its camera's rows (right, up, back, as a camera's rows are: the view's own rows,
-// its z row times zSign, -1 if that row points forward) and its eye.
+// its z row times zSign, -1 if that row points forward) and its eye. Turned (kBodyTurned): own, the build it was made
+// in by its rows (OwnBuild; -1: none, the frame's was taken), picked, the frame's (PickBuild), and world, a 352-byte
+// one with its eye beyond the arms' space's reach (kBodyReach).
 struct BodyView {
     float rows[9] = {};
     double eye[3] = {};
     float zSign = 1.0f;
+    int own = -1, picked = -1;
+    bool world = false;
 };
 
 // Why a 352-byte upload isn't read as per-view constants (ReadPerView), for the log.
@@ -712,6 +716,38 @@ inline int PickBuild(const BodyPick& pick, int count) {
     return count >= 2 && pick.guess < count ? pick.guess : -1;
 }
 
+// The game makes the body's views from its scripted camera's rows as it made them, exactly (the drive of Comrades: 0.00
+// degrees apart), so a body view says itself which build it was made in. A view's own build: the one whose scripted
+// camera's rows (before) it has, within kBodyOwn on each of the nine numbers (about 0.1 degree; the nearest, given more
+// than one), or -1. A frame's guessed build a build off from the view's own turned the body by another build's turn,
+// which in the drive's crash, the camera shaking from one build to the next, shook the body out of its seat (the user,
+// 2026-11-01).
+constexpr float kBodyOwn = 2e-3f;
+inline int OwnBuild(const BodyView& v, const camera::BodyTurn* builds, int count) {
+    int best = -1;
+    float bestOff = kBodyOwn;
+    for (int b = 0; b < count; ++b) {
+        float off = 0.0f;
+        bool alike = true;
+        for (int i = 0; i < 9 && alike; ++i) {
+            const float d = std::fabs(v.rows[i] - builds[b].before[i]);
+            alike = d < kBodyOwn;  // NaN: not alike
+            off = std::fmax(off, d);
+        }
+        if (alike && off < bestOff)
+            bestOff = off, best = b;
+    }
+    return best;
+}
+
+// The build a body view is turned by: its own, while the frame has one to turn by at all (PickBuild: a run's first
+// frames, drawn maybe from the last normal picture, keep their guard), else the frame's. v.own and v.picked say which.
+inline int BodyBuild(BodyView& v, const camera::BodyTurn* builds, int count, const BodyPick& pick) {
+    v.picked = PickBuild(pick, count);
+    v.own = v.picked >= 0 ? OwnBuild(v, builds, count) : -1;
+    return v.own >= 0 ? v.own : v.picked;
+}
+
 // Which of a frame's view builds' turns (builds, the newest first; none in a normal picture) names a view as one they
 // turned already: kMainView, the build named for the frame if none was yet, or kTurnedBefore; else kNotView.
 inline BodyVerdict TurnedAlready(const BodyView& v, const camera::BodyTurn* builds, int count, BodyPick& pick) {
@@ -743,9 +779,15 @@ inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int
         return kNotView;
     if (const BodyVerdict already = TurnedAlready(v, builds, count, pick); already != kNotView)
         return already;
-    if (!(std::fabs(v.eye[0]) < kBodyReach && std::fabs(v.eye[1]) < kBodyReach && std::fabs(v.eye[2]) < kBodyReach))
+    const int use = BodyBuild(v, builds, count, pick);
+    // In the arms' space, or made in its own build wherever its eye is: in ten seconds of the drive's tunnel and at its
+    // crash the body's views had their eye 5 to 6.6 m above the arms' space's origin, so were taken for views in the
+    // world and left as they were (the 80-byte ones turned): the knees and the gun went, and at the crash the body let go
+    // of the head's turn and shook (the user, 2026-11-01). A view made from its build's camera exactly is the body's, and
+    // turned about its own eye, in whatever space.
+    v.world = !(std::fabs(v.eye[0]) < kBodyReach && std::fabs(v.eye[1]) < kBodyReach && std::fabs(v.eye[2]) < kBodyReach);
+    if (v.world && v.own < 0)
         return kElsewhere;
-    const int use = PickBuild(pick, count);
     const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
     const float* back = build.before + 6;
     if (!(v.rows[6] * back[0] + v.rows[7] * back[1] + v.rows[8] * back[2] > kBodyToward))
@@ -768,7 +810,7 @@ inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, 
         return kNotView;
     if (const BodyVerdict already = TurnedAlready(v, builds, count, pick); already != kNotView)
         return already;
-    const int use = PickBuild(pick, count);
+    const int use = BodyBuild(v, builds, count, pick);
     const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
     const double d[3] = {v.eye[0] - build.place[0], v.eye[1] - build.place[1], v.eye[2] - build.place[2]};
     if (!(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < static_cast<double>(kBodyNear) * kBodyNear))
