@@ -857,7 +857,14 @@ void ReadPistolTuning() {
     PistolTests tests;
     if (f) {
         char line[512];
+        // A line longer than the buffer comes in pieces: only its first is read (the rest of a long comment would
+        // otherwise be read as a switch of its own: the final review found "loadtest" there).
+        bool piece = false;
         while (fgets(line, sizeof(line), f)) {
+            const bool more = piece;
+            piece = !std::strchr(line, '\n') && !feof(f);
+            if (more)
+                continue;
             const char* rest = nullptr;
             float cm = 0.0f;
             if (Word(line, "reload", &rest)) {
