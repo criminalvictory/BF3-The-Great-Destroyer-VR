@@ -4,6 +4,35 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-10-31, night: The Great Destroyer: no more teleporting view, a safe aim search, crash guards (stage: pre-alpha, experimental)
+
+Built and pushed on request; not yet tried in the headset.
+
+### Fixed
+- **The view jumping ("teleporting"), walking or seated.** While the mod looked for the look angles,
+  mouse aim paused for each candidate the search nudged. The picture then switched to the game camera's
+  own direction and snapped back afterwards, undoing the stick's turn made in between: up to 112-180
+  degrees in one frame. Mouse aim now keeps steering through a nudge. Only its corrections wait, and the
+  stick's own turn is sent as it is. Checked offline against the recorded runs: the largest picture step
+  away from the stick's turn went from 135-178 degrees to 0.
+- **The crashes just after the interrogation (most likely).** To find the look angles, the aim search
+  nudges values near the soldier by 0.03 and watches the camera. It nudged zeros too, which are often
+  null pointers, and the game then read 0.03 as a pointer (bf3.exe+179AE2 reading 3CF5C28F: 0.03 exactly).
+  It also put old values back after a nudge, even where the game had changed them meanwhile. Now only
+  real, non-zero angles are nudged. Each nudge is written only over the value it read, and undone only
+  where it is still there.
+
+### New
+- **Crash guards** for two crashes in the game's own code at that moment: a render step walking a freed
+  list (bf3.exe+134E5F0, four times today) and a call through a freed node (bf3.exe+ADF021). Each is sent
+  down its function's own way out, with the code checked first, and logged as "Crash guard".
+- The crash log says whether a crash was on the render thread. The aim search logs how long it held
+  mouse aim, and the view log marks the pictures turned from the game camera.
+
+### Known
+- The forearm still moves when only the wrist bends. A lock is designed but not built yet.
+- The manual pistol reload is being studied.
+
 ## 2026-10-31, evening: The Great Destroyer: real wrists, the pistol in both hands, a smooth suppression blur (stage: pre-alpha, experimental)
 
 Tried in the headset by the user: the wrists and forearms, the two-handed pistol, the fingers on
