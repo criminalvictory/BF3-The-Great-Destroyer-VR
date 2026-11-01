@@ -4,6 +4,47 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-11-01, afternoon: a stream view for OBS, a one-click launcher, cutscenes that follow the head, the pistol's magnetic reload (stage: pre-alpha, experimental)
+
+Tried by the user: the stream view in OBS ("great work"), the Comrades drive and the interrogation with the head
+turning the cutscene's camera ("super great"), the magnetic magazine ("goes in very smoothly") and slide, the
+launcher. Not yet tried in the headset: the body held still in cutscenes (take 2), the stream view's steadying,
+recentering by the stick.
+
+### New
+- **A stream view: OBS and the desktop window show one eye, in proportion.** In 3D the game's window holds both
+  eyes side by side; once the headset has its frame, the mod draws over the window with the left eye's picture, 85
+  degrees across, drawn 16:9 so OBS's "stretch to screen" shows it in proportion, and steadied while the headset
+  is worn (small head shakes taken out, the horizon level). The headset's picture is untouched. The mod now runs
+  before capture programs' hooks (OBS, Streamlabs, Discord), so they record the finished frame. Home switches it
+  (saved); settings in [stereo] of bf3vr.ini (stream_view, stream_fov, stream_aspect, stream_fit, stream_steady,
+  stream_tilt). README: "Streaming and recording".
+- **A one-click launcher**: tools\launch_vr.ps1, with desktop shortcuts "BF3 VR" and "BF3 VR - Mission select".
+  It starts SteamVR first (over the Steam Frame's dongle, not the home Wi-Fi: it waits for the dongle's link and
+  restarts SteamVR if it took the Wi-Fi), the mod's injector, and BF3 through Steam; you click Battlelog's PLAY
+  CAMPAIGN (the EA sign-in stays Battlelog's), and it resumes the campaign or stops at the menu.
+- **Cutscenes and rides follow the head**: a scripted camera (the Comrades drive, the interrogation) is turned to
+  where the head looks with the horizon level, so the picture fills the view with no black edges; the player's
+  own body (arms, gun, legs) is turned with it, so it stays on the scene and only the head moves.
+  weapon.txt "cutsceneturn 0" / "bodylock 0" put them back as before.
+- **The pistol's reload, magnetic**: the magazine is caught from any direction within 7.5 cm and glides in; the
+  slide is taken in three grips, picked by the way the hand comes, with the hand gliding on; the
+  G2 carry (the index finger along the magazine's front). The reload sounds are the game's own (the M9's, and the
+  M416's for the rifle), cut from its files and played centred; they aren't in this repository.
+- **Recenter by holding the right stick's click** for 2.5 s (as F9).
+
+### Fixed
+- The stream view came out twice as wide with the headset idle (the user: "it looks stretched").
+- tools\resume.ps1 kept clicking into a level that opens on a scripted ride (the Comrades drive) and reported a
+  failed click; it now knows the level has started from the mod's switch to the headset's view.
+- A steep scripted camera's level direction no longer swings with the least turn.
+
+### Known
+- The stream view crops out the subtitles and the HUD's corners (they sit at the eye's outer edge), and the pause
+  menu; Home shows both eyes. Recorders other than OBS aren't tested; screen capture sees only part of the
+  window, which is bigger than the monitor.
+- The aim still takes a while to lock on after loads and cutscenes.
+
 ## 2026-11-01, night: The Great Destroyer: the pistol reloaded by hand, first try (stage: pre-alpha, experimental)
 
 Tried in the headset by the user at the train: walking, racking the slide, X dropping the magazine, taking a
