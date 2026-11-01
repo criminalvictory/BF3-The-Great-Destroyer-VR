@@ -73,6 +73,8 @@ void StartTurnTest();
 void UpdateTurn(bool direct);
 // The direct turn since the last call: radians, left positive ([controllers] turn_degrees).
 float TakeTurn();
+// The right stick's click held 2.5 s since the last call: the view is to be recentered (as F9).
+bool TakeRecenter();
 // weapon.txt "turnby 30": the view turned that many degrees at once, right positive (to find the
 // sun for the lens flare with nobody in the headset).
 void TurnBy(float degrees);

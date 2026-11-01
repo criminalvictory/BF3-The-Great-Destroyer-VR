@@ -572,7 +572,7 @@ void PollHotkeys() {
         ResetEyes();
         Log("Mode -> %s", s.mode == config::Mode::Stereo ? "stereo" : "theater");
     }
-    if (KeyPressed(VK_F9))
+    if (KeyPressed(VK_F9) || input::TakeRecenter())
         g_recenterPending = true;
     if (KeyPressed(VK_F10))
         finder::Start();

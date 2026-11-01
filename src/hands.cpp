@@ -1212,6 +1212,9 @@ void PistolSlide(skin::HandTargets& t, bool pistolHeld, bool trackedLeft, const 
                                  : lost,
             o.pulled * 100.0f, p.travel * 100.0f,
             o.racked ? "racked, it springs home (no round moves yet)" : "too short to rack, it springs back");
+    // Racked, it slams home with the M9's own slide release (the game's reload from empty, build\sounds).
+    if (o.letGo && o.racked && on)
+        sounds::Play("pistol_slide");
     g_slideOut = o;
     g_slideHeldAt = o.held ? GetTickCount64() : 0;
     if (on && o.back >= 0.0f)

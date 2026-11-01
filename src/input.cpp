@@ -53,6 +53,13 @@ XrAction g_squeeze = XR_NULL_HANDLE;
 XrAction g_calibrate = XR_NULL_HANDLE;
 // The left thumb resting on the stick: the glove's thumb folds in.
 XrAction g_thumbTouch = XR_NULL_HANDLE;
+// The right stick's click held kRecenterHold recenters the view, as F9 does (the user, 2026-11-01: "if we click it
+// down and hold it ... 2 or 3 seconds, that should recenter the frame"). The click does nothing else.
+XrAction g_recenter = XR_NULL_HANDLE;
+constexpr ULONGLONG kRecenterHold = 2500;  // ms
+ULONGLONG g_recenterSince = 0;
+bool g_recenterDone = false;
+std::atomic<bool> g_recenterWanted{false};
 float g_leftSqueeze = 0.0f, g_leftTrigger = 0.0f;
 bool g_leftThumb = false;
 bool g_calibrateDown = false, g_calibratePressed = false;
@@ -268,7 +275,8 @@ void SuggestBindings() {
              {g_crouch, "/user/hand/right/input/b/click"},
              {g_reload, "/user/hand/left/input/a/click"},
              {g_use, "/user/hand/left/input/b/click"},
-             {g_sprint, "/user/hand/left/input/thumbstick/click"}});
+             {g_sprint, "/user/hand/left/input/thumbstick/click"},
+             {g_recenter, "/user/hand/right/input/thumbstick/click"}});
     // Quest / Touch style: A/B right, X/Y left. SteamVR also uses this for many other controllers.
     Suggest("/interaction_profiles/oculus/touch_controller",
             {{g_aim, "/user/hand/right/input/aim/pose"},
@@ -280,7 +288,8 @@ void SuggestBindings() {
              {g_crouch, "/user/hand/right/input/b/click"},
              {g_reload, "/user/hand/left/input/x/click"},
              {g_use, "/user/hand/left/input/y/click"},
-             {g_sprint, "/user/hand/left/input/thumbstick/click"}});
+             {g_sprint, "/user/hand/left/input/thumbstick/click"},
+             {g_recenter, "/user/hand/right/input/thumbstick/click"}});
     // Steam Frame (when the runtime offers its extension): A/B/X/Y all on the right hand, a D-pad
     // on the left. X is the magazine. Its grip's name isn't documented: squeeze, else grip.
     std::vector<std::pair<XrAction, const char*>> frame = {
@@ -293,7 +302,8 @@ void SuggestBindings() {
         {g_crouch, "/user/hand/right/input/b/click"},
         {g_reload, "/user/hand/right/input/x/click"},
         {g_use, "/user/hand/right/input/y/click"},
-        {g_sprint, "/user/hand/left/input/thumbstick/click"}};
+        {g_sprint, "/user/hand/left/input/thumbstick/click"},
+        {g_recenter, "/user/hand/right/input/thumbstick/click"}};
     const char* kFrame = "/interaction_profiles/valve/frame_controller";
     // Its grips are squeeze or grip; the View button may not be offered: each try leaves out more.
     auto with = [&](bool squeeze, bool grip, bool view) {
@@ -536,7 +546,9 @@ bool Init(XrInstance instance, XrSession session) {
         return false;
     if (!MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_squeeze", "Close the left hand", g_squeeze) ||
         !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "calibrate_left", "Line up the left hand", g_calibrate) ||
-        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "left_thumb_touch", "Left thumb on the stick", g_thumbTouch))
+        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "left_thumb_touch", "Left thumb on the stick", g_thumbTouch) ||
+        !MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "recenter", "Recenter the view (hold the right stick's click)",
+                    g_recenter))
         return false;
     bool ok = MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim", "Aim (right hand)", g_aim) &&
               MakeAction(XR_ACTION_TYPE_FLOAT_INPUT, "fire", "Fire", g_fire) &&
@@ -642,6 +654,22 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         get.action = g_thumbTouch;
         XrActionStateBoolean thumb{XR_TYPE_ACTION_STATE_BOOLEAN};
         g_leftThumb = XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &thumb)) && thumb.isActive && thumb.currentState;
+        // Recentering by the right stick's click, held: once a hold, whether or not BF3 has focus.
+        get.action = g_recenter;
+        XrActionStateBoolean click{XR_TYPE_ACTION_STATE_BOOLEAN};
+        const bool held =
+            XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &click)) && click.isActive && click.currentState;
+        const ULONGLONG now = GetTickCount64();
+        if (!held) {
+            g_recenterSince = 0;
+            g_recenterDone = false;
+        } else if (!g_recenterSince) {
+            g_recenterSince = now;
+        } else if (!g_recenterDone && now - g_recenterSince >= kRecenterHold) {
+            g_recenterDone = true;
+            g_recenterWanted.store(true, std::memory_order_relaxed);
+            Log("Input: the right stick's click held %.1f s: the view recentered", kRecenterHold / 1000.0);
+        }
         get.action = g_ads;  // the left trigger
         XrActionStateFloat trigger{XR_TYPE_ACTION_STATE_FLOAT};
         g_leftTrigger = XR_SUCCEEDED(xrGetActionStateFloat(session, &get, &trigger)) && trigger.isActive
@@ -783,6 +811,10 @@ void UpdateTurn(bool direct) {
 
 void SetMoveTurn(float radians) {
     g_moveTurn = radians;
+}
+
+bool TakeRecenter() {
+    return g_recenterWanted.exchange(false, std::memory_order_relaxed);
 }
 
 float TakeTurn() {
