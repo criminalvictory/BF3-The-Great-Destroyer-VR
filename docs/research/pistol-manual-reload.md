@@ -228,6 +228,47 @@ Off by default as before (`build\pistol.txt` "slide 1"); tested offline only (`t
 - **Tunables**: "grab 13 0.3 0.12" (the reach in cm, the wait and the glide in seconds; kept to 3-25 cm, 0-1 s,
   0.05-0.5 s), logged once when pistol.txt is read. Each grab's log line says which grip, how far, how long after the
   press, and how far the hand's turn was from the grip's.
+- **The review's fixes** (`tools\pistolslidetest.cpp`: 159 checks; 24 of the 29 new or changed ones fail on the step as
+  first built, the other 5 are cases it already got right and must keep: in from behind, a sweep on through the hold,
+  straight back from behind, a hand gone forward that stays there, S2 taken once the ease off S1 is done):
+  - **A hand still coming in isn't a pull, from any side.** Only a hand going on forward after the grab was taken up;
+    one coming in from in front of the hold, still moving back towards it, pulled the slide, and with the 13 cm and the
+    wait most grabs are made with the hand still on its way. In the review's scratch runs S1 from its left, the
+    approach 30 degrees towards the front, pressed 10-13 cm out at 0.3-0.6 m/s and stopping on the hold drew it fully
+    back and racked on the let go; pressed 20 cm out, all five ways with some of it from in front racked by themselves,
+    in all three grips; on the slide stop any of them dropped the stop. Now, grabbed with the hand still on its way, its
+    move along the slide towards the grip's hold, from in front or from behind, is taken up until it gets there or
+    stops coming nearer (2 mm in 0.1 s: Profile settle), and only a move on past the hold pulls. None of those runs
+    pulls it now (2 mm at the most, on the stop with the hand stopping where the hold would be with the slide closed); a
+    pull meant once the hand has come, a sweep on through the hold, straight back from behind, and an overshoot
+    settling back all do what they should. The price: a pull begun within 0.1 s of the hand stopping in front of the
+    hold has its first part, as far as the hold, taken up (safer than a rack the hand didn't mean: once the rounds
+    move, that throws one out).
+  - **The grip the hand is turned for, on its way past another's hold.** Turned for S2 or S3 and coming in from in
+    front, the press took S1 as soon as its hold came in reach, 14-19 cm short of the hand's own, and the hand's coming
+    on in pulled the slide 4.3 cm or fully back. Now a press in reach only of grips the hand isn't turned for waits for
+    the one it is while the hand comes on towards that one's hold (0.1 s at first, to see; at most 1 s), then takes the
+    best of those in reach. A hand held still there gets it 0.1 s later than before (one old check, the first test's
+    misses with the hand turned the other two ways, now steps through that: a deliberate change). The log says when a
+    grip was taken with the hand turned for another.
+  - **The pistol out of hand ends the hand's ease** on or off the slide: back in hand the hand is where the controller
+    has it. It had picked up again from where it stopped, however long the pistol was gone: let go, 2 frames into the
+    ease off, it came back 0.72 of the way on after a frame out of hand or 10 s; gliding on at 0.28, a frame out brought
+    it back at 0.56 (the last let go's ease); the review's random sessions had 295 frames of an ease off rising, none
+    now.
+  - **Tracking jumps**: the hand slides forward on the slide at most 3 mm a frame (Profile slip), so a jump forward a
+    frame and straight back leaves it 3 mm back at the most (a 2 cm jump had left it 2 cm back, 5 cm racked it). A
+    hand gone forward that stays there still slides on, 3 mm a frame. A jump back is still a one-frame pop, as before
+    the step.
+  - **A big turn glides longer**: a hand turned more than 90 degrees from where it goes takes the glide's time that much
+    longer (Profile turnAt), on and off: turned the other way round from the only grip in reach, 176 degrees, it glides
+    on over 0.24 s and its wrist turns 20 degrees a frame at the most (38 in the glide's own 0.12 s).
+  - **Why a press missed**: a press waiting through frames with the palm not known (the right trigger pulled, a
+    magazine in the hand, the left controller lost) says it wasn't seen within reach and for how long it wasn't known,
+    not that it didn't come within reach; pressed while the hand still eases back off another grip, it says so, and is
+    measured from the hold it could take (it had been told "too far" with the palm on the refused grip's hold); let go
+    while it waited for the grip the hand is turned for, it says so, not "too far"; pistol.txt turned off mid-wait is
+    told as that, not as the pistol leaving the hand.
 
 ## Open questions for the user
 

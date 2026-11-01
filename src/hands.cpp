@@ -772,7 +772,8 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 //   "grab 13 0.3 0.12"  the slide's grab: the palm within this of where a grip holds its rear (13 cm by default; the
 //                   first headset test's presses missed at 7.1-9.9 cm with 7); a press made before the hand gets there
 //                   waits this many seconds for it, the trigger held (0.3; 0: not); the hand drawn glides on, and eases
-//                   back off after the let go, over this many seconds (0.12)
+//                   back off after the let go, over this many seconds (0.12; longer for a hand turned more than 90
+//                   degrees from where it goes)
 //   "mag 1"         the magazine by hand (PistolMagazine), a rehearsal: no rounds change. X drops it out of the grip
 //                   (one part way in: that one); the left grip squeezed at the pelvis takes one, carried in the hand;
 //                   brought near the grip it's caught (magnetic, from any direction) and glides in, the hand drawn on
@@ -998,7 +999,7 @@ void ReadPistolTuning() {
             std::snprintf(waits, sizeof(waits), "a press doesn't wait for the hand (wait 0)");
         Log("Pistol reload: slide 1: the left trigger grabs the slide with the palm within %.1f cm of where one of its "
             "grips holds its rear (S1 overhand, S2 the fingers to the left, S3 the pinch from behind: the one the hand "
-            "is turned for); %s; the hand drawn glides on and eases back off over %.2f s (grab)",
+            "is turned for); %s; the hand drawn glides on and eases back off over %.2f s (grab; longer for a big turn)",
             s.reach * 100.0f, waits, s.glide);
     }
     if (g_pistolMagOn) {
@@ -1169,22 +1170,41 @@ void PistolSlide(skin::HandTargets& t, bool pistolHeld, bool trackedLeft, const 
     const float squeeze = input::LeftSqueeze();
     const char* both = g_pistolSupport ? ", the pistol in both hands" : "";
     const char* stop = in.locked ? " on the slide stop (locktest)" : "";
+    // Grabbed in a grip the hand isn't turned for (the one it is out of reach: a press with the hand still there, or
+    // stopped short of that one's hold while the press waited for it): which.
+    char turned[96] = "";
+    if (o.grabbed && o.turnedFor >= 0 && o.turnedFor != o.grip)
+        std::snprintf(turned, sizeof(turned), " (turned for %s, its hold out of reach)", kSlideGripNames[o.turnedFor]);
     if (o.grabbed && o.pressed)
         Log("Pistol reload: the left trigger pressed %.0f mm from the slide's hold for %s (the left grip at %.2f%s): "
-            "the slide grabbed%s, the hand's turn %.0f degrees off the grip's; it glides on over %.2f s",
-            o.palmFrom * 1000.0f, kSlideGripNames[o.grip], squeeze, both, stop, o.turnedOff, p.glide);
+            "the slide grabbed%s, the hand's turn %.0f degrees off the grip's%s; it glides on over %.2f s",
+            o.palmFrom * 1000.0f, kSlideGripNames[o.grip], squeeze, both, stop, o.turnedOff, turned, o.glideFor);
     else if (o.grabbed)
         Log("Pistol reload: the slide grabbed %.2f s after the left trigger's press (%.0f mm from its nearest hold "
-            "then), as the palm came within %.0f mm of the hold for %s (the left grip at %.2f%s)%s, the hand's turn "
-            "%.0f degrees off the grip's; it glides on over %.2f s",
+            "then), the palm %.0f mm from the hold for %s (the left grip at %.2f%s)%s, the hand's turn %.0f degrees "
+            "off the grip's%s; it glides on over %.2f s",
             o.waited, o.pressedFrom * 1000.0f, o.palmFrom * 1000.0f, kSlideGripNames[o.grip], squeeze, both, stop,
-            o.turnedOff, p.glide);
+            o.turnedOff, turned, o.glideFor);
     else if (o.pressed && o.palmFrom < 0.0f)
         Log("Pistol reload: the left trigger pressed with the pistol in hand: the slide not grabbed (%s)", lost);
-    if (o.missed)
+    if (o.missed) {
+        // Why: pistolslide's, or with no pistol to work which it was (pistol.txt turned off mid-wait isn't the pistol
+        // leaving the hand); too far at the press, unless it was in reach of a grip the hand wasn't turned for and
+        // waited for the one it was; and how long of the wait the palm wasn't known (the hand busy or not tracked: why,
+        // if it still is), so a miss with the palm unseen isn't told as one with the palm out of reach.
+        const char* why = on           ? o.missWhy
+                          : pistolHeld ? "pistol.txt no longer works the slide"
+                                       : "the pistol left the hand";
+        char tooFar[64] = "", unseen[192] = "";
+        if (o.pressedFrom >= p.reach)
+            std::snprintf(tooFar, sizeof(tooFar), "too far to grab it (within %.0f mm), and ", p.reach * 1000.0f);
+        if (o.unseen > 0.0f)
+            std::snprintf(unseen, sizeof(unseen), "; the palm not known for %.0f ms of the wait: %s",
+                          o.unseen * 1000.0f, noHand ? noHand : "busy or not tracked then");
         Log("Pistol reload: the left trigger pressed %.0f mm from the slide's nearest hold (the left grip at %.2f%s): "
-            "too far to grab it (within %.0f mm), and %s (the nearest it came: %.0f mm)",
-            o.pressedFrom * 1000.0f, squeeze, both, p.reach * 1000.0f, o.missWhy, o.nearest * 1000.0f);
+            "%s%s (the nearest it came: %.0f mm%s)",
+            o.pressedFrom * 1000.0f, squeeze, both, tooFar, why, o.nearest * 1000.0f, unseen);
+    }
     if (o.letGo)
         Log("Pistol reload: the slide let go (%s), pulled %.2f cm of its %.2f: %s",
             !on                  ? "the pistol out of hand, or pistol.txt changed"

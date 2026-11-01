@@ -73,6 +73,16 @@ bool Finite(const float* m, int n) {
     return true;
 }
 
+// How far b's turn is from a's (rotation | translation rows, the rotations compared: trace(A^T B) = 1 + 2 cos), in
+// degrees.
+float Turned(const float* a, const float* b) {
+    float trace = 0.0f;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            trace += a[i * 4 + j] * b[i * 4 + j];
+    return std::acos(std::clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / kPi;
+}
+
 // A rotation | translation's rotation made exactly orthonormal.
 void Tidy(float* m) {
     float* r0 = m;
@@ -196,26 +206,30 @@ Slide::Hand Slide::Read(const Input& in) const {
     return h;
 }
 
-// Of the grips whose hold (moved back with the slide) the palm is within reach of, the one the hand is turned for: out
-// of the palm and along the fingers, the grip it had last a little ahead (Profile::stick). While the hand is still
-// drawn on the slide, easing back off, only the grip it's in: its fingers are still on it.
-int Slide::Pick(const Hand& h, float back, float& nearest, float& from) const {
-    int best = -1;
-    float bestFit = 0.0f;
-    nearest = 1e9f;
-    from = 0.0f;
+// The grip the hand is turned for: out of the palm and along the fingers, the grip it had last a little ahead
+// (Profile::stick); and of the grips whose hold (moved back with the slide) the palm is within reach of, the one it's
+// turned for most. While the hand is still drawn on the slide, easing back off, only the grip it's in: its fingers are
+// still on it (another's hold in reach then is refused, and isn't the nearest: the review found a miss told "too far"
+// with the palm on another grip's hold).
+Slide::Picked Slide::Pick(const Hand& h, float back) const {
+    Picked p;
+    float bestFit = 0.0f, turnedFit = 0.0f;
     for (int k = 0; k < kGrips; ++k) {
         const pistolposes::SlideGrip& g = pistolposes::kSlideGrips[k];
         const float at[3] = {g.hold[0], g.hold[1], g.hold[2] - back};
         const float d = Distance(h.palm, at);
-        nearest = std::min(nearest, d);
-        if (d >= m_p.reach || (m_share > 0.0f && k != m_grip))
+        if (m_share > 0.0f && k != m_grip) {
+            p.refused = p.refused || d < m_p.reach;
             continue;
+        }
+        p.nearest = std::min(p.nearest, d);
         const float fit = Dot(h.out, g.palmOut) + Dot(h.along, g.fingers) + (k == m_lastGrip ? m_p.stick : 0.0f);
-        if (best < 0 || fit > bestFit)
-            best = k, bestFit = fit, from = d;
+        if (p.turnedFor < 0 || fit > turnedFit)
+            p.turnedFor = k, turnedFit = fit, p.turnedFrom = d;
+        if (d < m_p.reach && (p.grip < 0 || fit > bestFit))
+            p.grip = k, bestFit = fit, p.from = d;
     }
-    return best;
+    return p;
 }
 
 void Slide::Grab(const Hand& h, int grip, float now, bool locked, Output& o) {
@@ -225,28 +239,44 @@ void Slide::Grab(const Hand& h, int grip, float now, bool locked, Output& o) {
     m_startLocked = locked;
     m_springing = m_cycleBack = false;
     m_waited = -1.0f;
+    // The hand coming on in from where it was at the press isn't a pull (Update): from how far off the hold.
+    const float* hold = pistolposes::kSlideGrips[grip].hold;
+    const float at[3] = {hold[0], hold[1], hold[2] - now};
+    m_coming = true;
+    m_comingFrom = Distance(h.palm, at);
+    m_comingStill = 0.0f;
     // The hand drawn glides on into the grip from where it's drawn: from the controller's hand (none of it on the slide
-    // yet), or from where it is as it eases back off (a grab again before it's done).
+    // yet), or from where it is as it eases back off (a grab again before it's done), over the glide's time, longer
+    // for a hand turned far from the grip.
+    float drawn[12];
+    if (m_share > 0.0f)
+        BlendAt(h.turn, m_inGun, m_share, kPalmCentre, drawn);
+    else
+        std::memcpy(drawn, h.turn, sizeof(drawn));
     m_grip = m_lastGrip = grip;
     m_handOn = true;
     m_handFor = 0.0f;
+    m_glideFor = GlideTime(drawn, g_palms[grip]);
     m_shareFrom = m_share;
     std::memcpy(m_from, m_inGun, sizeof(m_from));
     o.grabbed = true;
-    // How far the hand's turn is from the grip's (trace(A^T B) = 1 + 2 cos).
-    float trace = 0.0f;
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            trace += h.turn[i * 4 + j] * g_palms[grip][i * 4 + j];
-    o.turnedOff = std::acos(std::clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / kPi;
+    o.turnedOff = Turned(h.turn, g_palms[grip]);  // the controller's hand from the grip's
+    o.glideFor = m_glideFor;
+}
+
+// The glide's time, and for a turn further than turnAt that much longer in proportion: the hand turns no faster than
+// through turnAt in the glide's time.
+float Slide::GlideTime(const float* from, const float* to) const {
+    return m_p.glide * std::max(1.0f, Turned(from, to) / m_p.turnAt);
 }
 
 // The hand drawn on the slide, once a frame: gliding on into its grip (eased over the glide's time from where it was
 // drawn as it began), then on it, back with the slide (handBack: as the slide's drawn while held); let go, easing back
 // off over the glide's time from where it was let go of, less and less of it, while the slide springs home out of it.
+// (The glide's time: GlideTime's, as the grab or the let go found it.)
 void Slide::DrawHand(const float* pistolPose, float handBack, float dt, Output& o) {
     m_handFor += dt;
-    const float k = m_p.glide > 0.0f ? Smooth(m_handFor / m_p.glide) : 1.0f;
+    const float k = m_glideFor > 0.0f ? Smooth(m_handFor / m_glideFor) : 1.0f;
     if (m_handOn) {
         const float back[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -handBack};
         float on[12];
@@ -277,19 +307,22 @@ Output Slide::Update(const Input& in) {
         press = true, m_armed = false;
     if (!in.pistolPose) {
         // No pistol: let go of, nothing drawn (the hand on it neither: nothing to draw it on), a press waiting gone.
+        // The hand's glide on or ease back off ends here too: back in hand, the hand is where the controller has it,
+        // not back on the slide easing off again from where it was (the review: from 2 frames into an ease off, after
+        // 10 s out of hand it came back at 0.72 of the way on).
         if (m_held) {
             o.letGo = true;
             o.pulled = m_maxPull;
         }
         if (m_waited >= 0.0f) {
             o.missed = true;
-            o.missWhy = "the pistol left the hand";
-            o.pressedFrom = m_pressFrom, o.nearest = m_nearest;
+            o.missWhy = "no pistol to work (out of hand, or the slide no longer worked)";
+            o.pressedFrom = m_pressFrom, o.nearest = m_nearest, o.unseen = m_unseen;
         }
-        m_held = m_springing = m_cycleBack = false;
+        m_held = m_springing = m_cycleBack = m_coming = false;
         m_drawn = -1.0f;
         m_waited = -1.0f;
-        m_share = 0.0f;
+        m_share = m_shareOff = 0.0f;
         m_handOn = false;
         o.grip = m_grip;
         return o;
@@ -300,44 +333,81 @@ Output Slide::Update(const Input& in) {
 
     // The press within reach of a grip's hold on its rear, where the slide is now; out of reach, it waits for the hand
     // (the trigger held) until the wait's time has gone by. A press with no palm is told so at once, and doesn't wait.
+    // In reach only of grips the hand isn't turned for, it waits for the one it is turned for too, while the hand comes
+    // on towards that one's hold (settleStep nearer within settle; settle at first, to see), at most a second: the
+    // review's hand turned for S2 or S3, coming in from in front, had S1 grabbed 14-19 cm out of its own grip's hold,
+    // and its own coming on in pulled the slide back. Stopped short, or the wait over, the grip it's turned for most of
+    // those in reach. A miss says why: the hold in reach another grip's while the hand still eased back off its last
+    // one, the palm not known for some of the wait (busy or not tracked: then it wasn't seen within reach, it may have
+    // been), or not.
+    constexpr const char* kRefused =
+        "the hold in reach was another grip's while the hand still eased back off its last one (only that one could be "
+        "taken then)";
+    constexpr float kLongest = 1.0f;  // s: the most a press waits for the hand coming on to the grip it's turned for
     if (!m_held && press) {
         o.pressed = true;
         o.palmFrom = -1.0f;
         if (h.have) {
-            float nearest = 0.0f, from = 0.0f;
-            const int grip = Pick(h, now, nearest, from);
-            if (grip >= 0) {
-                o.palmFrom = from;
-                Grab(h, grip, now, in.locked, o);
+            const Picked p = Pick(h, now);
+            const bool forTheTurn = p.grip >= 0 && p.grip != p.turnedFor && m_p.wait > 0.0f;
+            if (p.grip >= 0 && !forTheTurn) {
+                o.palmFrom = p.from;
+                o.turnedFor = p.turnedFor;
+                Grab(h, p.grip, now, in.locked, o);
             } else {
-                o.palmFrom = nearest;
-                m_waited = 0.0f;
-                m_pressFrom = m_nearest = nearest;
+                o.palmFrom = p.nearest;
+                m_waited = m_unseen = 0.0f;
+                m_refused = p.refused;
+                m_passing = forTheTurn;
+                m_waitFor = p.turnedFor, m_waitNear = p.turnedFrom, m_waitStill = 0.0f;
+                m_pressFrom = m_nearest = p.nearest;
                 if (m_p.wait <= 0.0f) {
                     o.missed = true;
-                    o.missWhy = "a press doesn't wait for the hand (grab's wait 0)";
-                    o.pressedFrom = o.nearest = nearest;
+                    o.missWhy = p.refused ? kRefused : "a press doesn't wait for the hand (grab's wait 0)";
+                    o.pressedFrom = o.nearest = p.nearest;
                     m_waited = -1.0f;
                 }
             }
         }
     } else if (!m_held && m_waited >= 0.0f) {
         m_waited += dt;
-        float nearest = 0.0f, from = 0.0f;
-        const int grip = h.have ? Pick(h, now, nearest, from) : -1;
-        if (h.have)
-            m_nearest = std::min(m_nearest, nearest);
-        const bool inTime = m_waited <= m_p.wait + 1e-4f;
-        if (in.trigger >= 0.4f && grip >= 0 && inTime) {
-            o.palmFrom = from;
+        const Picked p = h.have ? Pick(h, now) : Picked();
+        if (h.have) {
+            m_nearest = std::min(m_nearest, p.nearest);
+            // Coming on towards the hold of the grip it's turned for (turned for another now: from there).
+            if (p.turnedFor != m_waitFor || p.turnedFrom < m_waitNear - m_p.settleStep) {
+                m_waitFor = p.turnedFor, m_waitNear = p.turnedFrom, m_waitStill = 0.0f;
+            } else {
+                if (p.turnedFrom > m_waitNear + m_p.settleStep)
+                    m_waitNear = p.turnedFrom;
+                m_waitStill += dt;
+            }
+        } else {
+            m_unseen += dt;
+        }
+        m_refused = m_refused || p.refused;
+        const bool onItsWay =
+            p.grip >= 0 && p.grip != p.turnedFor && m_waitStill < m_p.settle && m_waited <= kLongest + 1e-4f;
+        m_passing = m_passing || onItsWay;
+        const bool inTime = m_waited <= m_p.wait + 1e-4f || onItsWay;
+        if (in.trigger >= 0.4f && p.grip >= 0 && !onItsWay) {
+            o.palmFrom = p.from;
             o.pressedFrom = m_pressFrom;
             o.waited = m_waited;
-            Grab(h, grip, now, in.locked, o);
+            o.turnedFor = p.turnedFor;
+            Grab(h, p.grip, now, in.locked, o);
         } else if (in.trigger < 0.4f || !inTime) {
             o.missed = true;
-            o.missWhy = in.trigger < 0.4f ? "the trigger was let go first"
+            o.missWhy = in.trigger < 0.4f
+                            ? (m_passing ? "the trigger was let go while it waited for the hand to come on to the hold "
+                                           "of the grip it's turned for"
+                                         : "the trigger was let go first")
+                        : m_refused ? kRefused
+                        : m_passing ? "the palm went out of reach again while it waited for the hand to come on to "
+                                      "the hold of the grip it's turned for"
+                        : m_unseen > 0.0f ? "the palm wasn't seen within reach while the press waited"
                                           : "the palm didn't come within reach while the press waited";
-            o.pressedFrom = m_pressFrom, o.nearest = m_nearest;
+            o.pressedFrom = m_pressFrom, o.nearest = m_nearest, o.unseen = m_unseen;
             m_waited = -1.0f;
         }
     }
@@ -345,17 +415,43 @@ Output Slide::Update(const Input& in) {
         m_lost = h.have ? 0.0f : m_lost + dt;
         if (h.have && in.trigger >= 0.4f) {
             // As far back as the hand has come since the grab (the frame's -z), on the stop's side of it while locked.
-            // The hand going on forward of home (or the stop) slides forward on it: the pull is read from where it is
-            // then (a hand still coming in from behind as it took hold pulls it as soon as it comes back).
             const float low = m_startLocked ? m_p.lockAt : 0.0f;
+            const float* hold = pistolposes::kSlideGrips[m_grip].hold;
+            if (m_coming) {
+                // Still coming to the grip's hold (grabbed on its way in): its move along the slide towards the hold's
+                // place, where the slide is drawn, is taken up, not pulled, from in front or from behind; on past it,
+                // the rest pulls. kept: how far in front of the hold the pull keeps the palm (behind: below 0), ahead:
+                // how far in front it is now.
+                const float kept = m_grabZ - (hold[2] - m_start);
+                const float ahead = h.palm[2] - (hold[2] - m_pull);
+                const float keep = kept > 0.0f ? std::clamp(ahead, 0.0f, kept) : std::clamp(ahead, kept, 0.0f);
+                m_grabZ += keep - kept;
+            }
+            // The hand going on forward of home (or the stop) slides forward on it: the pull is read from where it is
+            // then, but at most slip further forward a frame (a tracking jump forward and straight back isn't a pull).
             float pull = m_start + (m_grabZ - h.palm[2]);
             if (pull < low) {
-                m_grabZ = h.palm[2] + low - m_start;
+                m_grabZ = std::min(h.palm[2] + low - m_start, m_grabZ + m_p.slip);
                 pull = low;
             }
             m_pull = std::min(pull, m_p.travel);
             m_maxPull = std::max(m_maxPull, m_pull);
             m_drawn = m_pull;
+            if (m_coming) {
+                // Still coming while it comes settleStep nearer the hold (where the slide is drawn now) within settle
+                // of its last step nearer; gone further off first, nearer from there.
+                const float at[3] = {hold[0], hold[1], hold[2] - m_pull};
+                const float d = Distance(h.palm, at);
+                if (d < m_comingFrom - m_p.settleStep) {
+                    m_comingFrom = d;
+                    m_comingStill = 0.0f;
+                } else {
+                    if (d > m_comingFrom + m_p.settleStep)
+                        m_comingFrom = d;
+                    m_comingStill += dt;
+                    m_coming = m_comingStill < m_p.settle;
+                }
+            }
         }
         // The palm lost a moment (the left controller's tracking, a broken pose) with the trigger still pressed: held
         // where it was for up to coast, not let go (a lost frame far back would rack it).
@@ -367,8 +463,9 @@ Output Slide::Update(const Input& in) {
         }
         // Let go (or the hand lost for longer): far enough back, it feeds; from the stop, a tug past it drops the stop
         // (the same as a rack then: the chamber is empty on the stop). Either way it springs forward from where it was
-        // let go, and the hand eases back off from where it's drawn.
-        m_held = false;
+        // let go, and the hand eases back off from where it's drawn to the controller's, over the glide's time (longer
+        // for a controller turned far from the grip; the hand not known, the glide's own).
+        m_held = m_coming = false;
         o.letGo = true;
         o.pulled = m_maxPull;
         o.racked = m_startLocked ? m_maxPull >= m_p.lockAt + m_p.tug : m_maxPull >= m_p.rackAt;
@@ -378,6 +475,12 @@ Output Slide::Update(const Input& in) {
         m_handOn = false;
         m_handFor = 0.0f;
         m_shareOff = m_share;
+        m_glideFor = m_p.glide;
+        if (h.have && m_share > 0.0f) {
+            float drawn[12];
+            BlendAt(h.turn, m_inGun, m_share, kPalmCentre, drawn);
+            m_glideFor = GlideTime(drawn, h.turn);
+        }
     } else if (!m_springing && m_drawn >= 0.0f && !in.locked) {
         // On the stop, and the stop dropped: home from there, not in one jump. (A tug off the stop springs it back onto
         // the stop as it's let go, before the caller has told the mechanism, which drops the stop for the next frame.)

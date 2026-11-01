@@ -8,8 +8,10 @@
 // centre (the palm goes straight), as hands.cpp's OnTheSlide does it. pistolslide's numbers (its Profile): the three
 // grips' holds on the slide's rear (pistolposes.h kSlideGrips), grabbed within 13 cm by a fresh press of the left
 // trigger (past 0.6 after it was last below 0.4), or by one made up to 0.3 s before the hand gets there with the
-// trigger held, in the grip the hand is turned for; the hand drawn gliding on and back off over 0.12 s; 4.57 cm of
-// travel; let go past 4.0 cm it racks; the slide stop at 4.1 cm, a tug of 4 mm off it; home in 70 ms from fully back;
+// trigger held, in the grip the hand is turned for (waiting for its hold while the hand comes on to it); the hand drawn
+// gliding on and back off over 0.12 s (longer for a turn past 90 degrees); a hand still coming in as it takes hold not
+// pulling it until it's there or stops (2 mm in 0.1 s); 4.57 cm of travel; let go past 4.0 cm it racks; the slide stop
+// at 4.1 cm, a tug of 4 mm off it; the hand sliding forward on it at most 3 mm a frame; home in 70 ms from fully back;
 // the trigger's rack back in 30 ms; held through 0.2 s of a lost palm.
 //   1  the grips: each palm placement is rigid and puts the bare palm centre (hands.cpp kLeftPalmCentre) on its hold
 //      within 0.5 mm, its hand's directions are kSlideGrips' within half a degree; S1's hold is the one there was
@@ -32,24 +34,37 @@
 //   8  the trigger's rack (Release): from home back to 4.57 cm and home again within 10 frames; from the stop, home
 //   9  lost: the hand lost a frame while held keeps it where it was, and found again it rides on with the hand; lost
 //      for good it lets go 0.2 s on (racked if it was back), at once if the trigger's let go; the pistol out of hand
-//      lets go at once (nothing drawn, not racked); neither grabs again until the trigger's let go and pressed
+//      lets go at once (nothing drawn, not racked); neither grabs again until the trigger's let go and pressed; the
+//      pistol out of hand while the hand eases back off (or glides on), a frame or 10 s: back in hand the hand is off
+//      the slide and stays off; 400 random sessions with the pistol out a frame now and then: no ease off rising
 //  10  frame times of 0, 1 s, -1 and not a number, and hands not numbers: nothing drawn past its travel or not a number
 //  11  the first headset test's misses (71-99 mm from S1's hold, out of its 7 cm then): every one grabbed now, 14 ways
-//      round the hold in three poses, overhand with the hand turned for it and in some grip turned the other two ways;
-//      the log's 101-125 mm presses too; its 131-142 once the hand comes 2 cm nearer while the press waits
+//      round the hold in three poses, overhand with the hand turned for it and in some grip turned the other two ways
+//      (in reach only of another grip, once the settle's 0.1 s shows the hand isn't coming on to its own); the log's
+//      101-125 mm presses too; its 131-142 once the hand comes 2 cm nearer while the press waits
 //  12  each grip from its own hand: on its hold, at the three holds' middle, turned 15 degrees off any way; drawn
 //      exactly in it once glided on; the grip it had last kept for a hand turned between two, a little
 //  13  no flip mid-pull: the hand turned from S1's to S2's and on to S3's as it pulls: S1 throughout, and as it eases
 //      off
 //  14  the glide: from 12.5 cm off onto the hold in the glide's time with no step beyond the eased move's, then riding
 //      the slide back with no jump; let go, back to the controller the same way while the slide springs home as before;
-//      grabbed again a frame later, on from where it's drawn; the hand turned the other way round; the hand moving
+//      grabbed again a frame later, on from where it's drawn; the hand turned the other way round: the glide longer in
+//      proportion, the wrist no faster than a quarter turn in 0.12 s, and the ease back off the same; the hand moving
 //  15  a press before the hand gets there: it waits 0.3 s, the trigger held; the hand coming in grabs it as it comes
 //      within reach, once; too late, the trigger let go, the pistol out of hand: missed, told with the nearest it came;
 //      "wait 0": missed at the press; a press with no palm doesn't wait
-//  16  the hand going on forward of home as it took hold (in from behind): the slide waits at home and comes back as
-//      soon as the hand does
+//  16  the hand still coming in as it takes hold, no pull meant: in from behind, the slide waits at home and comes back
+//      as soon as the hand does; the review's two scratch runs, from the side, behind, in front and the diagonals,
+//      pressed in reach or 20 cm out, at home and on the stop, in all three grips: taken in its own grip, never racked
+//      nor off the stop, 2 mm back at the most; then a pull meant after all: after a stop on the hold or 3 cm in front
+//      of it, swept on through, straight back from behind: the slide with the hand, racked; an overshoot settling back:
+//      no pull
 //  17  the tunables kept to their ranges; a 7 cm reach and a 0.3 s glide doing what they say
+//  18  tracking jumps: held at home or on the stop, the palm a frame 2-10 cm forward and back: 3 mm back at the most,
+//      never racked; gone forward and stayed, it slides on all the same
+//  19  why a press missed: the palm not known for most of the wait, told so with how long; pressed while the hand eases
+//      back off another grip, told so and from the hold it could take; let go while it waited for the grip the hand is
+//      turned for, told so, not "too far"; the pistol out of hand: no pistol to work
 // Usage: pistolslidetest [-v]   (-v prints every check)
 // The exit code is the number of failed checks.
 
@@ -756,6 +771,97 @@ void Lost() {
     p.Release();
     p.Press();
     Check(p.grabs == 2, "let go and pressed: grabbed");
+    // The pistol out of hand while the hand eases back off the slide, or glides on: that ends there, and back in hand
+    // the hand is where the controller has it, not back on the slide easing off again (the review: from 2 frames into
+    // the ease off it came back 0.72 of the way on, after a frame out of hand or 10 s; gliding on at 0.28, a frame out
+    // brought it back at 0.56, the last let go's ease).
+    int cases = 0, off = 0;
+    for (int after : {2, 5})
+        for (int out : {1, 72, 720}) {
+            Rig e;
+            e.Press();
+            e.Steps(36);
+            e.Release();
+            e.Steps(after - 1);
+            const bool easing = !e.o.held && e.o.share > 0.0f && e.o.share < 1.0f;
+            e.pistol = false;
+            e.Steps(out);
+            e.pistol = true;
+            bool stays = true;
+            for (int i = 0; i < 30; ++i) {
+                e.Step();
+                stays = stays && e.o.share == 0.0f;
+            }
+            ++cases;
+            off += easing && stays;
+        }
+    Check(off == cases,
+          "let go, 2 or 5 frames into the ease back off, the pistol out of hand 1, 72 or 720 frames: back in hand the "
+          "hand is off the slide and stays off (%d of %d)",
+          off, cases);
+    Rig g;
+    g.Press();
+    g.Steps(36);
+    g.Release();
+    g.Steps(20);  // all back off: this let go's ease from all on
+    g.HoldAt(0, 0.0f, 0.0f, 0.0f, -0.08f);
+    g.Press();
+    g.Steps(2);
+    const float gliding = g.o.share;
+    g.pistol = false;
+    g.Step();
+    g.pistol = true;
+    bool stays = true;
+    for (int i = 0; i < 30; ++i) {
+        g.Step();
+        stays = stays && g.o.share == 0.0f;
+    }
+    Check(gliding > 0.0f && gliding < 1.0f && stays,
+          "gliding on (%.2f of the way), the pistol out of hand a frame: back in hand the hand is off the slide and "
+          "stays off",
+          gliding);
+    // The review's random sessions: hands drifting in to each hold turned for it (or for another, three times in ten),
+    // the trigger pressed and let go, the palm lost two frames in a hundred, the pistol out of hand one in a hundred.
+    unsigned seed = 12345;
+    auto random = [&seed] {
+        seed = seed * 1103515245u + 12345u;
+        return static_cast<float>((seed >> 8) & 0xFFFF) / 65535.0f;
+    };
+    int rises = 0, flips = 0, played = 0;
+    for (int s = 0; s < 400; ++s) {
+        Rig w(s % 3, 0);
+        float at[3] = {};
+        int grip = 0;
+        float shareBefore = w.o.share;
+        bool heldBefore = false;
+        w.Watch();
+        for (int f = 0; f < 72 * 6; ++f, ++played) {
+            if (f % 60 == 0) {
+                grip = static_cast<int>(random() * 3) % 3;
+                for (float& v : at)
+                    v = (random() - 0.5f) * 0.3f;
+                w.TurnAs(random() > 0.7f ? (grip + 1) % 3 : grip);
+            }
+            for (float& v : at)
+                v *= 0.97f;  // coming in
+            w.HoldAt(grip, 0.0f, at[0], at[1], at[2]);
+            const int phase = f % 60;
+            w.trigger = phase < 5 ? 0.0f : phase < 45 ? 1.0f : 0.0f;
+            if (random() < 0.01f)
+                w.trigger = 0.45f;  // wavering
+            w.hand = random() > 0.02f;
+            w.pistol = random() >= 0.01f;
+            w.Step();
+            rises += !w.o.held && !w.o.grabbed && !heldBefore && w.o.share > shareBefore + 1e-4f;
+            shareBefore = w.o.share;
+            heldBefore = w.o.held;
+        }
+        flips += w.flips;
+    }
+    Check(rises == 0 && flips == 0,
+          "400 random sessions (%d frames): %d frames of an ease back off rising (the review's had 295, each just "
+          "after the pistol was back in hand), %d grip flips while drawn",
+          played, rises, flips);
 }
 
 void Degenerate() {
@@ -826,7 +932,7 @@ void FirstTest() {
     Ways(ways);
     const float* h = GripHold(0);
     for (int which = 0; which < 3; ++which) {
-        int presses = 0, grabbed = 0, overhand = 0, otherTurns = 0, otherGrabbed = 0;
+        int presses = 0, grabbed = 0, overhand = 0, otherTurns = 0, otherGrabbed = 0, otherLater = 0;
         for (int mm : kMissed)
             for (const auto& d : ways) {
                 const float at = mm / 1000.0f, p[3] = {h[0] + d[0] * at, h[1] + d[1] * at, h[2] + d[2] * at};
@@ -842,16 +948,25 @@ void FirstTest() {
                     s.PalmAt(p);
                     s.Step();
                     s.Press();
+                    const bool atOnce = s.o.grabbed;
+                    // In reach only of a grip it isn't turned for, it waits the settle (0.1 s) to see whether the hand
+                    // comes on to its own grip's hold: held still, it takes the one in reach then (this check was "at
+                    // once" before the review's fixes).
+                    for (int i = 0; i < 12 && s.grabs == 0; ++i)
+                        s.Step();
                     ++otherTurns;
-                    otherGrabbed += s.o.grabbed;
+                    otherGrabbed += s.grabs == 1 && (atOnce || s.lastGrab.waited <= kProfile.settle + 1.5f * kDt);
+                    otherLater += !atOnce;
                 }
             }
         Check(grabbed == presses && overhand == presses,
               "pose %d: all %d presses 71-99 mm from S1's hold, 14 ways round it, grabbed at once, %d overhand (the "
               "hand turned for it)",
               which, presses, overhand);
-        Check(otherGrabbed == otherTurns, "pose %d: turned as S2 or S3 there, %d of %d grabbed (in a grip in reach)",
-              which, otherGrabbed, otherTurns);
+        Check(otherGrabbed == otherTurns && otherLater > 0,
+              "pose %d: turned as S2 or S3 there, %d of %d grabbed (in a grip in reach; %d of them, only another's in "
+              "reach, once the settle's %.0f ms showed the hand wasn't coming on to its own)",
+              which, otherGrabbed, otherTurns, otherLater, kProfile.settle * 1000.0f);
     }
     int presses = 0, grabbed = 0;
     for (int mm : kFurther)
@@ -1097,8 +1212,11 @@ void Glide() {
     Check(a.grabs == 2 && a.o.grip == 0 && a.flips == 0 && regrabStep < 0.005f && a.palmStep < 0.02f,
           "pressed again a frame after the let go: grabbed, S1, glides on from where it was drawn (%.1f mm that frame, "
           "%.1f cm a frame at most)", regrabStep * 1000.0f, a.palmStep * 100.0f);
-    // The hand turned the other way round (as S2, out on the gun's left where only S1's hold is in reach): the palm
-    // still goes straight onto the hold, the hand turning over about it within the glide's time.
+    // The hand turned the other way round (as S2, out on the gun's left where only S1's hold is in reach), held still:
+    // once the press has waited the settle for it to come on to S2's hold, S1. The palm still goes straight onto the
+    // hold, the hand turning over about it, over a glide made longer for the turn (the review: in the glide's own
+    // 0.12 s the wrist whipped round 38 degrees a frame), so it turns no faster than through 90 degrees in 0.12 s does
+    // (the quaternions' straight blend turns a half turn's middle a fifth faster than a quarter turn's).
     Rig s(1, 1);
     s.Hold(0.0f, 0.12f);
     s.Step();
@@ -1106,14 +1224,42 @@ void Glide() {
     s.PalmInGun(from);
     s.Watch();
     s.Press();
-    const float turnedOff = s.lastGrab.turnedOff;
-    s.Steps(12);
-    const float spinMost = 1.6f * Distance(from, GripHold(0)) / glideFrames;
-    Check(s.grabs == 1 && s.o.grip == 0 && turnedOff > 150.0f && s.palmStep <= spinMost &&
-              s.turnStep < 1.6f * 1.45f * turnedOff / glideFrames,
-          "turned as S2 12 cm out on the gun's left: S1 (%.0f degrees off its turn), %.1f cm a frame at most (the "
-          "eased move's %.1f) and %.0f degrees",
-          turnedOff, s.palmStep * 100.0f, spinMost * 100.0f, s.turnStep);
+    for (int i = 0; i < 12 && s.grabs == 0; ++i)
+        s.Step();
+    const float turnedOff = s.lastGrab.turnedOff, spinFor = s.lastGrab.glideFor;
+    const float spinFrames = spinFor / kDt, wantFor = kProfile.glide * turnedOff / kProfile.turnAt;
+    const int spun = s.FramesOn(60) + 1;  // (the grab's frame the first of the glide)
+    const float spinMost = 1.6f * Distance(from, GripHold(0)) / spinFrames;
+    const float turnMost = 1.25f * 1.6f * kProfile.turnAt / glideFrames;
+    Check(s.grabs == 1 && s.o.grip == 0 && turnedOff > 150.0f && std::fabs(spinFor - wantFor) < 1e-4f &&
+              spun >= spinFrames - 1.0f && spun <= spinFrames + 1.0f,
+          "turned as S2 12 cm out on the gun's left: S1 (%.0f degrees off its turn) %.0f ms after the press, the glide "
+          "%.0f ms (%.0f x %.0f/%.0f), on in %d frames",
+          turnedOff, s.lastGrab.waited * 1000.0f, spinFor * 1000.0f, kProfile.glide * 1000.0f, turnedOff,
+          kProfile.turnAt, spun);
+    Check(s.palmStep <= spinMost && s.turnStep < turnMost,
+          "... the palm %.1f cm a frame at most (the eased move's %.1f), the hand turning %.0f degrees a frame at most "
+          "(a quarter turn in the glide's time: %.0f; it was 38)",
+          s.palmStep * 100.0f, spinMost * 100.0f, s.turnStep, turnMost / 1.25f);
+    // Let go with the controller turned the other way round from the grip it's drawn in (the hand turned as S2's while
+    // it held S1): the ease back off lengthened the same way.
+    Rig e(1, 0);
+    e.Press();
+    e.Steps(12);
+    e.TurnAs(1);
+    e.Hold();
+    e.Step();
+    const float offTurn = AngleBetween(g_palms[0], g_palms[1]);
+    e.Watch();
+    e.Release();
+    int easing = 1;
+    for (; easing < 60 && e.o.share > 0.0f; ++easing)
+        e.Step();
+    const float offFrames = kProfile.glide * std::fmax(1.0f, offTurn / kProfile.turnAt) / kDt;
+    Check(offTurn > 150.0f && easing >= offFrames - 1.0f && easing <= offFrames + 1.0f && e.turnStep < turnMost,
+          "let go with the controller turned %.0f degrees from the grip it's drawn in: eased back off over %d frames "
+          "(%.0f), %.0f degrees a frame at most",
+          offTurn, easing, offFrames, e.turnStep);
     // The hand still coming in at 1 m/s as it takes hold, from 12.5 cm above: no step beyond its own and the glide's.
     Rig m(1, 0);
     m.Hold(0.0f, 0.0f, 0.125f);
@@ -1219,8 +1365,54 @@ void Waits() {
     Check(q.grabs == 1 && q.o.held, "the hand lost 4 frames while it waits, then found 5 cm off: grabbed");
 }
 
-void GoingOn() {
-    std::printf("16 the hand going on forward as it takes hold\n");
+// The hand turned for a grip coming in to a stop on its hold, along u (a unit direction in gun space, from the hold out
+// to where the hand starts): the trigger pressed where it starts (start out, with the slide stopBack back), then either
+// slowing evenly from v to the stop or at v until its last 3 cm and eased to the stop from there (the review's two
+// scratch runs); held still 0.3 s once stopped, then let go. No pull meant at all.
+struct Approach {
+    int grabs = 0, grip = -1;
+    float pulled = 0.0f;  // the slide's pull once the hand had stopped (m, from home or the stop)
+    float most = 0.0f;    // the most it was pulled on the way (m, from home or the stop)
+    bool racked = false;  // the let go racked it (or dropped the stop)
+};
+Approach ComeIn(int grip, const float* u, float start, float v, bool evenly, bool locked, float stopBack) {
+    Rig r(1, grip);
+    r.locked = locked;
+    const float base = locked ? kProfile.lockAt : 0.0f;
+    float dist = start, speed = v;
+    auto at = [&] { r.HoldAt(grip, stopBack, u[0] * dist, u[1] * dist, u[2] * dist); };
+    at();
+    r.Step();
+    r.Press();
+    Approach a;
+    auto note = [&] {
+        if (r.o.back >= 0.0f)
+            a.most = std::fmax(a.most, r.o.back - base);
+    };
+    note();
+    const float slowing = v * v / (2.0f * start);
+    for (int f = 0; f < 400 && dist > 0.0f; ++f) {
+        if (evenly)
+            speed = std::fmax(speed - slowing * kDt, 0.02f);
+        else
+            speed = dist < 0.03f ? std::fmax(v * dist / 0.03f, 0.05f) : v;
+        dist = std::fmax(dist - speed * kDt, 0.0f);
+        at();
+        r.Step();
+        note();
+    }
+    r.Steps(22);
+    note();
+    a.pulled = r.o.back >= 0.0f ? r.o.back - base : 0.0f;
+    a.grabs = r.grabs;
+    a.grip = r.lastGrab.grip;
+    r.Release();
+    a.racked = r.racks > 0;
+    return a;
+}
+
+void ComingIn() {
+    std::printf("16 the hand still coming in as it takes hold\n");
     // In from behind as S3: pressed 15 cm behind its hold, coming forward at 0.6 m/s, grabbed as it comes within reach
     // and going on to 2 cm short of the hold before it stops; then pulled back 3 cm from there.
     Rig r(1, 2);
@@ -1246,6 +1438,195 @@ void GoingOn() {
           "S3 in from behind, grabbed %.1f cm out, the hand going on %.1f cm: the slide at home all the way; pulled 3 "
           "cm back from there: 3 cm back (%.2f)",
           -grabbedAt * 100.0f, (z - grabbedAt) * 100.0f, r.o.back * 100.0f);
+
+    // The review's first scratch run: pressed in reach with the hand still coming in, slowing evenly to a stop on the
+    // hold, in the gun's level plane from the side, some of it from in front (positive angles) or from behind: S1 from
+    // its left, S2 from its right, S3 from behind; 6, 10 or 13 cm out at 0.3 or 0.6 m/s; at home, and on the slide
+    // stop with the hand stopping on the hold there or where the hold is with the slide closed (4.1 cm in front of it).
+    // At 30 degrees towards the front, 10-13 cm out, the approach itself had drawn the slide fully back and racked it.
+    const char* const from[3] = {"S1 from its left", "S2 from its right", "S3 from behind"};
+    const float side[3] = {1.0f, -1.0f, 1.0f};
+    for (int g = 0; g < 3; ++g) {
+        int runs = 0, own = 0, racked = 0;
+        float worst = 0.0f, worstStop = 0.0f;
+        for (int stop = 0; stop < 3; ++stop)  // home; on the stop, to its hold there; to where it is closed
+            for (float v : {0.3f, 0.6f})
+                for (float d : {0.06f, 0.10f, 0.13f})
+                    for (float angle : {-45.0f, -20.0f, 0.0f, 15.0f, 30.0f, 45.0f, 60.0f}) {
+                        const float a = (g == 2 ? angle - 90.0f : angle) * kPi / 180.0f;
+                        const float u[3] = {side[g] * std::cos(a), 0.0f, std::sin(a)};
+                        const Approach run =
+                            ComeIn(g, u, d - 0.001f, v, true, stop > 0, stop == 1 ? kProfile.lockAt : 0.0f);
+                        ++runs;
+                        own += run.grabs == 1 && run.grip == g;
+                        racked += run.racked;
+                        (stop ? worstStop : worst) = std::fmax(stop ? worstStop : worst, run.most);
+                    }
+        Check(own == runs && racked == 0 && worst <= kProfile.settleStep + 1e-5f &&
+                  worstStop < kProfile.tug - 0.001f,
+              "%s, 45 degrees from behind to 60 from in front, pressed 6-13 cm out coming in at 0.3-0.6 m/s to a stop: "
+              "%d of %d taken in its grip, %d racked or off the stop, the slide %.1f mm back at the most (%.1f on the "
+              "stop; its tug %.0f)",
+              from[g], own, runs, racked, worst * 1000.0f, worstStop * 1000.0f, kProfile.tug * 1000.0f);
+    }
+    // The review's second: pressed 20 cm out (waiting), the hand coming in at 0.5 or 1 m/s from each of the 14 ways
+    // round its own grip's hold, easing to a stop over its last 3 cm. Before, all five ways with some of it from in
+    // front (in front, and the four diagonals there) racked it by themselves, in all three grips; turned for S2 or S3
+    // from in front, the press took S1 14-19 cm out of the hand's own grip's hold, and its coming on in pulled it.
+    float ways[14][3];
+    Ways(ways);
+    for (int g = 0; g < 3; ++g) {
+        int runs = 0, own = 0, racked = 0, frontRuns = 0, frontOwn = 0;
+        float worst = 0.0f;
+        for (float v : {0.5f, 1.0f})
+            for (const auto& u : ways) {
+                const Approach run = ComeIn(g, u, 0.20f, v, false, false, 0.0f);
+                ++runs;
+                own += run.grabs == 1 && run.grip == g;
+                racked += run.racked;
+                worst = std::fmax(worst, run.most);
+                if (u[2] > 0.1f)
+                    ++frontRuns, frontOwn += run.grabs == 1 && run.grip == g && !run.racked && run.most < 0.001f;
+            }
+        Check(own == runs && racked == 0 && worst <= kProfile.settleStep + 1e-5f && frontOwn == frontRuns,
+              "%s's hand pressed 20 cm out, coming in from the 14 ways round its hold to a stop: %d of %d taken in its "
+              "grip, %d racked, the slide %.1f mm back at the most (from in front and its diagonals: %d of %d)",
+              kNames[g], own, runs, racked, worst * 1000.0f, frontOwn, frontRuns);
+    }
+
+    // A pull meant after all. Coming in from in front (S1 from its left, 30 degrees towards the front, pressed 13 cm
+    // out at 0.6 m/s) and stopped on the hold, still for 0.15 s, then pulled 5 cm: the slide comes back with the hand
+    // from there, and racks.
+    const float a30 = 30.0f * kPi / 180.0f;
+    const float front30[3] = {std::cos(a30), 0.0f, std::sin(a30)};
+    {
+        Rig p(1, 0);
+        float dist = 0.129f, speed = 0.6f;
+        const float slowing = speed * speed / (2.0f * dist);
+        p.HoldAt(0, 0.0f, front30[0] * dist, 0.0f, front30[2] * dist);
+        p.Step();
+        p.Press();
+        while (dist > 0.0f) {
+            speed = std::fmax(speed - slowing * kDt, 0.02f);
+            dist = std::fmax(dist - speed * kDt, 0.0f);
+            p.HoldAt(0, 0.0f, front30[0] * dist, 0.0f, front30[2] * dist);
+            p.Step();
+        }
+        p.Steps(11);
+        const float still = p.o.back;
+        float worst = 0.0f;
+        for (int i = 1; i <= 12; ++i) {
+            p.Hold(0.05f * i / 12.0f);
+            p.Step();
+            worst = std::fmax(worst, std::fabs(p.o.back - std::fmin(0.05f * i / 12.0f, kProfile.travel)));
+        }
+        p.Release();
+        Check(still < 1e-5f && worst < 1e-5f && p.racks == 1,
+              "S1 in from in front at 30 degrees, stopped on the hold, still 0.15 s, pulled 5 cm: the slide with the "
+              "hand from there (%.4f mm off at most), racked",
+              worst * 1000.0f);
+    }
+    // Stopped 3 cm in front of the hold (S1 straight in from in front, pressed 12 cm out at 0.5 m/s), still 0.15 s,
+    // then pulled 4.6 cm back from there: it comes back with the hand at once, and racks (no part of the pull lost).
+    {
+        Rig p(1, 0);
+        float dist = 0.12f;
+        p.HoldAt(0, 0.0f, 0.0f, 0.0f, dist);
+        p.Step();
+        p.Press();
+        while (dist > 0.03f) {
+            dist = std::fmax(dist - 0.5f * kDt * std::fmin(1.0f, (dist - 0.03f) / 0.03f + 0.1f), 0.03f);
+            p.HoldAt(0, 0.0f, 0.0f, 0.0f, dist);
+            p.Step();
+        }
+        p.Steps(11);
+        const float still = p.o.back;
+        float first = -1.0f;
+        for (int i = 1; i <= 12; ++i) {
+            p.HoldAt(0, 0.0f, 0.0f, 0.0f, 0.03f - 0.046f * i / 12.0f);
+            p.Step();
+            if (first < 0.0f)
+                first = p.o.back;
+        }
+        p.Release();
+        Check(still < 1e-5f && std::fabs(first - 0.046f / 12.0f) < 1e-5f && p.racks == 1,
+              "S1 stopped 3 cm in front of its hold, still 0.15 s, pulled back 4.6 cm: %.1f mm back the first frame of "
+              "it (the hand's %.1f), racked",
+              first * 1000.0f, 0.046f / 12.0f * 1000.0f);
+    }
+    // The sweep: straight in from in front at 0.5 m/s (S1, pressed 12 cm out) through the hold and on 6 cm without
+    // stopping: what goes on past the hold pulls it, and it racks.
+    {
+        Rig p(1, 0);
+        float along = 0.12f;
+        p.HoldAt(0, 0.0f, 0.0f, 0.0f, along);
+        p.Step();
+        p.Press();
+        while (along > -0.06f) {
+            along = std::fmax(along - 0.5f * kDt, -0.06f);
+            p.HoldAt(0, 0.0f, 0.0f, 0.0f, along);
+            p.Step();
+        }
+        const float back = p.o.back;
+        p.Release();
+        Check(std::fabs(back - kProfile.travel) < 1e-5f && p.racks == 1,
+              "S1 swept in from in front through its hold and on 6 cm: %.2f cm back, racked", back * 100.0f);
+    }
+    // From behind and straight back without stopping (S3 pressed 12 cm behind its hold, in at 0.6 m/s to 2 cm short,
+    // then at once back 5 cm at 0.6 m/s): it comes back from the first frame back, and racks.
+    {
+        Rig p(1, 2);
+        float along = -0.12f;
+        p.HoldAt(2, 0.0f, 0.0f, 0.0f, along);
+        p.Step();
+        p.Press();
+        while (along < -0.02f) {
+            along = std::fmin(along + 0.6f * kDt, -0.02f);
+            p.HoldAt(2, 0.0f, 0.0f, 0.0f, along);
+            p.Step();
+        }
+        const float turned = p.o.back;
+        p.HoldAt(2, 0.0f, 0.0f, 0.0f, along - 0.6f * kDt);
+        p.Step();
+        const float first = p.o.back;
+        for (float to = along - 0.6f * kDt; to > along - 0.05f;) {
+            to = std::fmax(to - 0.6f * kDt, along - 0.05f);
+            p.HoldAt(2, 0.0f, 0.0f, 0.0f, to);
+            p.Step();
+        }
+        p.Release();
+        Check(turned < 1e-5f && std::fabs(first - 0.6f * kDt) < 1e-5f && p.racks == 1,
+              "S3 in from behind and straight back without a stop: home as it came, %.1f mm back the first frame back "
+              "(the hand's %.1f), racked",
+              first * 1000.0f, 0.6f * kDt * 1000.0f);
+    }
+    // Overshooting the hold and settling back (S3 in from behind at 0.6 m/s, 1 cm past its hold, back onto it over
+    // 0.1 s), at home and on the slide stop: no pull, nor the stop dropped.
+    for (bool locked : {false, true}) {
+        Rig p(1, 2);
+        p.locked = locked;
+        const float base = locked ? kProfile.lockAt : 0.0f;
+        float along = -0.12f, peak = 0.0f;
+        p.HoldAt(2, base, 0.0f, 0.0f, along);
+        p.Step();
+        p.Press();
+        while (along < 0.01f) {
+            along = std::fmin(along + 0.6f * kDt * std::fmin(1.0f, (0.01f - along) / 0.02f + 0.15f), 0.01f);
+            p.HoldAt(2, base, 0.0f, 0.0f, along);
+            p.Step();
+            peak = std::fmax(peak, p.o.back - base);
+        }
+        for (int i = 1; i <= 7; ++i) {
+            p.HoldAt(2, base, 0.0f, 0.0f, 0.01f * (1.0f - i / 7.0f));
+            p.Step();
+            peak = std::fmax(peak, p.o.back - base);
+        }
+        p.Steps(22);
+        p.Release();
+        Check(p.grabs == 1 && peak < 0.001f && p.racks == 0,
+              "S3 in from behind 1 cm past its hold and settling back onto it%s: %.1f mm back at the most, %s",
+              locked ? ", on the slide stop" : "", peak * 1000.0f, p.racks ? "racked" : "not racked");
+    }
 }
 
 void Tunables() {
@@ -1282,6 +1663,138 @@ void Tunables() {
           frames * kDt * 1000.0f);
 }
 
+void Jumps() {
+    std::printf("18 tracking jumps\n");
+    // Held at home or on the slide stop, the palm jumping forward a frame and straight back (the left controller's
+    // tracking): the hand slides forward on the slide at most 3 mm a frame (slip), so it's drawn that far back at the
+    // most after, and never racked or off the stop (the review: a 2 cm jump left it 2 cm back, 5 cm racked it).
+    for (bool locked : {false, true}) {
+        const float base = locked ? kProfile.lockAt : 0.0f;
+        float most = 0.0f;
+        int racks = 0;
+        for (float jump : {0.02f, 0.05f, 0.10f}) {
+            Rig r;
+            r.locked = locked;
+            r.Hold(base);
+            r.Press();
+            r.Steps(12);
+            r.HoldAt(0, base, 0.0f, 0.0f, jump);
+            r.Step();
+            r.Hold(base);
+            r.Steps(30);
+            most = std::fmax(most, r.o.back - base);
+            r.Release();
+            racks += r.racks;
+        }
+        Check(most <= kProfile.slip + 1e-6f && racks == 0,
+              "%s, the palm jumping 2, 5 or 10 cm forward a frame and straight back: %.1f mm back at the most after "
+              "(the slip's %.0f a frame), %s",
+              locked ? "on the slide stop" : "held at home", most * 1000.0f, kProfile.slip * 1000.0f,
+              racks ? "racked" : "never racked");
+    }
+    // Gone on forward and stayed there, it slides forward on it all the same, 3 mm a frame: pushed 3 cm forward of home
+    // in a frame and still 0.2 s, then pulled 3 cm back from there: 3 cm back.
+    Rig f;
+    f.Press();
+    f.Steps(12);
+    f.HoldAt(0, 0.0f, 0.0f, 0.0f, 0.03f);
+    f.Steps(15);
+    for (int i = 1; i <= 12; ++i) {
+        f.HoldAt(0, 0.0f, 0.0f, 0.0f, 0.03f - 0.03f * i / 12.0f);
+        f.Step();
+    }
+    Check(std::fabs(f.o.back - 0.03f) < 1e-5f && f.o.held,
+          "pushed 3 cm forward of home in a frame, still 0.2 s, pulled 3 cm back from there: %.2f cm back",
+          f.o.back * 100.0f);
+}
+
+void Misses() {
+    std::printf("19 why a press missed\n");
+    // Waiting through frames without the palm (busy: the right trigger pulled, a magazine in the hand; or the left
+    // controller lost), the palm on the hold while it isn't known, the wait over: told it wasn't seen within reach, and
+    // for how long it wasn't known (the review: told "didn't come within reach" with the palm well within it).
+    Rig b(1, 0);
+    b.Hold(0.0f, 0.0f, 0.20f);
+    b.Step();
+    b.Press();
+    b.Steps(3);
+    b.hand = false;
+    b.Hold();
+    b.Steps(24);
+    b.hand = true;
+    b.Steps(3);
+    Check(b.misses == 1 && b.grabs == 0 && std::strstr(b.lastMiss.missWhy, "wasn't seen") &&
+              std::fabs(b.lastMiss.unseen - (kProfile.wait - 3 * kDt)) < 1.5f * kDt,
+          "the palm not known for most of the wait, on the hold then: missed (%s), %.0f ms of it not known",
+          b.lastMiss.missWhy, b.lastMiss.unseen * 1000.0f);
+    // Pressed while the hand still eases back off S1, the palm 6 cm from S2's hold (13.8 cm from S1's): with "wait 0",
+    // missed at the press, told why, and from the nearest hold it could take (S1's, out of reach; it had been told as
+    // S2's, 6 cm off, "too far" all the same); with the wait, S2 once the ease is done.
+    float away[3];
+    for (int i = 0; i < 3; ++i)
+        away[i] = GripHold(1)[i] - GripHold(0)[i];
+    const float apart = std::sqrt(Dot(away, away));
+    const float p[3] = {GripHold(1)[0] + away[0] / apart * 0.06f, GripHold(1)[1] + away[1] / apart * 0.06f,
+                        GripHold(1)[2] + away[2] / apart * 0.06f};
+    for (float wait : {0.0f, kProfile.wait}) {
+        Rig e(1, 0);
+        e.slide.Tune(kProfile.reach, wait, kProfile.glide);
+        e.Press();
+        e.Steps(12);
+        e.Release();
+        e.TurnAs(1);
+        e.PalmAt(p);
+        e.Press();
+        const bool easing = e.o.share > 0.0f && !e.o.grabbed;
+        e.Steps(20);
+        if (wait == 0.0f)
+            Check(easing && e.misses == 1 && e.grabs == 1 && std::strstr(e.lastMiss.missWhy, "eased back off") &&
+                      e.lastMiss.pressedFrom >= kProfile.reach,
+                  "pressed 6 cm from S2's hold as the hand eases back off S1, wait 0: missed (%s), %.0f mm from the "
+                  "nearest hold it could take",
+                  e.lastMiss.missWhy, e.lastMiss.pressedFrom * 1000.0f);
+        else
+            Check(easing && e.misses == 0 && e.grabs == 2 && e.lastGrab.grip == 1,
+                  "... with the wait: S2 %.0f ms after the press, once the ease is done", e.lastGrab.waited * 1000.0f);
+    }
+    // Turned for S3 and pressed 11 cm in front of S1's hold (in reach of S1's only), coming on towards S3's, the
+    // trigger let go before that one came within reach: missed, told it waited for the grip the hand is turned for,
+    // and the press in reach (so not told "too far").
+    Rig t(1, 2);
+    const float* s1 = GripHold(0);
+    const float start[3] = {s1[0], s1[1], s1[2] + 0.11f};
+    t.PalmAt(start);
+    t.Step();
+    t.Press();
+    float toward[3];
+    for (int i = 0; i < 3; ++i)
+        toward[i] = GripHold(2)[i] - start[i];
+    const float length = std::sqrt(Dot(toward, toward));
+    for (int k = 1; k <= 3; ++k) {
+        float q[3];
+        for (int i = 0; i < 3; ++i)
+            q[i] = start[i] + toward[i] / length * 0.007f * k;
+        t.PalmAt(q);
+        t.Step();
+    }
+    t.Release();
+    Check(t.misses == 1 && t.grabs == 0 && t.lastMiss.pressedFrom < kProfile.reach &&
+              std::strstr(t.lastMiss.missWhy, "turned for"),
+          "turned for S3, pressed in reach of S1's hold only and coming on, the trigger let go: missed (%s), pressed "
+          "%.0f mm from the nearest hold",
+          t.lastMiss.missWhy, t.lastMiss.pressedFrom * 1000.0f);
+    // The pistol out of hand while it waits: told there was no pistol to work (hands.cpp says which: out of hand, or
+    // pistol.txt no longer working the slide; the review found pistol.txt turned off told as the pistol leaving).
+    Rig n(1, 0);
+    n.Hold(0.0f, 0.0f, 0.20f);
+    n.Step();
+    n.Press();
+    n.pistol = false;
+    n.Step();
+    Check(n.misses == 1 && std::strstr(n.lastMiss.missWhy, "no pistol"), "the pistol out of hand while it waits: %s",
+          n.lastMiss.missWhy);
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -1308,8 +1821,10 @@ int main(int argc, char** argv) {
     NoFlip();
     Glide();
     Waits();
-    GoingOn();
+    ComingIn();
     Tunables();
+    Jumps();
+    Misses();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

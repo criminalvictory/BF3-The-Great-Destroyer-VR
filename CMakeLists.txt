@@ -103,7 +103,8 @@ target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the
 # The train pistol's slide worked by the left hand (src/pistolslide.cpp, as hands.cpp runs it) on scripted
 # frames at 72 Hz: the three grips and which the hand takes, the grab and its reach (the first headset
 # test's misses), a press waiting for the hand, the hand gliding on and off, fresh presses, the ride back
-# and its stops, the spring home, the slide stop, the trigger's rack, the hand or the pistol lost.
+# and its stops, the spring home, the slide stop, the trigger's rack, the hand or the pistol lost, the
+# hand still coming in as it takes hold (from every side), tracking jumps, why a press missed.
 add_executable(pistolslidetest tools/pistolslidetest.cpp src/pistolslide.cpp)
 target_compile_definitions(pistolslidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
