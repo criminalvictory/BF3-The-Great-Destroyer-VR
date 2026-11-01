@@ -2,9 +2,9 @@
 
 Studied 2026-10-31 from the game's own reload (recorded with `reloadrec`), the M416's manual reload in
 the mod, and the pistol's ammo. Build steps 2-4 are in (behind `build\pistol.txt`, off by default) and had their
-first headset test on 2026-11-01 (below); the next round's magnetic magazine and G2 carry are in after it. The working
-files (prototype modules, offline tests, pose matrices and pictures) are in `screenshots\wf_reload\` on the development
-machine. They
+first headset test on 2026-11-01 (below); the next round's magnetic magazine and G2 carry, and the magnetic slide with
+three grips, are in after it. The working files (prototype modules, offline tests, pose matrices and pictures) are in
+`screenshots\wf_reload\` on the development machine. They
 stay out of the repository, because the pictures, recordings and pose files are taken from the game's own
 meshes and animations; only the finger matrices the mod needs are in `src\pistolposes.h`, as handpose.cpp's are.
 
@@ -54,7 +54,7 @@ Still to check: whether that server path is the pistol's own slot or whichever w
 | Left grip at the pelvis | Takes a magazine (pouch.cpp's zone and squeeze rule). |
 | Left grip held | Carries it; let go away from the gun and it falls. |
 | Left hand to the grip | Inserts it: caught within 7.5 cm of the grip's mouth from any direction, it glides in and only then the fingers open (the flat base); the palm pushes it up its line, or held there gripped it goes home by itself. |
-| Left trigger at the slide's rear | Grabs the slide (as the M416's charging handle); pull back fully and let go to rack. |
+| Left trigger at the slide's rear | Grabs the slide (as the M416's charging handle) within 13 cm, in the grip the hand is turned for (overhand, the fingers over its left side, or a pinch from behind); a press just before the hand gets there waits 0.3 s for it. The hand glides on; pull back fully and let go to rack. |
 | Right trigger | Fires. Empty with the slide locked and a new magazine in: the first pull sends the slide home. |
 
 - **Firing to empty locks the slide open**: the mod draws it 4.1 cm back, since the game's own slide
@@ -63,7 +63,8 @@ Still to check: whether that server path is the pistol's own slot or whichever w
   it at 2.390 s. Only the fingers change: closed round it to carry (C2), open with the magazine standing
   on the palm at the gun (B). So nothing jumps in the hand at the well.
 - **The slide by hand**: the palm on the slide's top, the fingers over its right side's serrations, the
-  thumb on its left (fitted on the meshes; the game has no rack of its own).
+  thumb on its left (fitted on the meshes; the game has no rack of its own). Since the next round's step 2, two more
+  grips beside it: the fingers over its left side with the hand from the right, and a pinch from behind (below).
 - Holding X still plays the game's own reload as a fallback.
 
 ## Fixes the review asked for before building
@@ -136,7 +137,7 @@ were prototyped offline (`screenshots\wf_reload\g2\`).
    flicker; tunable in pistol.txt.
 2. G2 as the default carry, in the magnetic catch (the regrip while the well holds the magazine).
 3. The slide: a much larger reach whatever the hand's turn, the hand eased onto it, and the three grips (two new
-   poses to fit).
+   poses to fit). Built as step 2 (below).
 4. Then the ammo proof and the writes (build order 5-6).
 
 ## Next round, step 1 built (2026-11-01): the magazine magnetic, G2 the carry
@@ -191,6 +192,42 @@ Off by default as before (`build\pistol.txt` "mag 1"); tested offline only (`too
   takes the magazine 9 cm up to 1.5 cm in and the dwell's snap the 9.6 cm left, the hand drawn on it going with it:
   18.4 cm at the most (measured), turned up to 52 degrees for G2. Pushed, the real hand goes up with it. The step's own
   report put it at about 14 cm. For the headset test to judge.
+
+## Next round, step 2 built (2026-11-01): the slide magnetic, three grips
+
+Off by default as before (`build\pistol.txt` "slide 1"); tested offline only (`tools\pistolslidetest.cpp`, 134 checks).
+- **Three grips** (`screenshots\wf_reload\slidegrips\`, picture `design\pictures\21b_three_slide_grips.png`; their
+  fingers, palms and hand directions are in `src\pistolposes.h` from `slidegrips\slidegrips.h`): S1 overhand, the
+  fingers over the right side (today's, "great"); S2 the fingers over the left side, the hand from the gun's right; S3
+  the index and the thumb pinching the rear from behind. **Neither new grip passed its independent check**, and neither
+  has been seen in the game: S2's ring finger pad is 1.85 mm off the grooves (the limit was 1.5) and its palm sits about
+  2 cm above the slide; S3's thumb base has the hammer's corner 2.46 mm in it for the first 1.6 mm of the pull, and its
+  index holds with the side of its tip. Both went in anyway as best efforts, for the user to judge.
+- **Which grip**: the one the hand is turned for (out of the palm and along the fingers, as the controller holds it),
+  of those whose hold is in reach, so the slide is grabbed however the hand is turned. The fingers tell them apart (S1's
+  point to the gun's right, S2's to its left, S3's at the muzzle). The grip it had last is taken again unless another
+  fits clearly better (between S2 and S3, 70 degrees of the hand's turn apart, a hand goes over at 35 degrees, or 7
+  further on after the other). Once grabbed it's that grip until the hand has eased back off: never a flip mid-pull.
+- **Magnetic**: a press grabs with the palm centre within 13 cm of a grip's hold on the slide's rear (it was 7 cm from
+  S1's, where the first test's presses missed at 7.1-9.9 cm; every one of them grabs now, whichever way round the hold).
+  A press made out of reach waits 0.3 s for the hand, the trigger held, and grabs the moment the palm comes within
+  reach; let go first, or too late, it's told once as a miss with the nearest the palm came.
+- **The glide**: the hand drawn glides from where it's drawn into the grip, eased over 0.12 s, its fingers with it, the
+  palm going straight (the blend turns about the palm's centre; about the glove's anchor, a hand turned the other way
+  round swung the palm 3.5 cm a frame). Then it rides the slide back as before. Let go, the slide springs home as before
+  (5 frames from fully back) out of the hand, which eases back to the controller over the same 0.12 s. Grabbed again
+  while it's still easing back, it glides on from where it's drawn (0.4 mm that frame).
+- **The hand going on forward**: a hand still coming in as it takes hold (S3 from behind: grabbed 12.5 cm out, it goes
+  on 10 cm) would have had to come all the way back before the slide moved. Now the hand going forward of home (or the
+  slide stop) slides forward on it, so the pull counts from where the hand is (a deliberate change to one old check:
+  pushed 3 cm forward on the stop, a 3 mm tug is now 3 mm from there, not from where it was grabbed).
+- **The right trigger**: no grab while it's pulled past 0.6 (a left trigger squeezed along with a shot; the 13 cm takes
+  in the two-handed hold, and a slide held holds the trigger off). A slide already held stays held. Kept: the right
+  trigger held off while the slide is held, with its reset; no two-handed hold taken while the slide is held; no grab
+  with a magazine in the hand or for 0.3 s after a seat; the M416's charging handle untouched.
+- **Tunables**: "grab 13 0.3 0.12" (the reach in cm, the wait and the glide in seconds; kept to 3-25 cm, 0-1 s,
+  0.05-0.5 s), logged once when pistol.txt is read. Each grab's log line says which grip, how far, how long after the
+  press, and how far the hand's turn was from the grip's.
 
 ## Open questions for the user
 

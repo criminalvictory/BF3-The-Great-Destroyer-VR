@@ -7,7 +7,7 @@ namespace pistolposes {
 // hands.cpp gives skin.cpp the bare left hand's (t.bareLeftFingers): each of the left glove's bones, handpose.cpp's
 // 0-22, from the bind space relative to its palm (1); skin.cpp DrawBareArms puts them on the bare hand through
 // kBareGlove. They're blended in bone by bone about each bone's joint (handpose::Pivot), as PistolSupport's are: the
-// magazine's (the carry, the flat base, the push home: pistolmag.cpp, pistol.txt "mag 1") and the slide's.
+// magazine's (the carry, the flat base, the push home: pistolmag.cpp, pistol.txt "mag 1") and the slide's three grips.
 
 // ---- The magazine in the left hand (pistolmag.cpp) ----
 // Where each pose has the magazine on the palm: gun space with it home -> the arms' bind space, so the pistol's frame
@@ -207,5 +207,123 @@ constexpr float kSlide[23][12] = {
 // t.leftPose) is the pistol's pose times this. It slides back with the slide (along the frame's -z).
 constexpr float kSlidePalm[12] = {-0.70111f, 0.55312f, -0.45000f, -0.15796f, 0.52516f, 0.82744f,
                                   0.19884f,  -1.12753f, 0.48234f, -0.09691f, -0.87061f, 0.06531f};
+
+// The slide's other two grips, beside S1 (the user after the first headset test, 2026-11-01: the slide racks only with
+// the left hand aimed to the right; three ways, "One from the left side, one aiming on the right side, which ... is
+// already working, and one maybe in the middle. If I can get, like, the index finger and the thumb wrapped around the
+// slider"). Fitted on the meshes offline (screenshots\wf_reload\slidegrips\S2-left, S3-pinch) and taken from
+// slidegrips\slidegrips.h, which slidegrips\three\sggen.exe wrote from their pose files as design\posegen.exe writes
+// the rest of this file (it writes S1's kSlide and kSlidePalm above character for character: slidegrips\three\
+// check.txt). The fingers and the palm as S1's are; blended in as kSlide's are (hands.cpp, pistolslide.cpp). Neither
+// passed its independent check (slidegrips\verify_S2-left, verify_S3-pinch: each failed one requirement, flagged
+// below), so both are best efforts, and neither has been seen in the game. Only the hand is posed (the forearm's bones
+// are the palm's, as in kSlide): the mod's arm solver places the forearm, which wasn't checked for either. Picture:
+// design\pictures\21b_three_slide_grips.png.
+
+// S2, the slide racked with the fingers to the left (slidegrips\S2-left: s2fit.exe, pose_slide_left.txt): the hand
+// turned the other way round from S1, coming from the gun's right and behind with the palm above the slide's rear
+// right edge; the index, middle and ring fingers hooked over its left side onto the serrations, the little finger on
+// the plain side behind them (under the safety lever), the thumb down its right side. Best effort, not passed
+// (slidegrips\verify_S2-left): the ring finger's pad is 1.85 mm from the grooves, over the 1.5 limit (it touches the
+// plain face 1.9 mm behind the first groove; only its side touches the grooves), and the palm's centre is about 2 cm
+// above the slide's top and 3.7 cm right of its right side, the palm touching it only at the rear right bevel. The
+// index's and middle finger's pads are on the grooves (0.18, 0.16 mm), the thumb's on the right side (0.26 mm);
+// nothing goes more than 0.47 mm into the gun at any point of the pull, and the game's right hand (the recording's
+// hold) stays at least 9.8 mm away. The wrist ends on the gun's right, so the solved forearm comes across in front of
+// the gun. Its hold (the palm centre, right of the slide) is 78 mm from S1's (kSlideGrips below).
+constexpr float kSlideLeft[23][12] = {
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.68419f, -0.72504f, -0.07846f, 0.96945f, 0.37521f, 0.44221f, -0.81463f, 0.61149f, 0.62534f, 0.52793f, 0.57461f, -0.80484f},
+    {-0.13705f, -0.05125f, -0.98924f, 0.92918f, -0.78091f, -0.60881f, 0.13973f, 2.09420f, -0.60942f, 0.79166f, 0.04341f, -0.26068f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.98993f, 0.13139f, -0.05265f, -0.12483f, -0.13730f, 0.98178f, -0.13135f, 0.12759f, 0.03443f, 0.13726f, 0.98994f, -0.16614f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.97218f, 0.21783f, -0.08610f, -0.20228f, -0.23093f, 0.95287f, -0.19674f, 0.22568f, 0.03918f, 0.21115f, 0.97667f, -0.24686f},
+    {-0.02947f, 0.08043f, -0.99633f, 0.75297f, -0.88817f, -0.45938f, -0.01081f, 2.03413f, -0.45856f, 0.88459f, 0.08497f, -0.43249f},
+    {0.98148f, 0.15685f, -0.10996f, -0.13466f, -0.17106f, 0.97601f, -0.13466f, 0.15100f, 0.08620f, 0.15098f, 0.98477f, -0.20763f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.98505f, 0.14999f, -0.08479f, -0.13582f, -0.16099f, 0.97658f, -0.14274f, 0.14391f, 0.06140f, 0.15425f, 0.98612f, -0.19736f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.19340f, 0.52018f, -0.83187f, 0.12142f, -0.94766f, -0.12049f, -0.29566f, 1.79483f, -0.25403f, 0.84551f, 0.46966f, -0.61456f},
+    {0.42412f, 0.48221f, -0.76655f, -0.01036f, -0.90416f, 0.17757f, -0.38855f, 1.47065f, -0.05125f, 0.85787f, 0.51130f, -0.76865f},
+    {0.68429f, -0.72489f, -0.07891f, 0.96935f, 0.37523f, 0.44286f, -0.81426f, 0.61067f, 0.62521f, 0.52760f, 0.57506f, -0.80453f},
+    {0.77912f, -0.48870f, -0.39255f, 0.72959f, 0.35290f, 0.85953f, -0.36962f, 0.05583f, 0.51805f, 0.14945f, 0.84216f, -0.38960f},
+    {0.51767f, 0.59943f, -0.61050f, -0.21215f, -0.85393f, 0.31769f, -0.41216f, 1.31158f, -0.05311f, 0.73468f, 0.67633f, -0.67227f},
+    {0.41888f, 0.45229f, -0.78738f, 0.04654f, -0.90762f, 0.18214f, -0.37822f, 1.47423f, -0.02765f, 0.87307f, 0.48680f, -0.78017f},
+    {0.45475f, 0.54155f, -0.70705f, -0.07881f, -0.88865f, 0.22314f, -0.40064f, 1.43358f, -0.05920f, 0.81051f, 0.58272f, -0.71763f},
+    {-0.10857f, 0.13011f, -0.98554f, 0.75932f, -0.83593f, -0.54848f, 0.01968f, 2.09188f, -0.53799f, 0.82598f, 0.16831f, -0.33735f},
+};
+// S2's palm bone (41) on the pistol's frame bone (3), the slide closed: the bare left hand's placement (hands.cpp
+// t.leftPose) is the pistol's pose times this. It slides back with the slide (along the frame's -z).
+constexpr float kSlideLeftPalm[12] = {0.79218f, -0.42537f, 0.43763f, -0.06836f, 0.24976f, 0.88024f,
+                                      0.40347f, -1.08819f, -0.55684f, -0.21032f, 0.80355f, 0.39247f};
+
+// S3, the slide racked with a pinch from behind, the slingshot (slidegrips\S3-pinch: s3fit.exe, pose_slide_pinch.txt):
+// the hand behind the slide, palm down and aimed at the muzzle (rolled about 22 degrees thumb side down), the thumb's
+// pad on the slide's right side, the curled index hooked over its top-left edge onto the left serrations, the middle,
+// ring and little fingers in a loose fist off the gun; it pulls straight back towards the player. Best effort, not
+// passed (slidegrips\verify_S3-pinch): with the slide closed the hammer's top corner is 2.46 mm inside the skin over
+// the thumb's base (its metacarpal), over the 1.5 limit until about 1.6 mm of pull and clear from 4 mm; and the index
+// holds with the side of its tip (51 degrees round from the pad's middle), not its pad. The thumb's pad is on the
+// right side (0.19 mm), and the game's right hand (the recording's hold) stays at least 10.6 mm away. Its hold is 93 mm
+// from S1's (kSlideGrips below).
+constexpr float kSlidePinch[23][12] = {
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.76922f, -0.61736f, 0.16483f, 0.74359f, 0.54331f, 0.49613f, -0.67725f, 0.46461f, 0.33632f, 0.61051f, 0.71705f, -0.75946f},
+    {-0.15770f, -0.74897f, -0.64356f, 1.56032f, -0.10989f, -0.63436f, 0.76519f, 1.58979f, -0.98135f, 0.19139f, 0.01774f, 0.56047f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.63624f, 0.53790f, -0.55305f, -0.25097f, -0.77059f, 0.47772f, -0.42187f, 1.09797f, 0.03728f, 0.69458f, 0.71844f, -0.70949f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.78209f, 0.51384f, -0.35257f, -0.35746f, -0.62229f, 0.67406f, -0.39799f, 0.79316f, 0.03315f, 0.53067f, 0.84693f, -0.56147f},
+    {-0.17759f, -0.68189f, -0.70957f, 1.52837f, -0.22676f, -0.67327f, 0.70376f, 1.69046f, -0.95762f, 0.28588f, -0.03506f, 0.48196f},
+    {0.64020f, 0.48578f, -0.59511f, -0.19215f, -0.76338f, 0.48895f, -0.42211f, 1.06999f, 0.08593f, 0.72454f, 0.68386f, -0.75974f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.62558f, 0.49893f, -0.59976f, -0.20640f, -0.77694f, 0.46819f, -0.42091f, 1.09133f, 0.07079f, 0.72929f, 0.68053f, -0.75964f},
+    {1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f},
+    {0.06727f, 0.45188f, -0.88954f, 0.26094f, -0.93005f, -0.29439f, -0.21988f, 1.94410f, -0.36123f, 0.84211f, 0.40046f, -0.54496f},
+    {-0.15033f, -0.09459f, -0.98410f, 0.95337f, -0.75902f, -0.62678f, 0.17619f, 2.10285f, -0.63348f, 0.77343f, 0.02243f, -0.25282f},
+    {0.85280f, -0.49159f, -0.17629f, 0.65551f, 0.48552f, 0.87064f, -0.07910f, -0.07687f, 0.19237f, -0.01813f, 0.98115f, -0.06990f},
+    {0.85280f, -0.49159f, -0.17629f, 0.65551f, 0.48552f, 0.87064f, -0.07910f, -0.07687f, 0.19237f, -0.01814f, 0.98115f, -0.06990f},
+    {0.37771f, 0.59703f, -0.70773f, -0.12295f, -0.91423f, 0.11936f, -0.38722f, 1.54602f, -0.14671f, 0.79329f, 0.59091f, -0.67132f},
+    {-0.11847f, -0.06625f, -0.99075f, 0.92642f, -0.79676f, -0.58910f, 0.13466f, 2.08846f, -0.59257f, 0.80534f, 0.01700f, -0.28780f},
+    {-0.16064f, 0.03670f, -0.98633f, 0.85191f, -0.77933f, -0.61794f, 0.10393f, 2.12418f, -0.60568f, 0.78537f, 0.12787f, -0.28027f},
+    {-0.25931f, -0.58803f, -0.76614f, 1.50132f, -0.21744f, -0.73736f, 0.63954f, 1.77000f, -0.94100f, 0.33243f, 0.06334f, 0.40782f},
+};
+// S3's palm bone (41) on the pistol's frame bone (3), the slide closed: the bare left hand's placement (hands.cpp
+// t.leftPose) is the pistol's pose times this. It slides back with the slide (along the frame's -z).
+constexpr float kSlidePinchPalm[12] = {0.37584f, -0.74644f, -0.54916f, 0.74450f, 0.91930f, 0.37500f,
+                                       0.11946f, -0.83310f, 0.11677f,  -0.54973f, 0.82714f, 0.36701f};
+
+// Which grip the left hand takes (pistolslide.cpp): each grip's hand in gun space (the pistol frame bone's bind space:
+// x the gun's left, y up, z to the muzzle; metres) with the slide closed: out of the palm and along the fingers
+// (handpose.cpp kPalm and kAlong, the arms' bind space) turned by the grip's palm placement (kSlidePalm,
+// kSlideLeftPalm, kSlidePinchPalm), and the palm centre (hands.cpp kLeftPalmCentre) placed by it, the grab's hold for
+// that grip, moved back with the slide (S1's is pistolslide's old Profile::grip to 0.05 mm). The hand turned for a grip
+// fits it by dot(out of the palm) + dot(along the fingers), 2 at most (each grip's own hand picks itself: check.txt).
+// The fingers tell them apart most: S1's point to the gun's right (21 degrees back, 4 down), S2's to the gun's left (27
+// degrees towards the muzzle, 5 down), S3's at the muzzle (11 degrees to the gun's left, 16 up). Between them, the
+// palms / the fingers (degrees): S1-S2 35 / 169, S1-S3 24 / 122, S2-S3 41 / 56.
+struct SlideGrip {
+    float palmOut[3];  // out of the palm (unit)
+    float fingers[3];  // along the fingers (unit)
+    float hold[3];     // the palm centre (m): the grab's hold with the slide closed
+};
+constexpr SlideGrip kSlideGrips[3] = {
+    // S1 overhand: kSlide, kSlidePalm
+    {{0.11483f, -0.99017f, -0.07989f}, {-0.92969f, -0.07828f, -0.35993f}, {0.01229f, 0.09592f, 0.05505f}},
+    // S2 the fingers to the left: kSlideLeft, kSlideLeftPalm
+    {{-0.26638f, -0.89030f, 0.36933f}, {0.89112f, -0.08084f, 0.44651f}, {-0.05210f, 0.08696f, 0.01209f}},
+    // S3 the pinch from behind: kSlidePinch, kSlidePinchPalm
+    {{0.41650f, -0.88937f, 0.18854f}, {0.17715f, 0.28333f, 0.94252f}, {0.01615f, 0.07957f, -0.03607f}},
+};
+// Each grip's fingers and palm placement, in kSlideGrips' order.
+constexpr const float (*kSlideFingers[3])[12] = {kSlide, kSlideLeft, kSlidePinch};
+constexpr const float* kSlidePalms[3] = {kSlidePalm, kSlideLeftPalm, kSlidePinchPalm};
 
 }
