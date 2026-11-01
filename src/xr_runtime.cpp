@@ -1239,9 +1239,11 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, s_heldYaw};
             turn.currentYaw = viewYaw;
             g_viewTurnOn = true;
-            // A cutscene's picture is kept still where the last picture showed the game's camera (the Views
-            // switch above, next frame).
-            g_viewTurnYaw = s_viewMode == kViewFollow ? s_heldYaw : shown ? shownTaken : s_facingYaw;
+            // A cutscene's picture is kept still where the hand faced (the Views switch above, next frame), as
+            // before 2026-10-31 night. Kept where the last picture showed the game's camera instead, the
+            // interrogation's QTE fight was "completely upside down" (the user, 20:50; the cause isn't known yet:
+            // camera.cpp logs the refused cameras' up and forward to tell).
+            g_viewTurnYaw = s_facingYaw;
             turn.haveLook = look;
             turn.lookYaw = lookYaw;
             turn.lookSign = lookSign;

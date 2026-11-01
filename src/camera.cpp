@@ -809,9 +809,12 @@ int TakeTurned() {
         auto row = [m](int r) { return std::sqrt(m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2]); };
         Log("Camera: no camera turned this picture: %u refused with the view turn off, %u not a camera%s", inactive,
             notCamera, notCamera ? "" : " (none offered: the views not built?)");
+        // Its up (row 1) and true forward (-row 2) too: a cutscene's camera upside down shows up y below 0 (the
+        // interrogation's QTE fight, "completely upside down", 2026-10-31 20:50).
         if (notCamera)
-            Log("Camera: the first refused: rows %.3f %.3f %.3f, w %.3f %.3f %.3f, at (%.2f %.2f %.2f)", row(0), row(1),
-                row(2), m[3], m[7], m[11], m[12], m[13], m[14]);
+            Log("Camera: the first refused: rows %.3f %.3f %.3f, w %.3f %.3f %.3f, at (%.2f %.2f %.2f), up (%.2f %.2f %.2f) "
+                "forward (%.2f %.2f %.2f)",
+                row(0), row(1), row(2), m[3], m[7], m[11], m[12], m[13], m[14], m[4], m[5], m[6], -m[8], -m[9], -m[10]);
     }
     return turned;
 }
