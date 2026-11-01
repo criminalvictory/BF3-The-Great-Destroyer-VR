@@ -1037,6 +1037,21 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
     bool fromDepth = g_stereoTest == kTestDepth || (g_stereoTest == kTestViews && !perEye);
     bool hybrid = g_stereoTest == kTestHybrid;
     g_sideBySide = false;
+    // Three pictures in a row, so a picture that missed its turn in ordinary play doesn't flick. Counted with
+    // the headset asleep too (headless): a load's first pictures set it, and only the headset's branch below
+    // cleared it, so it stayed on and kept the aim, mouse aim and the free hands off (the self-test, 20:34).
+    bool unturned = false;
+    if (perEye) {
+        static int s_unturnedRun = 0;
+        s_unturnedRun = g_viewTurnOn && camera::TakeTurned() == 0 ? s_unturnedRun + 1 : 0;
+        unturned = s_unturnedRun >= 3;
+        if (unturned != g_unturnedLogged) {
+            g_unturnedLogged = unturned;
+            Log("Views: %s", unturned ? "the game draws without the head's turn (a cutscene's camera): the picture "
+                                        "is kept still in the room, the head looks about it"
+                                      : "the head's turn is in the game's camera again");
+        }
+    }
     if (headless) {
         depth3d::SaveIfAsked(g_device, back, L"eye_both.bmp");
     } else if (perEye) {
@@ -1044,16 +1059,6 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         // each eye shows its half.
         if (!SubmitImage(back, desc, g_swapchains[kLeftEye]))
             return;
-        // Three pictures in a row, so a picture that missed its turn in ordinary play doesn't flick.
-        static int s_unturnedRun = 0;
-        s_unturnedRun = g_viewTurnOn && camera::TakeTurned() == 0 ? s_unturnedRun + 1 : 0;
-        const bool unturned = s_unturnedRun >= 3;
-        if (unturned != g_unturnedLogged) {
-            g_unturnedLogged = unturned;
-            Log("Views: %s", unturned ? "the game draws without the head's turn (a cutscene's camera): the picture "
-                                        "is kept still in the room, the head looks about it"
-                                      : "the head's turn is in the game's camera again");
-        }
         for (int e = 0; e < 2; ++e) {
             g_eyePose[e] = renderPose(e);
             if (unturned)
