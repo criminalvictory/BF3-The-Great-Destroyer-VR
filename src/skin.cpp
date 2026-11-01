@@ -709,6 +709,10 @@ bool ToArms(skin::HandTargets& t, ID3D11DeviceContext* ctx, int* eyeOut = nullpt
         Compose(v, t.magPose, pose);
         std::memcpy(t.magPose, pose, sizeof(pose));
     }
+    if (t.pistolMag) {  // the train pistol's, alike
+        Compose(v, t.pistolMagPose, pose);
+        std::memcpy(t.pistolMagPose, pose, sizeof(pose));
+    }
     for (float* p : {t.rightWrist, t.leftWrist}) {
         float q[3];
         for (int i = 0; i < 3; ++i)
@@ -3212,16 +3216,223 @@ void LearnPistolHand(const float* frame, const float* game) {
         d * 100.0f, dl * 100.0f);
 }
 
+// ---- The train pistol's manual reload, as the mod draws it (docs\research\pistol-manual-reload.md) ----
+// Only while hands.cpp sets HandTargets::pistolReload (build\pistol.txt "reload on", the pistol in the right hand);
+// otherwise the pistol is drawn as before. Its own numbers, from the game's own M9 reload (weapon.txt "reloadrec",
+// read offline in screenshots\wf_reload), none of the M416's.
+// The magazine's seat, bone 0 on the frame bone (3) home: 16 degrees about x, 13.8 cm up the frame (every frame of
+// the recordings within 0.17 mm of it, never turned). Its own y is the grip's line, the way in and out. The game's
+// own, taken while it's within 2 mm of this (its reload moves the magazine about), replaces it. Under g_handsMutex.
+constexpr float kPistolSeat[12] = {1, 0, 0, 0, 0, 0.96137f, -0.27524f, 0.13766f, 0, 0.27524f, 0.96137f, -0.02470f};
+float g_pistolSeat[12] = {};
+bool g_havePistolSeat = false;
+// The magazine's box in bone 0's bind space, where its vertices lie (13.6 cm below and ahead of the gun: read as the
+// gun's space, the review found its tumble going round a point 13.8 cm off), and its top middle, the feed lips.
+// Seated, the top is 11.08 cm up the grip from its bottom, the well's mouth: kPistolMouth is the top's place along
+// the line from home there.
+constexpr float kPistolMagMin[3] = {-0.0132f, -0.2041f, 0.0743f}, kPistolMagMax[3] = {0.0130f, -0.0926f, 0.1298f};
+constexpr float kPistolMagTop[3] = {-0.0001f, -0.0926f, 0.1001f};
+constexpr float kPistolMouth = -0.1108f;
+// The slide on the frame: a pure move along the frame's z, never turned (the recordings), home at z -0.29956.
+constexpr float kPistolSlideHome = -0.29956f;
+
+// The magazine falling (DropPistolMagazine), as the M416's does (UpdateDrop) but with its own numbers, one bone (0)
+// in one pass. Out of the grip it first slides along its line, the well guiding it, gravity's pull down the line
+// adding to its start, and doesn't turn (tumbling inside the grip it would go through it); then it falls, tumbles
+// end over end about the gun's sideways axis and vanishes as it lands (lying there it would follow the player about,
+// as the M416's did: kLieSeconds).
+constexpr float kPistolDropSpeed = 0.5f;  // m/s along the line at the start: it drops free by its own weight after
+constexpr float kPistolSpin = 2.0f;       // rad/s once out of the grip: it drops rather than being flung
+constexpr double kPistolDrawnLately = 0.1, kPistolFallMost = 3.0;  // s
+struct PistolMagDrop {
+    float grip[12] = {};   // bone 0 as last drawn in the grip, and when (Seconds())
+    double gripAt = 0.0;
+    float held[12] = {};   // ... as last drawn held (HandTargets::pistolMag), when, and its top's place along the
+    double heldAt = 0.0;   //     line from home then (m: 0 seated, kPistolMouth at the mouth)
+    float heldAlong = 0.0f;
+    Drop fall;             // the fall, kept as the M416's is (MoveBone): fall.start[0] its bone 0 as it came out
+    float out[3] = {};     // down its line out of the grip (the arms' space), how much further it has to go along it
+    float toClear = 0.0f;  // to clear the grip, and how fast
+    float speed = 0.0f;
+    double startedAt = 0.0;
+};
+std::mutex g_pistolDropMutex;
+PistolMagDrop g_pistolDrop;
+std::atomic<bool> g_pistolDropShown{false};
+
+// The seat in use. Under g_handsMutex.
+const float* PistolSeat() {
+    return g_havePistolSeat ? g_pistolSeat : kPistolSeat;
+}
+
+// The seat as the game draws it (seat: its bone 0 on its frame, before they're moved), taken when it's within 2 mm
+// of the recordings' at every corner of the magazine's box: not while the game's own reload moves the magazine.
+// Logged once when first taken, and the first time it isn't (how far). Under g_handsMutex.
+void LearnPistolSeat(const float* seat) {
+    float most = 0.0f;
+    for (int c = 0; c < 8; ++c) {
+        const float v[3] = {c & 1 ? kPistolMagMax[0] : kPistolMagMin[0], c & 2 ? kPistolMagMax[1] : kPistolMagMin[1],
+                            c & 4 ? kPistolMagMax[2] : kPistolMagMin[2]};
+        float a[3], b[3];
+        TransformPoint(seat, v, a);
+        TransformPoint(kPistolSeat, v, b);
+        most = std::max(most, Length3(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+    }
+    static bool s_took = false, s_off = false;
+    if (most < 0.002f) {
+        std::memcpy(g_pistolSeat, seat, sizeof(g_pistolSeat));
+        g_havePistolSeat = true;
+        if (!s_took) {
+            s_took = true;
+            Log("Pistol reload: the magazine's seat taken from the game's own draw, %.2f mm from the recordings'",
+                most * 1000.0f);
+        }
+    } else if (!s_off) {
+        s_off = true;
+        Log("Pistol reload: the game draws its magazine %.1f mm from the recordings' seat (its own reload moving it, "
+            "or a seat of its own): %s kept",
+            most * 1000.0f, g_havePistolSeat ? "the last one taken" : "the recordings'");
+    }
+}
+
+// The magazine's fall, once a frame (skin::Update), in the arms' space with its origin's jumps taken off (as
+// UpdateDrop): along its line until it's out of the grip, then gravity and the tumble down to the floor (its box's
+// lowest corner), where it goes; or after 3 s wherever it is.
+void UpdatePistolDrop() {
+    if (!g_pistolDropShown.load())
+        return;
+    float origin[3] = {};
+    bool haveOrigin = false;
+    float floor = g_floor.load();
+    {
+        std::lock_guard lock(g_fpMutex);
+        if (floor == 0.0f && g_haveViewToArms)
+            floor = g_viewToArms[7] - kEyeHeight;  // the eye's height in the arms' space
+        if (g_haveFpOrigin) {
+            std::memcpy(origin, g_fpOrigin, sizeof(origin));
+            haveOrigin = true;
+        }
+    }
+    std::lock_guard lock(g_pistolDropMutex);
+    if (!g_pistolDropShown.load())
+        return;
+    PistolMagDrop& d = g_pistolDrop;
+    Drop& f = d.fall;
+    const double now = Seconds();
+    const float dt = static_cast<float>(std::min(now - f.updatedAt, 0.05));
+    f.updatedAt = now;
+    // The origin's jumps since it came out: what's still in the world is that much less in the arms' space now.
+    float jumped[3] = {};
+    if (haveOrigin)
+        for (int i = 0; i < 3; ++i)
+            jumped[i] = origin[i] - f.origin0[i];
+    if (d.toClear > 0.0f) {
+        d.speed += std::max(-kGravity * d.out[1], 0.0f) * dt;  // gravity's pull down the line (the arms' y is up)
+        const float step = std::min(d.speed * dt, d.toClear);
+        for (int i = 0; i < 3; ++i)
+            f.pos[i] += d.out[i] * step;
+        d.toClear -= step;
+        if (d.toClear <= 0.0f)
+            for (int i = 0; i < 3; ++i)
+                f.vel[i] = d.out[i] * d.speed;  // out: it falls on from here
+    } else {
+        f.vel[1] -= kGravity * dt;
+        for (int i = 0; i < 3; ++i)
+            f.pos[i] += f.vel[i] * dt;
+        f.angle += kPistolSpin * dt;
+        AxisAngle(f.axis, f.angle, f.q);
+        const float* m = f.start[0];
+        float lowest = 1e9f;
+        for (int c = 0; c < 8; ++c) {
+            const float v[3] = {c & 1 ? kPistolMagMax[0] : kPistolMagMin[0],
+                                c & 2 ? kPistolMagMax[1] : kPistolMagMin[1],
+                                c & 4 ? kPistolMagMax[2] : kPistolMagMin[2]};
+            float p[3];
+            for (int i = 0; i < 3; ++i)
+                p[i] = m[i * 4] * v[0] + m[i * 4 + 1] * v[1] + m[i * 4 + 2] * v[2] + m[i * 4 + 3] - f.c0[i];
+            lowest = std::min(lowest, f.q[3] * p[0] + f.q[4] * p[1] + f.q[5] * p[2] + f.pos[1] - jumped[1]);
+        }
+        if (lowest <= floor || now - d.startedAt > kPistolFallMost) {
+            g_pistolDropShown = false;
+            Log("Pistol reload: the dropped magazine %s %.2f s after it came out, %.2f m below where it started",
+                lowest <= floor ? "landed" : "went (no floor met)", now - d.startedAt, f.c0[1] - f.pos[1]);
+            return;
+        }
+    }
+    for (int i = 0; i < 3; ++i)
+        f.centre[i] = f.pos[i] - jumped[i];
+}
+
+// The magazine falls from where it was drawn lately (DropPistolMagazine): from the grip, or held on the grip's line,
+// out along the line the rest of the way from where it is (the review: from a pose kept from before, it jumped); or
+// let go of in the hand at the hand's speed (velocityView, the view's space: turned into the arms'). toClear: how
+// far it has to go out of the grip.
+bool StartPistolDrop(skin::PistolDrop from, const float* velocityView, float& toClear) {
+    float origin[3] = {};
+    float toArms[9] = {};  // the view's space -> the arms' (a turn only: for the hand's speed)
+    {
+        std::lock_guard lock(g_fpMutex);
+        std::memcpy(origin, g_fpOrigin, sizeof(origin));
+        if (g_haveViewToArms)
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    toArms[i * 3 + j] = g_viewToArms[i * 4 + j];
+    }
+    std::lock_guard lock(g_pistolDropMutex);
+    PistolMagDrop& d = g_pistolDrop;
+    const bool grip = from == skin::PistolDrop::kGrip;
+    double& at = grip ? d.gripAt : d.heldAt;
+    const double now = Seconds();
+    if (at <= 0.0 || now - at > kPistolDrawnLately)
+        return false;  // not drawn there lately
+    at = 0.0;          // taken: not dropped twice
+    Drop& f = d.fall;
+    std::memcpy(f.start[0], grip ? d.grip : d.held, sizeof(f.start[0]));
+    const float* m = f.start[0];
+    const float middle[3] = {(kPistolMagMin[0] + kPistolMagMax[0]) / 2, (kPistolMagMin[1] + kPistolMagMax[1]) / 2,
+                             (kPistolMagMin[2] + kPistolMagMax[2]) / 2};
+    for (int i = 0; i < 3; ++i)
+        f.c0[i] = f.pos[i] = f.centre[i] =
+            m[i * 4] * middle[0] + m[i * 4 + 1] * middle[1] + m[i * 4 + 2] * middle[2] + m[i * 4 + 3];
+    // Out along its own -y (the grip's line), tumbling about its own x (the gun's sideways axis) once out.
+    float down[3] = {-m[1], -m[5], -m[9]};
+    Normalize(down);
+    std::memcpy(d.out, down, sizeof(d.out));
+    d.toClear = toClear = grip                              ? -kPistolMouth
+                          : from == skin::PistolDrop::kWell ? std::max(d.heldAlong - kPistolMouth, 0.0f)
+                                                            : 0.0f;
+    d.speed = kPistolDropSpeed;
+    for (int i = 0; i < 3; ++i)
+        f.vel[i] = from != skin::PistolDrop::kHand ? down[i] * kPistolDropSpeed
+                   : velocityView ? toArms[i * 3] * velocityView[0] + toArms[i * 3 + 1] * velocityView[1] +
+                                        toArms[i * 3 + 2] * velocityView[2]
+                                  : 0.0f;
+    f.axis[0] = m[0], f.axis[1] = m[4], f.axis[2] = m[8];
+    Normalize(f.axis);
+    f.angle = 0.0f;
+    AxisAngle(f.axis, 0.0f, f.q);
+    std::memcpy(f.origin0, origin, sizeof(origin));
+    f.updatedAt = d.startedAt = now;
+    g_pistolDropShown = true;
+    return true;
+}
+
 bool DrawBarePistol(int which, ID3D11DeviceContext* ctx, UINT count, UINT start, INT base) {
     if (!g_bareOn.load(std::memory_order_relaxed) || !g_bareAllowed.load(std::memory_order_relaxed))
         return false;
     const Upload& u = t_upload;
     if (!u.resource || u.bytes.size() != kGloveUploadSize || !PlayersOwn(u.bytes))
         return false;
-    thread_local std::vector<uint8_t> t_pistol;
+    // With the manual reload on, the pistol is drawn again with only a held magazine's bone, and only the dropped
+    // one's (as DrawGun draws the M416's).
+    thread_local std::vector<uint8_t> t_pistol, t_pistolHeld, t_pistolDropped;
     t_pistol = u.bytes;
     auto* bones = reinterpret_cast<float*>(t_pistol.data());
     const float* frame = bones + 3 * 12;
+    // What a drop takes from this draw: the magazine as drawn in the grip, or held (and its top's place along the
+    // grip's line from home then).
+    bool reload = false, inGrip = false, held = false;
+    float grip[12] = {}, heldAlong = 0.0f;
     {
         std::lock_guard lock(g_handsMutex);
         if (!g_handsOn)
@@ -3271,11 +3482,101 @@ bool DrawBarePistol(int which, ID3D11DeviceContext* ctx, UINT count, UINT start,
         float inverse[12], delta[12];
         if (!Invert(frame, inverse))
             return false;
+        // The manual reload (HandTargets::pistolReload) starts from the game's own slide and magazine on its own
+        // frame, as it animates them, kept before they're moved.
+        reload = t.pistolReload;
+        float gameSlide[12] = {}, gameMag[12] = {};
+        if (reload) {
+            Compose(inverse, bones + 4 * 12, gameSlide);
+            Compose(inverse, bones, gameMag);
+        }
         Compose(t.pistolPose, inverse, delta);
         for (int k = 0; k < static_cast<int>(kPaletteBones); ++k)
             MoveBy(delta, bones + k * 12);
+        if (reload) {
+            LearnPistolSeat(gameMag);
+            // The slide where the mod has it (the left hand on it, the slide stop): moved along its own z, the
+            // frame's, from where the game's animation has it to that far back from home.
+            if (t.pistolSlideBack >= 0.0f) {
+                const float gameBack = std::max(kPistolSlideHome - gameSlide[11], 0.0f);
+                float* slide = bones + 4 * 12;
+                if (const float length = Length3(slide[2], slide[6], slide[10]); length > 0.0f) {
+                    const float s = (gameBack - t.pistolSlideBack) / length;
+                    slide[3] += slide[2] * s, slide[7] += slide[6] * s, slide[11] += slide[10] * s;
+                }
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    Log("Pistol reload: the slide first drawn where the mod has it (%.1f cm back)",
+                        t.pistolSlideBack * 100.0f);
+                }
+            }
+            // Its own magazine: in the grip, kept for a drop out of it; out, drawn nowhere (bone 0 all on one point,
+            // as the M416's: none of its vertices is on another bone).
+            inGrip = !t.pistolMagOut;
+            if (inGrip) {
+                std::memcpy(grip, bones, sizeof(grip));
+            } else {
+                std::memset(bones, 0, 12 * sizeof(float));
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    Log("Pistol reload: the pistol first drawn with its magazine out of the grip");
+                }
+            }
+            // A magazine in the left hand or on its way in: the pistol drawn again with only bone 0, at pistolMagPose
+            // times the seat, and its top's place along the grip's line from home (0 seated), for a drop out of it.
+            if (t.pistolMag) {
+                t_pistolHeld.assign(kGloveUploadSize, 0);  // the pistol's other bones all on one point
+                auto* mag = reinterpret_cast<float*>(t_pistolHeld.data());
+                float home[12], top[3], topHome[3];
+                Compose(t.pistolMagPose, PistolSeat(), mag);
+                Compose(t.pistolPose, PistolSeat(), home);  // where it would sit in the grip as the pistol is drawn
+                TransformPoint(mag, kPistolMagTop, top);
+                TransformPoint(home, kPistolMagTop, topHome);
+                if (const float length = Length3(home[1], home[5], home[9]); length > 0.0f)  // its own y: the line
+                    heldAlong = ((top[0] - topHome[0]) * home[1] + (top[1] - topHome[1]) * home[5] +
+                                 (top[2] - topHome[2]) * home[9]) /
+                                length;
+                held = true;
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    Log("Pistol reload: a magazine first drawn held, %.1f cm along the grip's line from home (the seat "
+                        "%s)",
+                        heldAlong * 100.0f, g_havePistolSeat ? "taken from the game's draw" : "the recordings'");
+                }
+            }
+        }
     }
-    return DrawWithPalette(which, ctx, count, start, base, u.resource, t_pistol.data(), kGloveUploadSize);
+    // Kept for a drop (DropPistolMagazine), and the dropped one where it has fallen to (UpdatePistolDrop).
+    bool dropped = false;
+    if (reload) {
+        std::lock_guard lock(g_pistolDropMutex);
+        PistolMagDrop& d = g_pistolDrop;
+        const double now = Seconds();
+        if (inGrip) {
+            std::memcpy(d.grip, grip, sizeof(d.grip));
+            d.gripAt = now;
+        }
+        if (held) {
+            std::memcpy(d.held, t_pistolHeld.data(), sizeof(d.held));
+            d.heldAt = now;
+            d.heldAlong = heldAlong;
+        }
+        dropped = g_pistolDropShown.load();
+        if (dropped) {
+            t_pistolDropped.assign(kGloveUploadSize, 0);  // the pistol's other bones all on one point
+            MoveBone(d.fall.start[0], d.fall, reinterpret_cast<float*>(t_pistolDropped.data()));
+        }
+    }
+    if (!DrawWithPalette(which, ctx, count, start, base, u.resource, t_pistol.data(), kGloveUploadSize))
+        return false;
+    if (dropped)
+        DrawWithPalette(which, ctx, count, start, base, u.resource, t_pistolDropped.data(), kGloveUploadSize);
+    if (held)
+        DrawWithPalette(which, ctx, count, start, base, u.resource, t_pistolHeld.data(), kGloveUploadSize);
+    return true;
 }
 
 bool HideBareBody() {
@@ -4092,6 +4393,26 @@ bool PistolTest() {
     return g_pistolTest.load(std::memory_order_relaxed);
 }
 
+bool PistolMagazineSeat(float* seat) {
+    std::lock_guard lock(g_handsMutex);
+    std::memcpy(seat, PistolSeat(), sizeof(g_pistolSeat));
+    return g_havePistolSeat;
+}
+
+bool DropPistolMagazine(PistolDrop from, const float* velocityView) {
+    float toClear = 0.0f;
+    if (!PistolHeld() || !StartPistolDrop(from, velocityView, toClear))
+        return false;
+    if (from == PistolDrop::kHand)
+        Log("Pistol reload: the magazine let go of: it falls from the hand");
+    else if (toClear > 0.0f)
+        Log("Pistol reload: the magazine drops out of the grip along its line (%.1f cm to go%s), then to the floor",
+            toClear * 100.0f, from == PistolDrop::kWell ? ", from part way in where it's drawn" : "");
+    else
+        Log("Pistol reload: the magazine drops from where it's drawn, already out of the grip");
+    return true;
+}
+
 bool BarePistolHand(float* hold) {
     if (!g_haveBarePistolHand.load(std::memory_order_acquire) || GetTickCount64() - g_barePistolAt.load() > 300)
         return false;
@@ -4406,6 +4727,7 @@ bool RifleInHand() {
 
 void Update() {
     UpdateDrop();
+    UpdatePistolDrop();
     ++g_frameSerial;
     // The next frame's draws all learn the game's hands by this frame's verdict (see g_holdNormal).
     g_learnHold.store(g_holdNormal.load(std::memory_order_relaxed) && !input::Sprinting(), std::memory_order_relaxed);

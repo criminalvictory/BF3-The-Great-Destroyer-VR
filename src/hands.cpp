@@ -741,6 +741,154 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
     }
 }
 
+// The train pistol's manual reload (docs\research\pistol-manual-reload.md), built a step at a time behind
+// build\pistol.txt, re-read when it changes: "reload on" turns it on ("reload off" wins; no file, or no "reload on":
+// off, and nothing changes). Its own, nothing the M416's. So far it's only drawn (skin.cpp), worked by tests with
+// nobody in the headset, the pistol in the stand-in's right hand or the controller's; each is logged as the file is
+// read and does nothing without "reload on" (lengths in cm):
+//   "slidetest"     the slide going back and forth over its whole travel, 2 s a cycle
+//   "locktest 4.1"  the slide held open that far back, where the slide stop will hold it (4.1 by default; over
+//                   slidetest)
+//   "magtest 15"    a magazine held on the grip's line that far below home (15 by default, its top 4 cm under the
+//                   grip; 0 seated where the game's own sits, to see the seat; 5 part way in), the grip empty
+//   "droptest"      once a save: the magazine drops as X will drop it, out of the grip along its line (the grip then
+//                   empty for 2 s), or with magtest, the one held there from where it's drawn (then not drawn again
+//                   until the next save); "droptest hand": magtest's let go of, falling from rest
+bool g_pistolReload = false;
+struct PistolTests {
+    bool slide = false;
+    float lock = -1.0f;       // m back (below 0: off)
+    bool mag = false;
+    float magAlong = -0.15f;  // its top's place along the grip's line from home (m)
+    int drop = 0;             // a drop waiting: 1 as X, 2 let go of
+};
+PistolTests g_pistolTests;
+bool g_magTestGone = false;      // magtest's magazine dropped: not drawn again until the next save
+ULONGLONG g_gripEmptyUntil = 0;  // droptest's drop out of the grip leaves it empty until then
+// The slide's whole travel (the game's own shots, recorded: 4.57 cm) and where the slide stop holds it open (the
+// design's 4.1 cm: the game never shows it, so it's to be set by eye with locktest).
+constexpr float kPistolSlideTravel = 0.0457f, kPistolSlideLock = 0.041f;
+
+void ReadPistolTuning() {
+    static FILETIME lastWrite{};
+    static ULONGLONG lastCheck = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastCheck < 300)
+        return;
+    lastCheck = now;
+    wchar_t path[MAX_PATH];
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadPistolTuning), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    if (wchar_t* slash = wcsrchr(path, L'\\'))
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"pistol.txt");
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    const bool exists = GetFileAttributesExW(path, GetFileExInfoStandard, &info) != 0;
+    if (CompareFileTime(&info.ftLastWriteTime, &lastWrite) == 0)
+        return;
+    FILE* f = nullptr;
+    if (exists && (_wfopen_s(&f, path, L"r") != 0 || !f))
+        return;  // still being written (the open isn't shared): read at the next check
+    lastWrite = info.ftLastWriteTime;
+    bool on = false, off = false;
+    PistolTests tests;
+    if (f) {
+        char line[512];
+        while (fgets(line, sizeof(line), f)) {
+            const char* rest = nullptr;
+            float cm = 0.0f;
+            if (Word(line, "reload", &rest)) {
+                if (Word(rest, "on"))
+                    on = true;
+                else if (Word(rest, "off"))
+                    off = true;
+            } else if (Word(line, "slidetest")) {
+                tests.slide = true;
+            } else if (Word(line, "locktest", &rest)) {
+                tests.lock = kPistolSlideLock;
+                if (sscanf_s(rest, "%f", &cm) == 1)
+                    tests.lock = std::fmin(std::fmax(cm / 100.0f, 0.0f), kPistolSlideTravel);
+            } else if (Word(line, "magtest", &rest)) {
+                tests.mag = true;
+                if (sscanf_s(rest, "%f", &cm) == 1)
+                    tests.magAlong = -std::fmin(std::fmax(cm / 100.0f, 0.0f), 0.5f);
+            } else if (Word(line, "droptest", &rest)) {
+                tests.drop = Word(rest, "hand") ? 2 : 1;
+            }
+        }
+        fclose(f);
+    }
+    g_pistolReload = on && !off;
+    g_pistolTests = g_pistolReload ? tests : PistolTests{};
+    g_magTestGone = false;
+    g_gripEmptyUntil = 0;
+    if (!g_pistolReload) {
+        Log("Pistol reload: off, the train pistol as before%s", exists ? " (build\\pistol.txt)" : "");
+        return;
+    }
+    const PistolTests& p = g_pistolTests;
+    Log("Pistol reload: on with the train pistol in hand (build\\pistol.txt); so far only drawn, by its tests");
+    if (p.slide && p.lock < 0.0f)
+        Log("Pistol reload: slidetest: the slide drawn going back and forth over its %.2f cm travel",
+            kPistolSlideTravel * 100.0f);
+    if (p.lock >= 0.0f)
+        Log("Pistol reload: locktest: the slide drawn held open %.1f cm back%s", p.lock * 100.0f,
+            p.slide ? " (over slidetest)" : "");
+    if (p.mag)
+        Log("Pistol reload: magtest: a magazine drawn held %.1f cm down the grip's line from home, the grip empty",
+            -p.magAlong * 100.0f);
+    if (p.drop)
+        Log("Pistol reload: droptest: the magazine drops once, %s",
+            !p.mag        ? "out of the grip as X will"
+            : p.drop == 2 ? "magtest's let go of"
+                          : "magtest's along its line as X will");
+}
+
+// The manual reload's targets for skin.cpp, only with the train pistol in the right hand and pistol.txt "reload on":
+// otherwise HandTargets keeps none of them, and the pistol is drawn as before. So far only its tests'.
+void PistolReload(skin::HandTargets& t, bool pistolHeld) {
+    if (!g_pistolReload || !pistolHeld)
+        return;
+    t.pistolReload = true;
+    const PistolTests& test = g_pistolTests;
+    const ULONGLONG now = GetTickCount64();
+    if (test.lock >= 0.0f) {
+        t.pistolSlideBack = test.lock;
+    } else if (test.slide) {
+        const float phase = static_cast<float>(now % 2000) / 2000.0f;
+        t.pistolSlideBack = kPistolSlideTravel * 0.5f * (1.0f - std::cos(6.2831853f * phase));
+    }
+    // magtest: straight down the grip's line (the seat's own y, in the frame's space) from home.
+    if (test.mag && !g_magTestGone) {
+        float seat[12];
+        skin::PistolMagazineSeat(seat);
+        const float s = test.magAlong;
+        const float along[12] = {1, 0, 0, seat[1] * s, 0, 1, 0, seat[5] * s, 0, 0, 1, seat[9] * s};
+        Compose(t.pistolPose, along, t.pistolMagPose);
+        t.pistolMag = true;
+    }
+    t.pistolMagOut = test.mag || now < g_gripEmptyUntil;
+    // droptest: as X will (a later step) or as the hand lets go, from where it was drawn the frame before; it waits
+    // until it's been drawn there.
+    if (test.drop) {
+        using skin::PistolDrop;
+        const PistolDrop from = !t.pistolMag     ? PistolDrop::kGrip
+                                : test.drop == 2 ? PistolDrop::kHand
+                                                 : PistolDrop::kWell;
+        if (skin::DropPistolMagazine(from)) {
+            g_pistolTests.drop = 0;
+            if (from == PistolDrop::kGrip) {
+                g_gripEmptyUntil = now + 2000;
+                t.pistolMagOut = true;
+            } else {
+                g_magTestGone = true;  // falling, not held
+                t.pistolMag = false;
+            }
+        }
+    }
+}
+
 // Once a second while the left hand holds on: how far the hands' line strayed from where the right
 // hand points the gun, how far apart the hands were, the left grip's reading and how much the left hand
 // steered (steer.h's cone is set from these: 35/65 degrees until the user's own aiming is seen; and a
@@ -1076,6 +1224,7 @@ void Update(const XrPosef& head) {
     ReadTuning();
     ReadPouchTuning();
     ReadArmsTuning();
+    ReadPistolTuning();
     if (!g_on) {
         skin::SetHands(nullptr);
         return;
@@ -1377,6 +1526,8 @@ void Update(const XrPosef& head) {
             t.left = true;
         }
     }
+    // The train pistol's manual reload (build\pistol.txt "reload on"; so far only drawn, by its tests).
+    PistolReload(t, pistolHeld);
     const bool holding = magazine.holding;
     // Both hands on the gun: the hold (Support) and the lines the steer turns the gun by, the glove on
     // the handguard. Not with the train pistol in hand (The Great Destroyer: PistolSupport below): the

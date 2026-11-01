@@ -32,6 +32,21 @@ bool BarePistolLeft(float* hold, float (*fingers)[12]);
 // weapon.txt "pistoltest 1": the stand-in left hand holds the pistol in both hands (a test with nobody in the
 // headset: hands.cpp PistolSupport).
 bool PistolTest();
+// The train pistol's magazine seat: its bone 0 on the frame bone (3) as the game draws it home (rows: rotation |
+// translation), its own y the grip's line. Taken from the game's own draw while the manual reload is on
+// (HandTargets::pistolReload) and it's within 2 mm of the recordings'; the recordings' until then (false).
+bool PistolMagazineSeat(float* seat);
+// Where the train pistol's magazine falls from (DropPistolMagazine).
+enum class PistolDrop {
+    kGrip,  // its own, out of the grip along its line (X)
+    kWell,  // one held part way into the grip (HandTargets::pistolMag): out along its line from where it's drawn
+    kHand,  // let go of: from where it was drawn in the left hand, at the hand's speed
+};
+// The train pistol's magazine falls from where it was drawn this last tenth of a second: out of the grip it first
+// slides along its line (the well guides it), then falls, tumbles and vanishes as it lands. velocityView: kHand's
+// speed as it let go (m/s in the view's space; none: from rest). False if it hasn't been drawn there lately, or
+// the manual reload isn't on with the pistol in hand. Render thread.
+bool DropPistolMagazine(PistolDrop from, const float* velocityView = nullptr);
 
 // weapon.txt "pslog": the instanced draws (effects.cpp) logged like the indexed ones.
 void LogShaderDraw(ID3D11DeviceContext* ctx, unsigned count, unsigned start, int base, unsigned instances);
@@ -178,6 +193,18 @@ struct HandTargets {
     // the right hand's fingers on its grip (skin.cpp: pistolfingers / pistolfingers2).
     float pistolTwoHanded = 0.0f;
     float bareLeftFingers[handpose::kBones][12] = {};
+    // The train pistol's manual reload (docs\research\pistol-manual-reload.md), set by hands.cpp only with the
+    // pistol in the right hand and build\pistol.txt "reload on" (pistolReload): otherwise none of these is, and the
+    // pistol is drawn as before. DrawGun, the M416's, never reads them.
+    bool pistolReload = false;
+    // A magazine in the left hand or on its way into the grip: where the pistol's frame bone would be with it
+    // seated, so its bone 0 is drawn at pistolMagPose times the seat (as magPose is for the M416's).
+    bool pistolMag = false;
+    float pistolMagPose[12] = {};
+    // The pistol's own magazine out of the grip (drawn nowhere), and its slide drawn this far back along its own
+    // axis (m; below 0 as the game's own animation has it).
+    bool pistolMagOut = false;
+    float pistolSlideBack = -1.0f;
 };
 void SetHands(const HandTargets* targets);  // nullptr = off: the game's own arms
 
