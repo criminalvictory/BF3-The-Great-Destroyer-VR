@@ -4,6 +4,19 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-11-01, later in the afternoon: the body held through the whole Comrades drive (stage: pre-alpha, experimental)
+
+Tried by the user in the headset: "stays put now".
+
+### Fixed
+- **The body in cutscenes and rides stays put through the whole drive of Comrades.** It had vanished for about ten
+  seconds in the tunnel's dark stretch (looking down, no knees, no gun), and at the crash through the gate it let go of
+  the head's turn and shook with the camera. In those shots the game draws the body from a place more than 5 m off
+  the point the mod measured from, and the mod took it for something else and left it, while the rest of the body's
+  drawing was turned, so the two no longer matched. The body is now known by the camera it's drawn from (the cutscene
+  camera's exact angle, as the game made it), wherever it's placed, and each piece is turned by that camera's own turn.
+  Replayed with the headset off, the body was held every second of the drive; offline tests: 33 of 33.
+
 ## 2026-11-01, afternoon: a stream view for OBS, a one-click launcher, cutscenes that follow the head, the pistol's magnetic reload (stage: pre-alpha, experimental)
 
 Tried by the user: the stream view in OBS ("great work"), the Comrades drive and the interrogation with the head
