@@ -106,6 +106,12 @@ bool RifleInHand();
 // Every frame on the render thread: moves the dropped magazine.
 void Update();
 
+// In a scripted picture with the body moved to each eye's place (weapon.txt "bodystereo 1"): an eye's picture is
+// wanted, and one was drawn (effects.cpp's draw hooks: six vertices, unblended, onto a target the window's size and
+// twice as wide as high), which ends that eye's pass: the body's views after it are the other eye's.
+bool EyePictureWanted();
+void NoteEyePicture();
+
 // weapon.txt says "watch": research logs are wanted (bones, the gun's matrices, poses).
 bool Watching();
 

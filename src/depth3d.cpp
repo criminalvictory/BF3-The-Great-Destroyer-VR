@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "effects.h"
 #include "log.h"
 
 namespace {
@@ -71,10 +72,14 @@ void OnClear(ID3D11DepthStencilView* dsv, UINT flags, FLOAT value) {
 
 void STDMETHODCALLTYPE Clear0(ID3D11DeviceContext* c, ID3D11DepthStencilView* v, UINT f, FLOAT d, UINT8 s) {
     OnClear(v, f, d);
+    if (effects::TailRecording())
+        effects::TailClear(c, v, f, d, s);
     g_origClear[0](c, v, f, d, s);
 }
 void STDMETHODCALLTYPE Clear1(ID3D11DeviceContext* c, ID3D11DepthStencilView* v, UINT f, FLOAT d, UINT8 s) {
     OnClear(v, f, d);
+    if (effects::TailRecording())
+        effects::TailClear(c, v, f, d, s);
     g_origClear[1](c, v, f, d, s);
 }
 

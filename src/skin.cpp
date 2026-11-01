@@ -361,11 +361,12 @@ std::atomic<bool> g_bodyLock{true};
 // weapon.txt "bodytrace 120": in a scripted picture, the next 120 views the body lock reads logged in order, each with
 // what it made of it, its eye, and where that is along the turned camera's right (which eye's each is).
 std::atomic<int> g_bodyTrace{0};
-// weapon.txt "bodystereo 1": the body of a scripted picture moved to each eye's place (LockBody), its own depth, not left
-// in the middle with both eyes drawing it alike, as the game draws it. Off by default: moved, the right eye showed black
-// holes round the legs, arms and gun (2026-11-01, the drive looking down), most likely what the right eye's pass keeps
-// from the left eye's (both are drawn in the same place on the window, one after the other).
-std::atomic<bool> g_bodyStereo{false};
+// weapon.txt "bodystereo 0": the body of a scripted picture left in the middle with both eyes drawing it alike, as the
+// game draws it, not moved to each eye's place (LockBody), its own depth. The first try showed black holes round the
+// legs, arms and gun in the right eye (2026-11-01): not what the right eye's pass keeps from the left's (the tail showed
+// both depth-stencil buffers cleared in each pass), but the eyes' labels learned from the frame before, wrong in a frame
+// whose body views came in another number; each eye's picture now tells them in the frame itself (NoteEyePicture).
+std::atomic<bool> g_bodyStereo{true};
 // weapon.txt "fpunknown": the next three frames' first-person draws (drawn with a first-person
 // view's constants bound) that the mod leaves where the game put them, each kind logged once: the
 // ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
@@ -927,8 +928,8 @@ void ReadWeaponSelection() {
     //   "bodylock 0"         in a scripted picture turned to the head, the views the player's own body is drawn
     //                        with left as the game made them, moving with the head ("bodylock 1", the default,
     //                        turns them with it: LockBody)
-    //   "bodystereo 1"       that body moved to each eye's place, its own depth (off by default: the right eye
-    //                        showed black holes round it; "bodystereo 0" both eyes draw it alike, as the game does)
+    //   "bodystereo 0"       that body left in the middle, both eyes drawing it alike, as the game draws it
+    //                        ("bodystereo 1", the default, moves it to each eye's place: its own depth)
     //   "bodytrace 120"      the next 120 views the body lock reads logged in order (which eye's pass each is)
     //   "steer 35 65"        the left hand on the handguard steers the gun only within 35 degrees of the
     //                        right hand's line, not at all past 65 (without it: while out ahead of the
@@ -1824,6 +1825,10 @@ struct BodyLatch {
     int passes = 0, lastPasses = 0;                   // the passes seen this frame, and the last frame (0 to 2)
     int8_t order[32] = {}, lastOrder[32] = {};        // each body view's pass, this frame and the last
     uint32_t pendingFrom = 0;                         // body views from here on wait for the next main view's pass
+    // The eyes' pictures drawn this frame so far, and the last frame (skin::NoteEyePicture): each ends its eye's pass,
+    // so the body's views after the first are the second eye's, told in the frame itself (the learned order went
+    // wrong where the number of body views changed from frame to frame, as at the drive's crash).
+    int pictures = 0, lastPictures = 0;
 };
 // Since the last log (LogBodyLock), under g_bodyMutex.
 struct BodyStats {
@@ -1917,6 +1922,31 @@ void LogLeftView(const float* f, const viewturn::BodyView& v, const BodyLatch& l
         v.eye[0], v.eye[1], v.eye[2], projection, builds[0], builds[1], builds[2], builds[3]);
 }
 
+// A new frame for the body lock (under g_bodyMutex), once a frame: its builds latched, the last frame's passes kept.
+void BeginBodyFrame(BodyLatch& l) {
+    const uint32_t frame = g_frameSerial.load(std::memory_order_relaxed);
+    if (l.frame == frame)
+        return;
+    l.frame = frame;
+    l.count = camera::BodyTurns(l.builds, kBodyLatched);
+    l.pick = viewturn::BodyPick{};
+    l.pick.guess = l.lastNamed;
+    l.counted = false;
+    // The frame before's body views after its last main view's go with that one's pass; its order and its passes'
+    // places are the new frame's to go by.
+    for (uint32_t i = l.pendingFrom; i < l.turned && i < 32; ++i)
+        l.order[i] = static_cast<int8_t>(l.passes > 0 ? l.passes - 1 : 0);
+    std::memcpy(l.lastOrder, l.order, sizeof(l.order));
+    std::memcpy(l.lastPassAlong, l.passAlong, sizeof(l.passAlong));
+    l.lastPasses = l.passes;
+    l.passes = 0;
+    l.pendingFrom = 0;
+    l.lastPictures = l.pictures;
+    l.pictures = 0;
+    l.turnedBefore = l.turned;
+    l.turned = 0;
+}
+
 // The body's views turned with the head as they're uploaded, in a scripted picture (above). data: a small upload of
 // size bytes, before the FOV fix.
 void LockBody(uint8_t* data, UINT size) {
@@ -1936,24 +1966,7 @@ void LockBody(uint8_t* data, UINT size) {
     std::lock_guard lock(g_bodyMutex);
     BodyLatch& l = g_bodyLatch;
     BodyStats& s = g_bodyStats;
-    if (const uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); l.frame != frame) {
-        l.frame = frame;
-        l.count = camera::BodyTurns(l.builds, kBodyLatched);
-        l.pick = viewturn::BodyPick{};
-        l.pick.guess = l.lastNamed;
-        l.counted = false;
-        // The frame before's body views after its last main view's go with that one's pass; its order and its passes'
-        // places are the new frame's to go by.
-        for (uint32_t i = l.pendingFrom; i < l.turned && i < 32; ++i)
-            l.order[i] = static_cast<int8_t>(l.passes > 0 ? l.passes - 1 : 0);
-        std::memcpy(l.lastOrder, l.order, sizeof(l.order));
-        std::memcpy(l.lastPassAlong, l.passAlong, sizeof(l.passAlong));
-        l.lastPasses = l.passes;
-        l.passes = 0;
-        l.pendingFrom = 0;
-        l.turnedBefore = l.turned;
-        l.turned = 0;
-    }
+    BeginBodyFrame(l);
     float made[viewturn::kPerViewBytes / 4] = {};
     const bool keep = perView && !(s.loggedView && s.loggedOdd);
     if (keep)
@@ -1997,6 +2010,12 @@ void LockBody(uint8_t* data, UINT size) {
             for (uint32_t i = l.pendingFrom; i < l.turned && i < 32; ++i)
                 l.order[i] = static_cast<int8_t>(pass);
             l.pendingFrom = l.turned;
+        }
+        if (effects::TailRecording()) {
+            char note[120];
+            std::snprintf(note, sizeof(note), "the main view's upload: pass %d, %+.1f mm along the turned right from the "
+                          "first pass's", pass, (along - l.passAlong[0]) * 1000.0);
+            effects::TailNote(note);
         }
         return;
     }
@@ -2117,15 +2136,24 @@ void LockBody(uint8_t* data, UINT size) {
     // "bodystereo 0" leaves it in the middle, both eyes drawing it alike.
     const uint32_t k = l.turned++, n = l.turnedBefore;
     int pass = -1;
-    if (l.lastPasses == 2 && k < n && k < 32)
+    if (l.lastPictures == 2)  // the last frame drew both eyes' pictures: this one's tell its passes
+        pass = l.pictures >= 1 ? 1 : 0;
+    else if (l.lastPasses == 2 && k < n && k < 32)
         pass = l.lastOrder[k];
     else if (n >= 2 && n % 2 == 0)
         pass = k < n / 2 ? 0 : 1;
+    double moved = 0.0;
     if (pass >= 0 && l.lastPasses == 2 && g_bodyStereo.load(std::memory_order_relaxed)) {
         const double mid = 0.5 * (l.lastPassAlong[0] + l.lastPassAlong[1]);
-        viewturn::ShiftPerView(f, v, l.lastPassAlong[pass] - mid);
+        moved = l.lastPassAlong[pass] - mid;
+        viewturn::ShiftPerView(f, v, moved);
         ++s.shifted;
         s.eyesApart = std::max(s.eyesApart, std::fabs(l.lastPassAlong[1] - l.lastPassAlong[0]));
+    }
+    if (effects::TailRecording()) {
+        char note[120];
+        std::snprintf(note, sizeof(note), "a body view, %u of the frame: pass %d, moved %+.1f mm", k, pass, moved * 1000.0);
+        effects::TailNote(note);
     }
     const int eye = !views::Active() || pass < 0 ? -1
                     : l.lastPasses == 2      ? (l.lastPassAlong[pass] <= l.lastPassAlong[1 - pass] ? 0 : 1)
@@ -5277,6 +5305,22 @@ void Update() {
 
 bool Watching() {
     return g_weaponWatch.load();
+}
+
+bool EyePictureWanted() {
+    return g_bodyLock.load(std::memory_order_relaxed) && g_bodyStereo.load(std::memory_order_relaxed) &&
+           camera::BodyTurnWanted();
+}
+
+void NoteEyePicture() {
+    std::lock_guard lock(g_bodyMutex);
+    BeginBodyFrame(g_bodyLatch);
+    ++g_bodyLatch.pictures;
+    if (effects::TailRecording()) {
+        char note[64];
+        std::snprintf(note, sizeof(note), "an eye's picture: %d this frame", g_bodyLatch.pictures);
+        effects::TailNote(note);
+    }
 }
 
 const uint8_t* RecentUploadOf(ID3D11Resource* resource, UINT& size, uint32_t& serial) {

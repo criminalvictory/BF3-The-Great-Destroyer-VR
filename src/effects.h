@@ -71,6 +71,12 @@ void DumpNext(UINT count);
 // weapon.txt "tail": the next frame's draws to window-sized targets logged in order, with their
 // shaders, blending and viewport (to find the HUD's, drawn into one eye's half only).
 void LogFrameTail();
+// While "tail" records its frame: a depth-stencil clear (depth3d.cpp's hook) and a note from another module (the body
+// lock's views, skin.cpp), logged in order among the frame's draws with the first-person ones (stencil 32), the eyes'
+// pictures and each change of depth-stencil buffer: what the right eye's pass keeps from the left eye's.
+bool TailRecording();
+void TailClear(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, UINT flags, float depth, UINT8 stencil);
+void TailNote(const char* text);
 
 // F18 (tools/drawhunt.ps1): a census of every draw for 6 s. The first 2 s are the baseline; fire
 // during the rest, and the shaders drawn then that weren't in the baseline, or in more of the

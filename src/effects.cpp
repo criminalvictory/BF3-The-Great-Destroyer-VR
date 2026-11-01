@@ -755,10 +755,17 @@ struct TailDraw {
     D3D11_RECT scissor;
     UINT texture0;  // the first pixel-shader texture's width (0 none)
     uint64_t psSum;  // the pixel shader's bytecode checksum (shaders.cpp; the same every start)
+    const void* depthTarget;  // the depth-stencil view's texture (not referenced; compared only)
 };
 std::mutex g_tailMutex;
 std::vector<TailDraw> g_tail;
 UINT g_tailAll = 0;  // every draw of the frame
+// A depth-stencil clear or another module's note, before the draw recorded at at.
+struct TailEvent {
+    size_t at;
+    char text[200];
+};
+std::vector<TailEvent> g_tailEvents;
 
 // An eye's picture going onto the window (unblended, a target twice as wide as high): its pixel
 // shader's constants (the first four buffers, 64 floats each at most), read back through a staging
@@ -810,6 +817,7 @@ void Tail(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
     if (dsv) {
         ID3D11Resource* resource = nullptr;
         dsv->GetResource(&resource);
+        d.depthTarget = resource;
         ID3D11Texture2D* texture = nullptr;
         if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
             D3D11_TEXTURE2D_DESC desc;
@@ -961,13 +969,85 @@ void LogTail() {
             static_cast<int>(d.stencilFunc), static_cast<int>(d.stencilPass), d.scissorOn ? "on" : "off",
             d.scissor.left, d.scissor.top, d.scissor.right, d.scissor.bottom, d.texture0);
     }
+    // In order: the clears and notes among the first-person draws (stencil 32), the eyes' pictures (unblended, a
+    // target twice as wide as high) and each draw that changes its context's depth-stencil buffer.
+    Log("Tail order: %zu events among %zu draws", g_tailEvents.size(), g_tail.size());
+    size_t e = 0;
+    std::vector<std::pair<const void*, const void*>> lastDepth;  // context, its last depth-stencil buffer
+    for (size_t i = 0; i <= g_tail.size(); ++i) {
+        for (; e < g_tailEvents.size() && g_tailEvents[e].at <= i; ++e)
+            Log("Tail order %zu: %s", i, g_tailEvents[e].text);
+        if (i == g_tail.size())
+            break;
+        const TailDraw& d = g_tail[i];
+        bool newDepth = true, seenContext = false;
+        for (auto& last : lastDepth)
+            if (last.first == d.ctx) {
+                seenContext = true;
+                newDepth = last.second != d.depthTarget;
+                last.second = d.depthTarget;
+            }
+        if (!seenContext)
+            lastDepth.push_back({d.ctx, d.depthTarget});
+        const bool picture = !d.blend && d.width == 2 * d.height;
+        if (!(d.stencil & 32) && !picture && !newDepth)
+            continue;
+        Log("Tail order %zu: draw %u, context %p, target %p %ux%u, depth-stencil %p (%ux%u), stencil %u; depth %s%s func "
+            "%d, stencil test %s func %d pass %d; viewport %.0f,%.0f %.0fx%.0f; PS %p%s%s",
+            i, d.count, d.ctx, d.target, d.width, d.height, d.depthTarget, d.depthWidth, d.depthHeight, d.stencil,
+            d.depthTest ? "test" : "off", d.depthWrite ? "+write" : "", static_cast<int>(d.depthFunc),
+            d.stencilTest ? "on" : "off", static_cast<int>(d.stencilFunc), static_cast<int>(d.stencilPass),
+            d.viewport.TopLeftX, d.viewport.TopLeftY, d.viewport.Width, d.viewport.Height, d.ps,
+            picture ? " (an eye's picture)" : "", newDepth ? " (its context's depth-stencil changes)" : "");
+    }
+    g_tailEvents.clear();
     g_tail.clear();
 }
 
 void ProbeDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances);
 thread_local UINT t_start = 0;  // the indexed draw being noted: its first index (the probe logs it)
 
+// An eye's picture: six vertices, unblended, onto a target the window's size and twice as wide as high (the tail of a
+// drive's frame: one at the end of each eye's pass).
+bool IsEyePicture(ID3D11DeviceContext* ctx) {
+    ID3D11RenderTargetView* rtv = nullptr;
+    ctx->OMGetRenderTargets(1, &rtv, nullptr);
+    bool window = false;
+    if (rtv) {
+        ID3D11Resource* resource = nullptr;
+        rtv->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            window = desc.Width >= 2000 && desc.Width == 2 * desc.Height;
+            texture->Release();
+        }
+        if (resource)
+            resource->Release();
+        rtv->Release();
+    }
+    if (!window)
+        return false;
+    ID3D11BlendState* blend = nullptr;
+    FLOAT factor[4];
+    UINT mask = 0;
+    ctx->OMGetBlendState(&blend, factor, &mask);
+    bool blended = false;
+    if (blend) {
+        D3D11_BLEND_DESC desc;
+        blend->GetDesc(&desc);
+        blended = desc.RenderTarget[0].BlendEnable != FALSE;
+        blend->Release();
+    }
+    return !blended;
+}
+
 void NoteDraw(ID3D11DeviceContext* ctx, DrawType type, UINT count, UINT instances) {
+    // An eye's picture ends its eye's pass: the body lock tells the second eye's body views by it (skin.cpp), while the
+    // body of a scripted picture is moved to each eye's place.
+    if (count == 6 && skin::EyePictureWanted() && IsEyePicture(ctx))
+        skin::NoteEyePicture();
     if (g_tailState.load(std::memory_order_relaxed) == 2)
         Tail(ctx, type, count, instances);
     ProbeDraw(ctx, type, count, instances);
@@ -1483,6 +1563,43 @@ void StartFlashProbe() {
 
 void LogFrameTail() {
     g_tailState = 1;
+}
+
+bool TailRecording() {
+    return g_tailState.load(std::memory_order_relaxed) == 2;
+}
+
+void TailClear(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv, UINT flags, float depth, UINT8 stencil) {
+    ID3D11Resource* resource = nullptr;
+    UINT width = 0, height = 0;
+    if (dsv) {
+        dsv->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+            D3D11_TEXTURE2D_DESC desc;
+            texture->GetDesc(&desc);
+            width = desc.Width, height = desc.Height;
+            texture->Release();
+        }
+        if (resource)
+            resource->Release();
+    }
+    TailEvent e{};
+    std::snprintf(e.text, sizeof(e.text), "clear, context %p, depth-stencil %p (%ux%u):%s%s to %.3f / %u",
+                  static_cast<void*>(ctx), static_cast<void*>(resource), width, height,
+                  flags & D3D11_CLEAR_DEPTH ? " depth" : "", flags & D3D11_CLEAR_STENCIL ? " stencil" : "", depth,
+                  static_cast<unsigned>(stencil));
+    std::lock_guard lock(g_tailMutex);
+    e.at = g_tail.size();
+    g_tailEvents.push_back(e);
+}
+
+void TailNote(const char* text) {
+    TailEvent e{};
+    std::snprintf(e.text, sizeof(e.text), "%s", text);
+    std::lock_guard lock(g_tailMutex);
+    e.at = g_tail.size();
+    g_tailEvents.push_back(e);
 }
 
 void StartCensus() {
