@@ -777,8 +777,8 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 //                   goes home by itself (the hands can't close up under the grip as the game's do: the review); each
 //                   try at the grip is logged with how near the palm brought it, to set this from (2 by default)
 //   "loadtest"      with "mag 1" and no left controller tracked: a scripted left hand reloads the pistol every 6 s (X,
-//                   a magazine from the pelvis, up under the grip and home); "loadtest park": it leaves it 4 cm short,
-//                   drops away and comes back to push it home
+//                   a magazine from the pelvis, up under the grip and home); "loadtest park": it leaves it 4 cm into
+//                   the grip (7 cm short of home), drops away and comes back to push it home
 //   "racktest"      with "slide 1" and no left controller tracked: a scripted left hand racks the slide every 3 s
 //   "slidetest"     the slide going back and forth over its whole travel, 2 s a cycle
 //   "locktest 4.1"  the slide held open that far back, where the slide stop will hold it (4.1 by default; over
@@ -945,7 +945,7 @@ void ReadPistolTuning() {
         Log("Pistol reload: loadtest%s: %s", p.load == 2 ? " park" : "",
             !g_pistolMagOn ? "does nothing without \"mag 1\""
             : p.load == 2  ? "a scripted left hand reloads every 6 s while no left controller is tracked, leaving the "
-                             "magazine 4 cm short, then pushing it home"
+                             "magazine 4 cm into the grip (7 cm short of home), then pushing it home"
                            : "a scripted left hand reloads every 6 s while no left controller is tracked");
     if (p.rack)
         Log("Pistol reload: racktest: %s",

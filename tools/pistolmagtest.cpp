@@ -17,7 +17,8 @@
 //      jump near home seats nothing; "seat 0.5"
 //   9  each try's nearest approach (to set the snap from): parked, off the line, seated; the hands apart then
 //  10  the push home (B2): its share over the last 3 cm; the hand drawn under the magazine on B, then on B2
-//  11  the hand or the pistol lost: kept a second in the hand, parked in the well, waiting below the mouth
+//  11  the hand or the pistol lost: kept a second in the hand, parked in the well, waiting below the mouth; going home
+//      by itself (the snap), it goes on
 //  12  the carries and the helpers: C2 is the flat base's place, C1 53 degrees off; PlaceOnLine is the design's
 //  13  frame times and poses not numbers: nothing drawn that isn't a number, never past home
 // Usage: pistolmagtest [-v]   (-v prints every check and every event)
@@ -252,6 +253,17 @@ struct Sim {
             MagAt(s0 + (s1 - s0) * i / n, lateral, turn);
             Step();
         }
+    }
+    // The palm brought to s, within the snap, and held there until the snap takes the magazine on past it (true; at
+    // most 10 frames). From below s: in the well a magazine above the palm stays there anyway.
+    bool UntilSnap(float s) {
+        for (int i = 0; i < 10; ++i) {
+            MagAt(s);
+            Step();
+            if (r.s > s + 0.001f)
+                return true;
+        }
+        return false;
     }
     // A magazine taken at the pelvis and brought under the grip, flat, caught at 3 cm below its bottom.
     void TakeAndCatch() {
@@ -650,6 +662,48 @@ void Lost() {
     t.squeeze = 0.0f;
     t.Step();
     Check(t.Has("cancelled") && !t.Has("let go"), "let go while the pistol isn't tracked: gone, no fall");
+    // Going home by itself (the snap) it needs nothing of the hand: a frame without the hand, the pistol's "in hand" or
+    // its tracking as it goes doesn't leave it parked at home, out of the palm's reach (the review).
+    const char* what[3] = {"the hand lost", "the pistol out of hand", "the pistol not tracked"};
+    for (int i = 0; i < 3; ++i) {
+        Sim n;
+        n.TakeAndCatch();
+        n.Carry(-0.13f, -0.03f, 0.4f);
+        n.Steps(3);
+        const bool snapped = n.UntilSnap(-0.018f);
+        bool* lost[3] = {&n.left, &n.pistol, &n.tracked};
+        *lost[i] = false;  // a frame
+        n.Step();
+        *lost[i] = true;
+        n.Steps(4);
+        Check(snapped && n.Has("seated") && !n.Has("parked") && !n.wellEmpty && !pistolmag::Holding(),
+              "%s a frame as it snaps from 1.8 cm short: home all the same, never parked", what[i]);
+    }
+    Sim five(0.05f);
+    five.TakeAndCatch();
+    five.Carry(-0.13f, -0.06f, 0.4f);
+    five.Steps(3);
+    const bool snapped = five.UntilSnap(-0.045f);
+    const float from = five.r.s;
+    five.left = false;
+    five.Step();
+    Check(snapped && five.r.s > from + 0.01f && five.r.mag && five.r.holding && !pistolmag::Parked(),
+          "seat 5, the palm 4.5 cm short, the hand lost as it snaps: it goes on up (s %+.3f to %+.3f), drawn", from,
+          five.r.s);
+    five.left = true;
+    five.Steps(4);
+    Check(five.Has("seated") && !five.Has("parked") && five.tries == 1 && five.lastTry.seated,
+          "then home, its try told with the seat (the palm %.1f cm short at the nearest)",
+          -five.lastTry.closest * 100);
+    Sim ten(0.10f);
+    ten.TakeAndCatch();
+    ten.Carry(-0.13f, -0.105f, 0.4f);
+    ten.Steps(3);
+    const bool wide = ten.UntilSnap(-0.09f);
+    ten.left = false;  // from the snap's first frame on
+    ten.Steps(6);
+    Check(wide && ten.Has("seated") && !ten.Has("parked") && !ten.wellEmpty,
+          "seat 10 from 9 cm short, the hand lost from the snap's first frame: home with no hand");
 }
 
 void Carries() {

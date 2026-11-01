@@ -47,9 +47,9 @@ constexpr float kLeaveBelow = 0.025f, kLeaveAside = 0.05f, kLeaveTurned = 50.0f 
 // Home (the review: the controllers can't overlap as the hands would under the grip, so seating by the palm alone is
 // probably out of reach). Once the palm's push (its top where the flat base would hold it) has been within the snap
 // distance of home for two frames running (a tracking jump is one: the well holding it up, a jump's 3 cm would stay),
-// it goes on home by itself, 3 cm a frame whatever the hand does, and is seated after two frames there. The snap is
-// 2 cm until the first headset test says otherwise (SetSnap: pistol.txt "seat"), never under 5 mm nor more than 10 cm
-// (a centimetre into the grip).
+// it goes on home by itself, 3 cm a frame whatever the hand does (seen or not), and is seated after two frames there.
+// The snap is 2 cm until the first headset test says otherwise (SetSnap: pistol.txt "seat"), never under 5 mm nor
+// more than 10 cm (a centimetre into the grip).
 constexpr float kHome = 0.005f, kSnapMost = 0.10f;
 constexpr int kHomeFrames = 2;
 float g_snap = 0.02f;
@@ -399,7 +399,8 @@ Result Update(const Frame& f) {
     }
 
     // The hand or the pistol not seen: in the hand, kept a second (not drawn); on the line in the well it stays there
-    // (parked), below the mouth it waits on the line for the hand; parked, it stays.
+    // (parked) unless it's going home by itself (the snap needs nothing of the hand: it goes on); below the mouth it
+    // waits on the line for the hand; parked, it stays.
     if (!left || !f.pistol || !pistolTracked) {
         g_gripCount = 0;
         if (g_state == State::kHand) {
@@ -409,9 +410,28 @@ Result Update(const Frame& f) {
                 return r;
             }
         } else if (g_state == State::kLine && g_along > kMouth + kInWell) {
-            g_state = State::kParked;
-            r.parked = true;
-            EndTry(r);
+            if (!g_snapping) {
+                g_state = State::kParked;
+                r.parked = true;
+                EndTry(r);
+            } else {
+                // Going home by itself, it goes on as it would with the hand: parked, a frame lost on the way left it
+                // at home or near it, out of the palm's reach (the review). In the well it's on the line exactly. The
+                // hand's place under it goes with it, so after the seat the glove eases back from there as it does
+                // with the hand.
+                g_along = std::min(g_along + kMaxStep, 0.0f);
+                PlaceOnLine(g_along, 0.0f, g_onLine);
+                g_homeFor = g_along >= -kHome ? g_homeFor + 1 : 0;
+                float hold[12];
+                Blend(g_push, g_seated, PushShare(g_along), hold);
+                GloveOn(g_onLine, hold, g_gloveInGun);
+                if (g_homeFor >= kHomeFrames) {
+                    g_state = State::kNone;
+                    r.seated = true;
+                    EndTry(r);
+                    return r;  // the pistol's own is drawn from now on
+                }
+            }
         }
         r.holding = g_state != State::kParked;
         if (g_state != State::kHand && f.pistol && pistolTracked) {

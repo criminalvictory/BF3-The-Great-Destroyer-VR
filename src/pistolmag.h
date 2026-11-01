@@ -20,8 +20,8 @@ namespace pistolmag {
 //   - once its top is in the grip, it stays there (held by the well) if the hand drops away or lets go ("parked");
 //     the palm under its floorplate pushes it the rest of the way; X drops it out (hands.cpp);
 //   - the hands can't close up under the grip as the game's do (the controllers can't overlap: the review), so once
-//     the palm has held its top within the snap distance of home for two frames running it goes home by itself
-//     (SetSnap); each try on the grip's line says how near the palm brought it, to set that from;
+//     the palm has held its top within the snap distance of home for two frames running it goes home by itself, the
+//     hand seen or not (SetSnap); each try on the grip's line says how near the palm brought it, to set that from;
 //   - over its last 3 cm the hand goes over to the game's own push home (2.421 s: the palm centred under the
 //     floorplate, its fingers too: Result::push).
 // Gun space: the pistol frame bone's (3) bind space (x the gun's left, y up, z to the muzzle). View space: the head's
