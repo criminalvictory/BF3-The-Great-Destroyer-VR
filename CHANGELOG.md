@@ -4,6 +4,25 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-11-01, evening: your own body in cutscenes has depth (stage: pre-alpha, experimental)
+
+Tried by the user in the headset, the Comrades drive: "it worked really well ... looked really good".
+
+### New
+- **In cutscenes and rides, your body is drawn for each eye**, so the hands, gun, knees and the jammer have their
+  own depth. The game draws them from one camera for both eyes, flat against the scene around them, which felt
+  "like looking cross-eyed", a split, when the jammer was raised to the face or the gun inspected up close. Each eye
+  now gets its own view of the body, half the eye distance to its side, as the scene already had. On for every
+  cutscene; weapon.txt "bodystereo 0" leaves the body as the game draws it.
+
+### Fixed
+- A body held by the cutscene's own camera no longer drifts by a frame's head turn while that camera holds still
+  (from the code review).
+
+### Known
+- A dark layer around the arms, glove and gun in ordinary play is still unexplained (it isn't what caused this
+  fix's first-try black holes, which were frames given the wrong eye).
+
 ## 2026-11-01, later in the afternoon: the body held through the whole Comrades drive (stage: pre-alpha, experimental)
 
 Tried by the user in the headset: "stays put now".
