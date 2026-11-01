@@ -60,6 +60,7 @@ add_library(bf3vr SHARED
     src/gunshape.cpp
     src/collide.cpp
     src/pouch.cpp
+    src/pistolslide.cpp
     src/overlay.cpp
     src/shaders.cpp
     src/log.cpp)
@@ -97,6 +98,12 @@ target_compile_definitions(collidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_executable(magtest tools/magtest.cpp src/pouch.cpp)
 target_compile_definitions(magtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the headers only, no loader
+
+# The train pistol's slide worked by the left hand (src/pistolslide.cpp, as hands.cpp runs it) on scripted
+# frames at 72 Hz: the grab and its reach, fresh presses, the ride back and its stops, the spring home,
+# the slide stop, the trigger's rack, the hand or the pistol lost.
+add_executable(pistolslidetest tools/pistolslidetest.cpp src/pistolslide.cpp)
+target_compile_definitions(pistolslidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 # The forearm placed from its hand (src/armik.h, header only): the bind pose, rigid moves, the game's
 # own rifle hold from the mesh dumps, the wrist's readings and range, the twist sweep, degenerate

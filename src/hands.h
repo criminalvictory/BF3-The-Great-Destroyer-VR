@@ -28,4 +28,10 @@ bool AimOrientation(XrQuaternionf& out);
 // first angle of where the right hand points it, not at all past the second (degrees; steer.h).
 void SetSteerCone(float fullDegrees, float noneDegrees);
 
+// The train pistol's slide held back by the left hand (build\pistol.txt "reload on" and "slide 1", the
+// pistol in the right hand): it's out of battery, so the right trigger mustn't fire (input.cpp). False
+// otherwise, and once Update hasn't seen it held for 0.2 s (free hands off, the headset not rendering).
+// Render thread.
+bool PistolSlideHeld();
+
 }

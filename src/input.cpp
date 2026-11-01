@@ -496,6 +496,10 @@ const char* FireBlocked() {
     return nullptr;
 }
 bool g_fireToldWhy = false;  // logged once a pull
+// The train pistol's slide held back by the left hand (hands::PistolSlideHeld, build\pistol.txt "slide 1"): the pistol
+// is out of battery, so a pull then does nothing, and one held on as the slide's let go still doesn't fire until it's
+// let go and pulled again (a real pistol's trigger has to reset). Only ever set with the train pistol in hand.
+bool g_fireHeldOff = false;
 
 XrVector2f Stick(XrSession session, XrAction action) {
     XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
@@ -666,6 +670,14 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
                    state.currentState;
         }
         if (m.action == &g_fire) {
+            if (down && !g_fireHeldOff && hands::PistolSlideHeld()) {
+                g_fireHeldOff = true;
+                Log("Input: the trigger didn't fire: the pistol's slide is held back by the left hand");
+            }
+            if (!down)
+                g_fireHeldOff = false;
+            if (g_fireHeldOff)
+                down = false;
             const char* why = down ? FireBlocked() : nullptr;
             if (why && !g_fireToldWhy) {
                 int loaded = 0, spare = 0;
