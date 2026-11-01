@@ -44,6 +44,15 @@ float g_base = 0.0f;     // the look yaw with the hand's yaw at 0 and no stick t
 float g_turned = 0.0f;   // the stick's turns since then (radians, the hand's sense)
 float g_target = 0.0f;   // the look yaw written this frame
 bool g_haveTarget = false;
+// g_target is mouse aim's, a yaw of the game's camera itself: no vehicle's turn (g_yawOffset) to add in LookYaw.
+// The search thread sets g_yawOffset as it finds the angles, a moment before Targets hands them over: added to
+// mouse aim's target then, the picture's body took a vehicle's turn for a frame and kept it from then on.
+bool g_targetIsMouse = false;
+// Reset() (a recenter, a mode or source switch): the next start takes the game's own yaw, not the picture's
+// body (a recenter turns the hand and the head together, which the game's yaw kept then follows unseen).
+bool g_reanchor = false;
+// Update's last answer, the look going on: a new soldier then is a load or a respawn, whose facing is taken.
+bool g_lookedLast = false;
 int g_writes = 0;  // head moves written since the last Probe log
 int g_gameMoves = 0;      // frames the game had moved the look yaw away from the last one written
 float g_gameMoveMost = 0.0f;
@@ -528,31 +537,47 @@ float g_mouseTurned = 0.0f;
 constexpr float kMousePixelsPerRadian = 230.0f;  // about 4 a degree (TiltView's 24 for some 6)
 float g_mouseCarry = 0.0f;  // during a nudge: the stick's turn not yet sent (a fraction of a count)
 bool g_mouseHeld = false;   // this frame's corrections held for a nudge (Nudging)
+bool g_mousePaused = false;  // it waited since it last steered: centred again when it steers next
 
-bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
+bool MouseAim(float headYaw, float headPitch, float turn, float sign, const float* body, bool lookedLast) {
     g_mouseHeld = false;
     float cameraYaw = 0.0f, cameraPitch = 0.0f;
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     if (!g_mouseAimOn.load(std::memory_order_relaxed) || pid != GetCurrentProcessId() ||
-        !camera::GameWeaponAngles(cameraYaw, cameraPitch))
-        return false;  // paused: its centring kept (re-centred each time, the aim jumped, 16:21)
+        !camera::GameWeaponAngles(cameraYaw, cameraPitch)) {
+        g_mousePaused = true;
+        return false;
+    }
     const bool nudging = g_proving.load();
-    // Centred afresh only for a new soldier (a respawn, a load) or after the look angles were written.
+    // Centred afresh for a new soldier (a respawn, a load), after the look angles were written, and after a pause.
     static uintptr_t s_soldier = 0;
     const uintptr_t soldier = god::PlayerClientSoldier();
+    bool newSoldier = false;
     if (soldier != s_soldier) {
         s_soldier = soldier;
         g_mouseHave = false;
+        newSoldier = true;
     }
-    if (!g_mouseHave) {
-        if (nudging)
+    if (!g_mouseHave || g_mousePaused) {
+        // From the picture's body (Update's body): the yaw aimed for takes the hand's turn out of it, so the view
+        // goes on where it was and the game's camera turns to the gun. Its centring kept through a pause instead,
+        // whatever turned the game's camera meanwhile (the stick, through the mouse thread) was undone and the view
+        // jumped with it (The Great Destroyer, 18:31:16 and 18:32:27: 112 and 136 degrees); centred on the game's
+        // camera, the hand's turn meanwhile jumped it (16:21). The game's camera only after a recenter, or for a
+        // new soldier while the look went on (a load: its facing taken), and never a nudged one.
+        const bool fromBody = body && !g_reanchor && !(newSoldier && lookedLast);
+        if (nudging && !fromBody)
             return false;  // never centred on a nudged camera: paused, as it always was through a nudge
-        g_mouseBase = cameraYaw - sign * headYaw;
+        g_mouseBase = fromBody ? *body - (1.0f + sign) * headYaw : cameraYaw - sign * headYaw;
         g_mouseTurned = 0.0f;
-        g_mouseHave = true;
         g_yawOffset = 0.0f;  // the camera's own yaw here, no vehicle's turn to add
-        Log("Aim: the view steered with the mouse until the look angles are found");
+        g_reanchor = false;
+        if (!g_mouseHave)
+            Log("Aim: the view steered with the mouse until the look angles are found%s",
+                fromBody ? " (from the picture's turn)" : "");
+        g_mouseHave = true;
+        g_mousePaused = false;
     }
     g_mouseTurned += turn;
     const float yaw = g_mouseBase + sign * (headYaw + g_mouseTurned);
@@ -581,6 +606,7 @@ bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
         SendInput(1, &in, sizeof(in));
     g_target = yaw - 2 * kPi * std::floor(yaw / (2 * kPi));
     g_haveTarget = true;
+    g_targetIsMouse = true;
     return true;
 }
 
@@ -593,7 +619,9 @@ bool Nudging() {
     return g_mouseHeld && g_mouseHave;
 }
 
-bool Update(float headYaw, float headPitch, float turn) {
+bool Update(float headYaw, float headPitch, float turn, const float* body) {
+    const bool lookedLast = g_lookedLast;
+    g_lookedLast = false;
     config::Aim a = config::GetAim();
     uintptr_t yawAddress = 0, pitchAddress = 0;
     if (!Targets(yawAddress, pitchAddress)) {
@@ -608,7 +636,8 @@ bool Update(float headYaw, float headPitch, float turn) {
             Log("Aim: the scripted moment is over (%.1f s without seeing the game turn the look; its angles not found)",
                 kScriptedQuiet / 1000.0f);
         }
-        return MouseAim(headYaw, headPitch, turn, a.invertYaw ? 1.0f : -1.0f);
+        g_lookedLast = MouseAim(headYaw, headPitch, turn, a.invertYaw ? 1.0f : -1.0f, body, lookedLast);
+        return g_lookedLast;
     }
     g_mouseHave = false;
     // The hand's yaw is OpenXR's (growing as it turns left); the game's look yaw grows turning
@@ -641,7 +670,13 @@ bool Update(float headYaw, float headPitch, float turn) {
         Log("Aim: the game left the look yaw alone for %.1f s: the head aims again", kScriptedQuiet / 1000.0f);
     }
     if (!g_havePrevious) {
-        g_base = now - sign * headYaw;
+        // From the picture's body where there is one (the angles found while mouse aim steered, a scripted moment
+        // over, after a cutscene): the yaw written takes the hand's turn out of it, so the view goes on and the
+        // game's camera turns to the gun. From the game's own yaw, the view jumped by the hand's turn since the
+        // look stopped (18-34 degrees in The Great Destroyer: 18:31:38, 18:32:12, 18:33:27, 18:33:44, 18:34:51).
+        // After a recenter, from the game's (Reset).
+        g_base = body && !g_reanchor ? *body - g_yawOffset - (1.0f + sign) * headYaw : now - sign * headYaw;
+        g_reanchor = false;
         g_turned = 0.0f;
         g_havePrevious = true;
     } else if (g_haveTarget) {
@@ -672,6 +707,7 @@ bool Update(float headYaw, float headPitch, float turn) {
     yaw -= 2 * kPi * std::floor(yaw / (2 * kPi));  // the game keeps it within 0 to 2 pi
     g_target = yaw;
     g_haveTarget = true;
+    g_targetIsMouse = false;
     SetTo(yawAddress, yaw);
     // Pitch: set it outright. Adding changes drifted: BF3 clamps how far the player can look
     // up or down, so whatever went past the clamp was lost and the game ended up aiming low.
@@ -694,12 +730,15 @@ bool Update(float headYaw, float headPitch, float turn) {
     SetTo(pitchAddress, pitch);
     g_pitchWritten = pitch;
     g_havePitch = true;
+    g_lookedLast = true;
     return true;
 }
 
 void Reset() {
     g_havePrevious = false;
     g_haveTarget = false;
+    g_mouseHave = false;  // mouse aim centred again too, on the game's camera (g_reanchor)
+    g_reanchor = true;
 }
 
 bool Scripted() {
@@ -718,6 +757,7 @@ void Forget() {
     g_mouseHave = false;
     // A cutscene ends a scripted moment: left on, it held the free hands off long after (Update's not-found path).
     g_scripted = false;
+    g_lookedLast = false;  // the look stopped: a new soldier after the cutscene goes on from the picture
 }
 
 void SetScriptedFollow(bool on) {
@@ -746,8 +786,8 @@ bool LookYaw(float& radians, float& sign) {
     if (!g_haveTarget)
         return false;
     // As written, whatever the game has done to it since; with a vehicle's turn (g_yawOffset) added, as
-    // the camera has it (the picture takes the hand's turn out by the difference).
-    radians = g_target + g_yawOffset;
+    // the camera has it (the picture takes the hand's turn out by the difference). Mouse aim's is the camera's own.
+    radians = g_target + (g_targetIsMouse ? 0.0f : g_yawOffset);
     sign = config::GetAim().invertYaw ? 1.0f : -1.0f;  // the hand's yaw goes in negated (Update)
     return true;
 }

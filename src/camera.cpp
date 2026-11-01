@@ -116,6 +116,24 @@ std::atomic<bool> g_mirrorFix{true};       // weapon.txt "mirrorfix 0": a mirror
 std::atomic<int> g_turned{0};              // cameras turned to the head since TakeTurned
 std::atomic<uint32_t> g_refusedInactive{0}, g_refusedNotCamera{0};  // TurnToHead's refusals (TakeTurned logs them)
 float g_refusedMatrix[16] = {};
+// views.cpp's cameras of one frame (both eyes and their cull cameras) turned with one published turn (BeginViews,
+// the view builder's thread), and what the first of them showed (ShownTurn): its yaw as built (low half) and the
+// yaw taken out of it (high half), two floats in one word so the render thread reads them together.
+ViewTurnState g_frameView = {};
+bool g_frameLatched = false, g_frameFirst = false;
+std::atomic<uint64_t> g_shown{0};
+std::atomic<ULONGLONG> g_shownAt{0};  // when it was (GetTickCount64; 0 never): older than kShownFresh, stale
+constexpr ULONGLONG kShownFresh = 250;
+// A camera the mod had already turned, offered again in a frame's views (TurnToHead): its yaw the last frame's
+// shown yaw within kRepeatSame after a jump of more than kRepeatJump, its pitch the last shown pitch within
+// kRepeatPitch (the head's, baked in: a game camera whose yaw lands there by chance is still turned). The last
+// frame's first camera as built and as shown (radians), and the same latched for this frame by BeginViews, so
+// both eyes' copies are judged alike. The view builder's thread only.
+constexpr float kRepeatSame = 0.1f / 57.29578f, kRepeatJump = 5.0f / 57.29578f, kRepeatPitch = 0.5f / 57.29578f;
+float g_lastCameraYaw = 0.0f, g_lastShownYaw = 0.0f, g_lastShownPitch = 0.0f;
+float g_refCameraYaw = 0.0f, g_refShownYaw = 0.0f, g_refShownPitch = 0.0f;
+bool g_haveLast = false, g_haveRef = false;
+uint32_t g_repeats = 0;  // left as they were since the last log
 
 // Camera copies the finder (F10) saw this session, which the F6 hunt tries one at a time.
 std::mutex g_testMutex;
@@ -205,8 +223,8 @@ void QuatRotate(const float* q, const float* v, float* out) {
 // The turn, in the camera's own frame, from where the hand aims to where the head looks.
 // The game camera is body yaw * controller yaw * game pitch (the look angles follow the
 // controller), so removing the controller yaw and the game's own pitch and applying the head
-// leaves body yaw * head.
-void ViewTurnLocal(const float* m, const camera::ViewTurn& turn, float* local) {
+// leaves body yaw * head. taken: the yaw it removed (the picture shows the camera's + taken - head).
+void ViewTurnLocal(const float* m, const camera::ViewTurn& turn, float* local, float* taken = nullptr) {
     float pitch = std::asin(std::clamp(-m[9], -1.0f, 1.0f));  // true forward = -row2
     float yaw = turn.controllerYaw;
     if (turn.haveLook) {
@@ -222,6 +240,8 @@ void ViewTurnLocal(const float* m, const camera::ViewTurn& turn, float* local) {
             behind += 2 * kPi;
         yaw = turn.currentYaw + turn.lookSign * behind;
     }
+    if (taken)
+        *taken = yaw;
     float qYaw[4] = {0.0f, std::sin(yaw / 2), 0.0f, std::cos(yaw / 2)};
     float qPitch[4] = {std::sin(pitch / 2), 0.0f, 0.0f, std::cos(pitch / 2)};
     float aim[4];
@@ -644,11 +664,13 @@ void SetViewsMode(bool on) {
 }
 
 bool TurnToHead(float* transform) {
-    const ViewTurnState& view = g_view[g_viewIndex.load(std::memory_order_acquire)];
+    // The frame's turn (BeginViews): both eyes and their cull cameras turned alike.
+    const ViewTurnState& view = g_frameLatched ? g_frameView : g_view[g_viewIndex.load(std::memory_order_acquire)];
     // Why a camera wasn't turned, counted for TakeTurned's log: after a load the game's own arms showed
     // 6.5 s with no camera turned at all (the user: "it could be quicker", 16:28).
     if (!view.active) {
         g_refusedInactive.fetch_add(1, std::memory_order_relaxed);
+        g_haveLast = false;  // nothing turned: no last picture to tell a repeated camera by
         return false;
     }
     if (!IsCamera(transform)) {
@@ -658,8 +680,28 @@ bool TurnToHead(float* transform) {
     }
     float before[16];
     std::memcpy(before, transform, sizeof(before));
-    float local[4];
-    ViewTurnLocal(transform, view.turn, local);
+    // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
+    // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
+    // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
+    // whether it turns or the game's camera slides. Marked " | nudge" (mouse aim holding its corrections for the
+    // search's nudge) or " | again" (a camera already turned, left as it was: below).
+    static ULONGLONG lastLog = 0;
+    auto logView = [&](const char* mark) {
+        const ULONGLONG now = GetTickCount64();
+        if (now >= g_turnLogUntil.load(std::memory_order_relaxed) || now - lastLog < 10)
+            return;
+        lastLog = now;
+        const float* q = view.turn.head;
+        const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
+                                  -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
+        const float deg = 57.29578f;
+        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f%s",
+            view.turn.currentYaw * deg, view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12],
+            before[13], before[14], std::atan2(-forward[0], -forward[2]) * deg,
+            std::atan2(transform[8], -transform[10]) * deg, mark);
+    };
+    float local[4], taken = 0.0f;
+    ViewTurnLocal(transform, view.turn, local, &taken);
     // A cutscene's camera can come mirrored (the user, The Great Destroyer 2026-10-31: as Kovac walks
     // in, turning the head left turned the view right; the look angles weren't even known then, so
     // nothing fought the game): its rows the other handedness from the player's own camera, learned
@@ -688,26 +730,70 @@ bool TurnToHead(float* transform) {
         local[1] = -local[1];
         local[2] = -local[2];
     }
+    // A camera the mod had already turned, offered again in this frame's views: its yaw the last frame's shown yaw
+    // within 0.04 degrees after a jump of 5 to 75 degrees (19 frames in The Great Destroyer, 18:30-18:44; at the
+    // game's own place, no eye shift: the weapon camera as OnException turned it). With a look yaw the turn reads
+    // the camera's own yaw and comes out the same; without one the yaw was taken out of it a second time and the
+    // picture flicked for a frame by the hand's angle from the head (-75 degrees at 18:42:40.994, 18:42:45.660,
+    // 18:43:03.694 and 18:44:27.259, standing still on the train). It's left as it was turned.
+    const float cameraYaw = std::atan2(before[8], -before[10]);
+    if (!view.turn.haveLook && !mirrored && g_haveRef &&
+        std::fabs(std::remainder(cameraYaw - g_refShownYaw, 2 * kPi)) < kRepeatSame &&
+        std::fabs(std::remainder(cameraYaw - g_refCameraYaw, 2 * kPi)) > kRepeatJump &&
+        std::fabs(std::asin(std::clamp(-before[9], -1.0f, 1.0f)) - g_refShownPitch) < kRepeatPitch) {
+        g_turned.fetch_add(1, std::memory_order_relaxed);  // turned (before): no cutscene
+        static ULONGLONG s_repeatLogged = 0;
+        ++g_repeats;
+        if (GetTickCount64() - s_repeatLogged >= 1000) {
+            s_repeatLogged = GetTickCount64();
+            Log("Camera: %u camera%s the mod had turned came again (the last picture's yaw, %.1f degrees from the game's): "
+                "left as turned",
+                g_repeats, g_repeats == 1 ? "" : "s", std::fabs(std::remainder(cameraYaw - g_refCameraYaw, 2 * kPi)) * 57.29578f);
+            g_repeats = 0;
+        }
+        logView(" | again");
+        return true;
+    }
+    const bool first = g_frameFirst;
+    g_frameFirst = false;
     TurnLocal(transform, local);
     g_turned.fetch_add(1, std::memory_order_relaxed);
-    // weapon.txt "viewlog N": for N seconds, each frame's first camera turned: the hand's yaw, the
-    // look yaw written, the game camera's yaw and place, the head's yaw and the yaw shown. The user
-    // saw the view move with the gun though the look yaw checked out (2026-10-30): this shows
-    // whether it turns or the game's camera slides.
-    static ULONGLONG lastLog = 0;
-    const ULONGLONG now = GetTickCount64();
-    if (now < g_turnLogUntil.load(std::memory_order_relaxed) && now - lastLog >= 10) {
-        lastLog = now;
-        const float* q = view.turn.head;
-        const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
-                                  -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
-        const float deg = 57.29578f;
-        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f%s",
-            view.turn.currentYaw * deg, view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12],
-            before[13], before[14], std::atan2(-forward[0], -forward[2]) * deg,
-            std::atan2(transform[8], -transform[10]) * deg, view.turn.nudging ? " | nudge" : "");
+    // What the frame's first camera showed, for xr_runtime.cpp's picture body (not a mirrored one: its turn is
+    // the other way round), and for the next frame's check above.
+    if (first && !mirrored) {
+        uint32_t low = 0, high = 0;
+        std::memcpy(&low, &cameraYaw, sizeof(low));
+        std::memcpy(&high, &taken, sizeof(high));
+        g_shown.store(static_cast<uint64_t>(high) << 32 | low, std::memory_order_release);
+        g_shownAt.store(GetTickCount64(), std::memory_order_release);
+        g_lastCameraYaw = cameraYaw;
+        g_lastShownYaw = std::atan2(transform[8], -transform[10]);
+        g_lastShownPitch = std::asin(std::clamp(-transform[9], -1.0f, 1.0f));
+        g_haveLast = true;
     }
+    logView(view.turn.nudging ? " | nudge" : "");
     return true;
+}
+
+void BeginViews() {
+    g_frameView = g_view[g_viewIndex.load(std::memory_order_acquire)];
+    g_frameLatched = true;
+    g_frameFirst = true;
+    g_refCameraYaw = g_lastCameraYaw;
+    g_refShownYaw = g_lastShownYaw;
+    g_refShownPitch = g_lastShownPitch;
+    g_haveRef = g_haveLast;
+}
+
+bool ShownTurn(float& cameraYaw, float& takenYaw) {
+    const ULONGLONG at = g_shownAt.load(std::memory_order_acquire);
+    if (!at || GetTickCount64() - at > kShownFresh)
+        return false;
+    const uint64_t v = g_shown.load(std::memory_order_acquire);
+    const uint32_t low = static_cast<uint32_t>(v), high = static_cast<uint32_t>(v >> 32);
+    std::memcpy(&cameraYaw, &low, sizeof(low));
+    std::memcpy(&takenYaw, &high, sizeof(high));
+    return std::isfinite(cameraYaw) && std::isfinite(takenYaw);
 }
 
 int TakeTurned() {

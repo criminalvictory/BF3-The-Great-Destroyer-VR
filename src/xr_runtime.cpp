@@ -98,6 +98,8 @@ int g_posesKept = 0;
 bool g_aimingWithHand = false;
 // The look yaw could be written last frame, so the stick's turn goes in with it (input.cpp).
 bool g_turnDirect = false;
+// The picture's body (BuildStereo) kept from before a recenter or a mode switch is stale: started again.
+bool g_bodyStale = true;
 
 // Yaw (turning left positive) and pitch (looking up positive) of where q points: (0, 0, -1) rotated by q.
 void LookAngles(const XrQuaternionf& q, float& yaw, float& pitch) {
@@ -113,6 +115,7 @@ void ResetEyes() {
     g_eyeValid[0] = g_eyeValid[1] = false;
     g_posesKept = 0;
     aim::Reset();
+    g_bodyStale = true;
 }
 // F7: the game may render a frame later than we think, which swaps the eyes and turns depth inside out.
 bool g_swapEyes = false;
@@ -137,12 +140,9 @@ float DrawnFov() {
     float eyes = views::RenderedFov();
     return eyes > 0.0f ? eyes : camera::RenderedFov();
 }
-// The view turn removes the hand's yaw from BF3's camera. BF3 may build that camera from look
-// angles written a frame or two earlier, so the view turn uses the yaw from that many frames
-// back ([controllers] view_lag, F11 cycles it); a mismatch shakes the picture as the arm moves.
-constexpr int kYawHistory = 3;
-float g_yawHistory[kYawHistory] = {};
-int g_yawHistoryNext = 0;
+// The picture's turn each frame (BuildStereo): with the look yaw written or steered by the mouse, or following
+// the game's camera from the yaw the last picture took out of it.
+enum ViewMode { kViewLook, kViewFollow };
 
 // A picture the game drew without the head's turn in its camera (camera::TakeTurned none: the
 // cutscenes of The Great Destroyer, as Kovac walks in; the viewlog showed no camera turned there
@@ -1135,12 +1135,29 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         // the game left them, without a jump. Paused alone that wasn't enough: it crashed 2 s after the
         // picture was turned again, the angles written where they had been found before the jump.
         // They're forgotten and looked for again (aim::Forget).
+        // The picture's body (below), the latest picture's, read first: the aim starts its look yaw from it.
+        static float s_body = 0.0f, s_heldYaw = 0.0f;
+        static bool s_haveBody = false;
+        static int s_viewMode = -1;  // the last frame's ViewMode
+        // Started again (a recenter, a mode switch: ResetEyes) or without the view turn (the head aiming): a body
+        // from before is stale, so the next look starts from the game's camera, as before.
+        if (g_bodyStale || !useHand) {
+            s_haveBody = false;
+            s_viewMode = -1;
+            g_bodyStale = false;
+        }
+        float shownCamera = 0.0f, shownTaken = 0.0f;
+        const bool shown = camera::ShownTurn(shownCamera, shownTaken);
+        if (s_viewMode == kViewFollow && shown) {
+            s_body = std::remainder(shownCamera + s_heldYaw, 2 * kPi);
+            s_haveBody = true;
+        }
+        const float stick = input::TakeTurn();
         if (g_unturnedLogged) {
-            input::TakeTurn();
             aim::Forget();
             g_turnDirect = false;
         } else {
-            g_turnDirect = aim::Update(yaw, pitch, input::TakeTurn());
+            g_turnDirect = aim::Update(yaw, pitch, stick, s_haveBody ? &s_body : nullptr);
         }
         // The bare arms of The Great Destroyer follow the controllers only once the game has left the
         // view to the player for 3 s: no cutscene picture, no scripted turn
@@ -1176,34 +1193,53 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         const float viewYaw = s_handYaw;
         // While mouse aim holds its corrections for the search's nudge of a candidate (aim::Nudging), the game's
         // facing keeps the stick's turn but not the hand's: it stays where the hand was as the nudge began. The
-        // walk and the yaw a cutscene's picture is kept at (g_yawHistory) are taken from there, as they were
-        // while mouse aim paused outright; the picture takes out the hand's turn as it is (viewYaw, LookYaw).
+        // walk is taken from there, as it was while mouse aim paused outright; the picture takes out the hand's
+        // turn as it is (viewYaw, LookYaw).
         static float s_facingYaw = 0.0f;
         if (!aim::Nudging())
             s_facingYaw = viewYaw;
+        // One body yaw for the picture, the game yaw the room's straight ahead shows (camera.cpp: shown = body -
+        // head), kept from frame to frame. With the look yaw written (or steered by the mouse) it is the look yaw
+        // plus the hand's, whatever the game's camera did, and aim.cpp starts the look yaw from it wherever it
+        // starts again. Without (a scripted moment, a cutscene, mouse aim waiting) the picture follows the game's
+        // camera from the yaw the last picture took out of it, so the hand-over doesn't move it: each one did by
+        // the gap between the camera and the yaw aimed for (up to 82 degrees in The Great Destroyer, 18:31:16) or
+        // by the hand's turn while frozen. At a scripted moment from the hand's, as before: the game's turn shows.
+        float lookYaw = 0.0f, lookSign = -1.0f;
+        const bool look = useHand && g_turnDirect && aim::LookYaw(lookYaw, lookSign);
+        if (look) {
+            s_body = std::remainder(lookYaw + viewYaw, 2 * kPi);
+            s_viewMode = kViewLook;
+        } else {
+            if (s_viewMode != kViewFollow)
+                s_heldYaw = aim::Scripted() || !shown || s_viewMode < 0 ? viewYaw : shownTaken;
+            if (shown)
+                s_body = std::remainder(shownCamera + s_heldYaw, 2 * kPi);
+            s_viewMode = kViewFollow;
+        }
+        s_haveBody = useHand && (s_haveBody || look || shown);
+        if (!useHand)
+            s_viewMode = -1;  // the head aiming, no view turn: started again once the hand aims
         // Walking goes where the head faces, not where the gun points (user, 2026-10-30): the game
-        // walks along its own facing, which is the hand's yaw the view turn takes out.
+        // walks along its own facing, which is the hand's yaw the view turn takes out while the look is
+        // written, and the yaw held while the picture follows the game's camera.
         if (useHand) {
             float headYaw = 0.0f, headPitch = 0.0f;
             LookAngles(head, headYaw, headPitch);
-            float apart = std::fmod(headYaw - s_facingYaw, 2 * kPi);
-            if (apart > kPi)
-                apart -= 2 * kPi;
-            if (apart < -kPi)
-                apart += 2 * kPi;
-            input::SetMoveTurn(apart);
+            input::SetMoveTurn(std::remainder(headYaw - (look ? s_facingYaw : s_heldYaw), 2 * kPi));
         } else {
             input::SetMoveTurn(0.0f);
         }
-        g_yawHistory[g_yawHistoryNext] = s_facingYaw;
-        int lagged = (g_yawHistoryNext - config::Get().viewLag + kYawHistory) % kYawHistory;
-        g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
         if (useHand) {
-            camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, g_yawHistory[lagged]};
+            camera::ViewTurn turn{{head.x, head.y, head.z, head.w}, s_heldYaw};
             turn.currentYaw = viewYaw;
             g_viewTurnOn = true;
-            g_viewTurnYaw = g_yawHistory[lagged];
-            turn.haveLook = g_turnDirect && aim::LookYaw(turn.lookYaw, turn.lookSign);
+            // A cutscene's picture is kept still where the last picture showed the game's camera (the Views
+            // switch above, next frame).
+            g_viewTurnYaw = s_viewMode == kViewFollow ? s_heldYaw : shown ? shownTaken : s_facingYaw;
+            turn.haveLook = look;
+            turn.lookYaw = lookYaw;
+            turn.lookSign = lookSign;
             turn.nudging = aim::Nudging();
             camera::SetViewTurn(&turn);
             // The picture's turn: the look yaw written against the controller's (camera.cpp).

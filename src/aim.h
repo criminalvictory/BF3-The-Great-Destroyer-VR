@@ -9,9 +9,14 @@ namespace aim {
 // turn: the right stick's smooth turn for this frame (radians, left positive), added with it.
 // False while the angles aren't known: they're looked for from the player's soldier (each new
 // life or checkpoint) in the background, and nothing is written until then.
-bool Update(float headYaw, float headPitch, float turn = 0.0f);
+// body: the picture's body yaw, the game yaw the room's straight ahead shows (radians, the look yaw's sense;
+// xr_runtime.cpp), or nullptr. Wherever the look yaw starts again (the angles found, a scripted moment over,
+// mouse aim after a pause or a cutscene) it starts from there, so the view goes on and the game's camera turns
+// to the gun.
+bool Update(float headYaw, float headPitch, float turn = 0.0f, const float* body = nullptr);
 
-// Forget the last head angles (mode switch, recenter), so the next Update doesn't jump.
+// Forget the last head angles (mode switch, recenter), so the next Update doesn't jump: it starts
+// again from the game's own yaw (a recenter turns the hand and the head together).
 void Reset();
 
 // Drops the look angles found, so they're looked for again: after the game drew without the head's

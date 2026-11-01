@@ -38,10 +38,13 @@ void SetEyeOffset(float metres);
 // cameras so the picture shows where the head looks instead. Both in the recentered OpenXR space.
 struct ViewTurn {
     float head[4];        // head orientation quaternion x, y, z, w
-    float controllerYaw;  // radians, turning left positive; view_lag frames old (the fallback)
+    // Without a look yaw: the yaw taken out of each camera as it is (radians, turning left positive), so the
+    // picture follows the game's camera (xr_runtime.cpp holds it at the yaw the last picture took out).
+    float controllerYaw;
     // Without lag guessing: the controller yaw and BF3's look yaw written this frame, and which
     // way the look yaw moves for a controller turn left. Each camera then reads the look yaw it
-    // was built from out of its own matrix, so the hand's turn it includes is known exactly.
+    // was built from out of its own matrix, so the hand's turn it includes is known exactly: the
+    // picture shows lookYaw + currentYaw - the head (lookSign -1), whatever the game's camera did.
     bool haveLook;
     float currentYaw;
     float lookYaw;
@@ -74,6 +77,13 @@ void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
 // unchanged) while no view turn is set.
 bool TurnToHead(float* transform);
+// views.cpp, once a frame before its TurnToHead calls (on the same thread): the turn published now is the one
+// they all use, so a turn published in between can't give the two eyes and their cull cameras different ones.
+void BeginViews();
+// The latest frame's first camera turned (the left eye's): its yaw as the game built it and the yaw the turn
+// took out of it (radians; shown = camera + taken - head, in the look yaw's sense). False before any, and when
+// none was turned for a quarter of a second (a cutscene, the view turn off, theater mode): it's stale then.
+bool ShownTurn(float& cameraYaw, float& takenYaw);
 // How many cameras TurnToHead turned since the last call (xr_runtime.cpp, once a picture: none means
 // the game drew it facing its own way, as in the cutscenes of The Great Destroyer).
 int TakeTurned();

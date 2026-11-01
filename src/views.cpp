@@ -67,6 +67,7 @@ void MakeEyes(uint8_t* views) {
     std::memcpy(eye[1] + kCullCamera, eye[0] + kCullCamera, kCameraSize);
     std::memcpy(eye[1] + kFirstPersonCamera, eye[0] + kFirstPersonCamera, kCameraSize);
     const float fov = camera::WantedFov();
+    camera::BeginViews();  // one turn for both eyes and their cull cameras
     for (int e = 0; e < 2; ++e) {
         auto main = reinterpret_cast<float*>(eye[e] + kMainCamera);
         auto cull = reinterpret_cast<float*>(eye[e] + kCullCamera);
