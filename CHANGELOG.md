@@ -4,6 +4,34 @@ Every upload to GitHub gets an entry here: what changed since the last one, and 
 project is at. Stages: pre-alpha, alpha, beta, release. A change of stage is also marked as a
 GitHub release.
 
+## 2026-11-01, evening: the desktop and Discord show the stream view (stage: pre-alpha, experimental)
+
+Tried by the user, streaming the game on Discord: "it works".
+
+### New
+- **The game's window fits your monitor and shows the stream view**: borderless, 16:9 (2:1 when Home shows both
+  eyes), the whole view. It was 4320x2160, more than twice the size of a 1920x1080 screen, so the desktop showed
+  only its top left ("way too zoomed in ... way too cropped"). The headset's picture is untouched: the game is told
+  its window is still the headset's size and draws at it, and Windows scales the picture into the window.
+  `[window] fit=0` (or weapon.txt "windowfit 0") puts the big window back.
+- **Discord streams the whole view.** Discord's Go Live copies the window as Windows shows it, and of a window off
+  the screen's edges Windows kept only the part on the monitor up to date: the stream showed that part moving in a
+  corner of an old, frozen picture. Now Discord gets the whole picture, current, at 16:9. OBS is unchanged.
+
+### Fixed
+- **Walking never gets stuck on the stick again.** In some runs the game stops reading the mod's controller stick
+  (the user, The Great Destroyer: "i cannot move ... after fighting in the interrogation room"; twice before on
+  2026-10-31). The mod notices within half a second and walks you on W/A/S/D instead, and goes back to the stick the
+  moment the game reads it again (it's also told the devices changed, to look for its controller).
+- With another window in front, the left stick no longer types W/A/S/D into it.
+- In cutscenes, your body is moved to each eye's place only when the frame's eye pictures were counted; otherwise it
+  stays as the game draws it, instead of possibly going to the wrong eye in a mission whose pictures are drawn
+  another way (from the code review).
+
+### Tools
+- tools\resume.ps1 (and the desktop launcher with it) clicks RESUME CAMPAIGN in the fitted window; tools\selftest.ps1
+  checks that the game still draws two `[window] size` squares for the headset.
+
 ## 2026-11-01, evening: your own body in cutscenes has depth (stage: pre-alpha, experimental)
 
 Tried by the user in the headset, the Comrades drive: "it worked really well ... looked really good".
