@@ -22,6 +22,15 @@
 // there. It's made level about its yaw instead (MakeLevel: its own where that's sure, else going on from the
 // last frame's by its turn about the world's up), the head put on that: the game's camera is the body, the head
 // stays the user's, the horizon level (the user's choice for cutscenes, 2026-10-30).
+//
+// The player's own body (its first-person arms, gun and legs) is drawn with a camera of its own, the view's
+// first-person one (views.cpp), posed where the game put it for that camera. In ordinary play the mod places the gun
+// and arms itself, in that camera's own space, and leaves the camera as it is. In a scripted picture the game draws
+// them, and with the main camera alone turned they were drawn as if the head hadn't moved, glued to the view (the
+// user, 2026-11-01, in the drive of Comrades and the interrogation: "I can see like my gun and my legs kind of moving
+// wherever I turn my head ... Only the head moves"). So a scripted picture's first-person camera is turned with its
+// main camera, by the same turn, about its own place (TurnWith): the body is drawn where the scene puts it, seen from
+// where the head looks.
 
 #include <algorithm>
 #include <cmath>
@@ -253,12 +262,54 @@ inline void MakeLevel(float* m, int hand, Level& level) {
     m[8] = x, m[9] = 0.0f, m[10] = z;
 }
 
+// m's rows turned by the turn that took a camera's rows from before to after, about m's own place: each row taken
+// apart along before's rows (its dots with the columns of before's inverse, exact for rows a little off unit length
+// or square) and put together again along after's. m as before comes out as after; m turned from before by some turn
+// of before's own frame comes out turned so from after. Its w lanes and its translation are left as they are. False,
+// m left as it is, if it isn't a camera of either kind (Classify), or if before's rows have no inverse (never for a
+// camera Classify passes).
+inline bool TurnWith(float* m, const float* before, const float* after) {
+    if (Classify(m, true) == kNone)
+        return false;
+    // The columns of before's inverse, times its determinant: the crosses of its rows.
+    const float* a = before;
+    const float* b = before + 4;
+    const float* c = before + 8;
+    const float across[3][3] = {{b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0]},
+                                {c[1] * a[2] - c[2] * a[1], c[2] * a[0] - c[0] * a[2], c[0] * a[1] - c[1] * a[0]},
+                                {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
+    const float det = a[0] * across[0][0] + a[1] * across[0][1] + a[2] * across[0][2];
+    if (!(std::fabs(det) > 0.5f))  // also rejects NaN
+        return false;
+    float rows[9];
+    for (int row = 0; row < 3; ++row) {
+        const float* v = m + 4 * row;
+        float part[3];
+        for (int k = 0; k < 3; ++k)
+            part[k] = (v[0] * across[k][0] + v[1] * across[k][1] + v[2] * across[k][2]) / det;
+        for (int i = 0; i < 3; ++i)
+            rows[3 * row + i] = part[0] * after[i] + part[1] * after[4 + i] + part[2] * after[8 + i];
+    }
+    for (int row = 0; row < 3; ++row)
+        for (int i = 0; i < 3; ++i)
+            m[4 * row + i] = rows[3 * row + i];
+    return true;
+}
+
 // A view camera turned to the head as TurnToHead turns it, once it has passed the checks: the player's kind by
 // ViewTurnLocal, the yaw it took out returned; a scripted one made level about its yaw (MakeLevel, going on from
 // level, the last frame's; hand: its rows' handedness), then the head alone put on it, none taken out. mirrored:
 // its rows mirrored from the player's camera's (camera.cpp tells), so the head's turn is mirrored the same way
-// across its right row: yaw and roll the other way, pitch as it is.
-inline float Turn(float* m, const camera::ViewTurn& turn, bool scripted, int hand, bool mirrored, Level& level) {
+// across its right row: yaw and roll the other way, pitch as it is. body: the view's first-person camera, which the
+// player's own body is drawn with, or nullptr. With a scripted camera it's turned by the same turn about its own
+// place (TurnWith), unless the look angles are written (a scripted camera's first pictures can come with them still
+// written): the mod places the gun and arms itself then. With the player's kind it's always left as it is.
+inline float Turn(float* m, const camera::ViewTurn& turn, bool scripted, int hand, bool mirrored, Level& level,
+                  float* body = nullptr) {
+    const bool withBody = body && scripted && !turn.haveLook;
+    float before[16];
+    if (withBody)
+        std::memcpy(before, m, sizeof(before));
     float local[4], taken = 0.0f;
     if (scripted) {
         MakeLevel(m, hand, level);
@@ -271,6 +322,8 @@ inline float Turn(float* m, const camera::ViewTurn& turn, bool scripted, int han
         local[2] = -local[2];
     }
     TurnLocal(m, local);
+    if (withBody)
+        TurnWith(body, before, m);
     return taken;
 }
 

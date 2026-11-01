@@ -40,7 +40,7 @@
 //      swaying, turning drive passes for one (the guard's tolerances, copied from camera.cpp)
 //  10  the w lanes (the finding): in the logged scripted cameras they're their rotation quaternion's 2(yw - xy),
 //      -2(xy + yw) and ww + xx - yy - zz (0.06: the log's rounding)
-//  11  a scripted camera's turn takes under 1 us
+//  11  a scripted camera's turn takes under 1 us, with its first-person camera turned along too
 //  12  the review's finding (2026-11-01): a scripted camera held still, then turned 1 degree about its own up, right
 //      or back row or a random line (the logged ones, 10000 random, and every half degree from level to straight
 //      down): the yaw it's made level about turns at most 1.45 degrees at once and 2 within a second (at 833abbd,
@@ -56,6 +56,16 @@
 //      upside down: never NaN, always level and square, the largest step a frame shown; a frame's cameras made level
 //      from the same last frame alike, bit for bit (made one after another from one Level they'd differ: camera.cpp
 //      latches it)
+//  15  the body (views.cpp hands TurnToHead each eye's first-person camera, which the player's own arms, gun and legs
+//      are drawn with, with its main camera): with a scripted camera and no look written, turned by the main camera's
+//      turn (its rows times the main's inverse as the game made it, times the main's as turned: 1e-6) about its own
+//      place, its w lanes and place kept bit for bit: as the main camera (w lanes as its own, or 0; anywhere near it)
+//      it comes out as the turned main camera (1e-6), turned from it by a turn of its own it keeps that turn (1e-5),
+//      mirrored or not, rows a little off unit or square too; the knees and the gun as the game put them stay where
+//      the scene puts them as the head turns (they moved with the head before); a normal picture's (the player's
+//      camera, 20000 with random turns, look or not, mirrored or not) left bit for bit, and the main camera turned bit
+//      for bit as at 6ee0128; with the look still written, or not a camera, left bit for bit; the main camera turned
+//      bit for bit as without one
 // Usage: viewturntest   The exit code is the number of failed checks.
 
 #include <windows.h>
@@ -1055,7 +1065,20 @@ void Check11() {
     QueryPerformanceCounter(&b);
     const double us =
         static_cast<double>(b.QuadPart - a.QuadPart) * 1e6 / static_cast<double>(frequency.QuadPart) / kTurns;
-    Report("11", "the time a scripted camera's turn takes", us < 1.0, "%.3f us a turn (< 1)", us);
+    // With its first-person camera (the same rows) turned along, as views.cpp has each eye's main camera turned.
+    QueryPerformanceCounter(&a);
+    for (int n = 0; n < kTurns; ++n) {
+        float m[16], body[16];
+        std::memcpy(m, cameras[n & 63], sizeof(m));
+        std::memcpy(body, cameras[n & 63], sizeof(body));
+        viewturn::Turn(m, turns[n & 63], true, 1, false, level, body);
+        sink = sink + m[0] + body[0];
+    }
+    QueryPerformanceCounter(&b);
+    const double withBody =
+        static_cast<double>(b.QuadPart - a.QuadPart) * 1e6 / static_cast<double>(frequency.QuadPart) / kTurns;
+    Report("11", "the time a scripted camera's turn takes", us < 1.0 && withBody < 1.0,
+           "%.3f us a turn, %.3f with its first-person camera turned along (< 1)", us, withBody);
 }
 
 // ---- Made level frame after frame ----
@@ -1386,6 +1409,303 @@ void Check14() {
            tumbleStep[3], frameBad, apart);
 }
 
+// ---- 15. The body: the first-person camera turned with a scripted one ----
+// The most any of a's rows' numbers is from b's.
+double RowsApart(const float* a, const float* b) {
+    double off = 0;
+    for (int r = 0; r < 3; ++r)
+        for (int i = 0; i < 3; ++i)
+            off = std::max(off, std::fabs(static_cast<double>(a[4 * r + i]) - b[4 * r + i]));
+    return off;
+}
+// The w lanes and the place (what TurnWith leaves as they are) as they were, bit for bit.
+bool LanesAndPlaceKept(const float* now, const float* was) {
+    for (int i : {3, 7, 11, 12, 13, 14, 15})
+        if (std::memcmp(&now[i], &was[i], sizeof(float)) != 0)
+            return false;
+    return true;
+}
+bool SameLevel(const viewturn::Level& a, const viewturn::Level& b) {
+    return a.have == b.have && std::memcmp(a.back, b.back, sizeof(a.back)) == 0 &&
+           std::memcmp(a.rows, b.rows, sizeof(a.rows)) == 0;
+}
+// How far a first-person camera's rows as turned are from the main camera's turn put on them, in double: each row as
+// the game made it taken apart along the main camera's rows as the game made them (Cramer's rule: its parts there are
+// the main's rows times their inverse), put together again along the turned main camera's.
+double DeltaOff(const float* turned, const float* body, const float* before, const float* after) {
+    const V3 a = Row(before, 0), b = Row(before, 1), c = Row(before, 2);
+    const double det = Dot(a, Cross(b, c));
+    double off = 0;
+    for (int r = 0; r < 3; ++r) {
+        const V3 v = Row(body, r);
+        const double p0 = Dot(v, Cross(b, c)) / det, p1 = Dot(a, Cross(v, c)) / det, p2 = Dot(a, Cross(b, v)) / det;
+        const V3 want = Row(after, 0) * p0 + Row(after, 1) * p1 + Row(after, 2) * p2;
+        for (int i = 0; i < 3; ++i)
+            off = std::max(off, std::fabs(turned[4 * r + i] - want[i]));
+    }
+    return off;
+}
+// A camera's rows turned by q in its own frame (its right, up and back as q turns x, y and z there), the rest kept.
+void TurnedInOwnFrame(const float* cam, const Q& q, float* out) {
+    float rows[9];
+    for (int r = 0; r < 3; ++r) {
+        const V3 e = Rotate(q, r == 0 ? kX : r == 1 ? kY : kZ);
+        const V3 v = Row(cam, 0) * e.x + Row(cam, 1) * e.y + Row(cam, 2) * e.z;
+        rows[3 * r] = static_cast<float>(v.x), rows[3 * r + 1] = static_cast<float>(v.y);
+        rows[3 * r + 2] = static_cast<float>(v.z);
+    }
+    std::memcpy(out, cam, 16 * sizeof(float));
+    for (int r = 0; r < 3; ++r)
+        for (int i = 0; i < 3; ++i)
+            out[4 * r + i] = rows[3 * r + i];
+}
+// The Level a picture's cameras go on from: none (a run's first), or a last frame's a few degrees away.
+viewturn::Level LevelFrom(const float* cam) {
+    viewturn::Level level;
+    if (Coin()) {
+        float last[16];
+        TurnedAbout(cam, {Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Uniform(0, 5), last);
+        NewLevel(last, level);
+    }
+    return level;
+}
+
+void Check15() {
+    // a. Turned with a scripted main camera (no look written): as the main camera, turned from it by a turn of its
+    // own, its rows a little off unit length and square; the main camera turned bit for bit as without it.
+    double asMain = 0, ownTurn = 0, offSquare = 0, delta = 0;
+    int keptBad = 0, mainBad = 0, notFinite = 0, unclassified = 0, runs = 0;
+    auto picture = [&](const float* cam, const float* body, const Q& head, int hand, bool mirrored, float* mainOut,
+                       float* bodyOut) {
+        float m[16], b[16], alone[16];
+        std::memcpy(m, cam, sizeof(m));
+        std::memcpy(b, body, sizeof(b));
+        std::memcpy(alone, cam, sizeof(alone));
+        const viewturn::Level from = LevelFrom(cam);
+        viewturn::Level withBody = from, without = from;
+        const camera::ViewTurn turn = TurnFor(head);
+        viewturn::Turn(m, turn, true, hand, mirrored, withBody, b);
+        viewturn::Turn(alone, turn, true, hand, mirrored, without);
+        ++runs;
+        mainBad += std::memcmp(m, alone, sizeof(m)) != 0 || !SameLevel(withBody, without);
+        notFinite += !Finite(b);
+        delta = std::max(delta, DeltaOff(b, body, cam, m));
+        keptBad += !LanesAndPlaceKept(b, body);
+        std::memcpy(mainOut, m, sizeof(m));
+        std::memcpy(bodyOut, b, sizeof(b));
+    };
+    for (int n = 0; n < kLoggedCount * 100 + 20000; ++n) {
+        float cam[16];
+        int hand = 1;
+        if (n < kLoggedCount * 100) {
+            LoggedCamera(kLogged[n % kLoggedCount], cam);
+        } else {
+            hand = Coin(0.25) ? -1 : 1;
+            MakeCamera(cam, RandomScripted(89), hand, RandomPlace(), true);
+        }
+        const bool mirrored = hand < 0 && Coin(0.8);  // mirrorfix on, mostly
+        const Q head = RandomHead();
+        float m[16], b[16], body[16];
+        // The main camera's rows, its w lanes or 0 (the player's kind), at its place or up to half a metre off.
+        std::memcpy(body, cam, sizeof(body));
+        if (Coin(0.3))
+            body[3] = body[7] = body[11] = 0.0f;
+        if (Coin())
+            for (int i = 12; i < 15; ++i)
+                body[i] += static_cast<float>(Uniform(-0.5, 0.5));
+        picture(cam, body, head, hand, mirrored, m, b);
+        asMain = std::max(asMain, RowsApart(b, m));
+        // Turned from the main camera by a turn of its own (a few degrees, or any): that turn from the turned one.
+        const Q own = Coin() ? AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5)))
+                             : RandomRotation();
+        TurnedInOwnFrame(cam, own, body);
+        picture(cam, body, head, hand, mirrored, m, b);
+        float want[16];
+        TurnedInOwnFrame(m, own, want);
+        ownTurn = std::max(ownTurn, RowsApart(b, want));
+    }
+    // Rows a little off unit length and square, still taken as scripted: as the main camera, out as the turned one.
+    for (int n = 0; n < 5000; ++n) {
+        float cam[16];
+        MakeCamera(cam, RandomScripted(89), 1, RandomPlace(), true);
+        const float c = std::cos(0.0349066f), s = std::sin(0.0349066f);  // the up row 2 degrees towards the right
+        for (int i = 0; i < 3; ++i)
+            cam[4 + i] = c * cam[4 + i] + s * cam[i];
+        const float scale[3] = {1.02f, 0.985f, 1.015f};
+        for (int r = 0; r < 3; ++r)
+            for (int i = 0; i < 3; ++i)
+                cam[4 * r + i] *= scale[r];
+        if (viewturn::Classify(cam, true) != viewturn::kScripted) {
+            ++unclassified;
+            continue;
+        }
+        float m[16], b[16];
+        picture(cam, cam, RandomHead(), 1, false, m, b);
+        offSquare = std::max(offSquare, RowsApart(b, m));
+    }
+    Report("15a", "a scripted picture's first-person camera turned by its main camera's turn, about its own place",
+           asMain < 1e-6 && ownTurn < 1e-5 && offSquare < 1e-6 && delta < 1e-6 && keptBad == 0 && mainBad == 0 &&
+               notFinite == 0 && unclassified == 0,
+           "%d pictures: as the main camera (its w lanes or 0, up to half a metre off) at most %.2g from the turned main "
+           "camera; turned from it by a turn of its own, %.2g from that turn of the turned one; its rows a little off "
+           "unit length and square, %.2g; %.2g from its rows times the main's inverse as the game made it times the "
+           "main's as turned; %d w lanes or places changed, %d main cameras turned otherwise than without it, %d not "
+           "finite (%d off-square cameras not taken as scripted)",
+           runs, asMain, ownTurn, offSquare, delta, keptBad, mainBad, notFinite, unclassified);
+
+    // b. The knees and the gun as the game put them (below and ahead of its camera), seen in the picture as the head
+    // turns: from the turned first-person camera where the turned main camera sees the scene there; from the
+    // first-person camera as the game made it, where they stayed whatever the head did.
+    const V3 points[3] = {{-0.15, -0.55, -0.35}, {0.15, -0.55, -0.35}, {0.12, -0.18, -0.40}};  // right, up, back
+    double sceneOff = 0, gluedOff = 0;
+    int heads = 0;
+    for (int n = 0; n < kLoggedCount + 200; ++n) {
+        float cam[16];
+        if (n < kLoggedCount)
+            LoggedCamera(kLogged[n], cam);
+        else
+            MakeCamera(cam, RandomScripted(60), 1, RandomPlace(), true);
+        for (int yaw = -70; yaw <= 70; yaw += 10) {
+            for (int pitch = -50; pitch <= 50; pitch += 25) {
+                float m[16], b[16];
+                std::memcpy(m, cam, sizeof(m));
+                std::memcpy(b, cam, sizeof(b));
+                viewturn::Level level;
+                viewturn::Turn(m, TurnFor(Mul(Yaw(Rad(yaw)), Pitch(Rad(pitch)))), true, 1, false, level, b);
+                ++heads;
+                for (const V3& p : points) {
+                    const V3 at = Row(cam, 0) * p.x + Row(cam, 1) * p.y + Row(cam, 2) * p.z;  // from the camera
+                    // Its way in a camera's picture: along that camera's right, up and back.
+                    auto seen = [&at](const float* c) {
+                        return Unit({Dot(at, Row(c, 0)), Dot(at, Row(c, 1)), Dot(at, Row(c, 2))});
+                    };
+                    sceneOff = std::max(sceneOff, Len(seen(b) - seen(m)));
+                    gluedOff = std::max(gluedOff, AngleDeg(seen(cam), seen(m)));
+                }
+            }
+        }
+    }
+    Report("15b", "the knees and the gun stay where the scene puts them as the head turns",
+           sceneOff < 1e-5 && gluedOff > 60,
+           "%d heads (70 left to 70 right, 50 down to 50 up) on %d cameras: seen from the turned first-person camera at "
+           "most %.2g from where the turned main camera sees the scene there (as the game made it, up to %.1f degrees "
+           "off it: moved with the head)",
+           heads, kLoggedCount + 200, sceneOff, gluedOff);
+
+    // c. A normal picture (the player's camera, look or not, mirrored or not): the first-person camera (the main
+    // camera's copy, another player's camera or a scripted one) left bit for bit, the main camera turned bit for bit
+    // as at 6ee0128.
+    int normalBodyBad = 0, normalMainBad = 0, normalTouched = 0;
+    constexpr int kNormal = 20000;
+    for (int n = 0; n < kNormal; ++n) {
+        float m[16], body[16];
+        RandomPlayerCamera(m);
+        const camera::ViewTurn turn = RandomTurn();
+        const bool mirrored = Coin();
+        if (n % 3 == 0)
+            std::memcpy(body, m, sizeof(body));
+        else if (n % 3 == 1)
+            RandomPlayerCamera(body);
+        else
+            MakeCamera(body, RandomScripted(80), 1, RandomPlace(), true);
+        float a[16], was[16], before[16];
+        std::memcpy(a, m, sizeof(a));
+        std::memcpy(was, body, sizeof(was));
+        std::memcpy(before, m, sizeof(before));
+        viewturn::Level level;
+        const float takenNow = viewturn::Turn(a, turn, false, Hand(m), mirrored, level, body);
+        const float takenBefore = old::Turn(before, turn, mirrored);
+        normalBodyBad += std::memcmp(body, was, sizeof(body)) != 0;
+        normalMainBad +=
+            std::memcmp(a, before, sizeof(a)) != 0 || std::memcmp(&takenNow, &takenBefore, sizeof(takenNow)) != 0;
+        normalTouched += level.have;
+    }
+    Report("15c", "a normal picture's first-person camera left bit for bit", normalBodyBad == 0 && normalMainBad == 0 &&
+                                                                              normalTouched == 0,
+           "%d of %d first-person cameras changed; %d main cameras or yaws taken out differ from the turn at 6ee0128; "
+           "the scripted yaw touched %d times",
+           normalBodyBad, kNormal, normalMainBad, normalTouched);
+
+    // d. A scripted picture with the look still written (its first pictures can come so), and a first-person camera
+    // that isn't a camera: left bit for bit, the main camera turned bit for bit as without it. And TurnWith from rows
+    // with no inverse (all 0, two alike): left bit for bit.
+    int lookBad = 0, junkBad = 0, junkMainBad = 0, junkTaken = 0, noInverseBad = 0;
+    constexpr int kLook = 5000, kJunk = 20000;
+    for (int n = 0; n < kLook; ++n) {
+        float cam[16];
+        MakeCamera(cam, RandomScripted(80), 1, RandomPlace(), true);
+        camera::ViewTurn turn = RandomTurn();
+        turn.haveLook = true;
+        float m[16], alone[16], body[16];
+        std::memcpy(m, cam, sizeof(m));
+        std::memcpy(alone, cam, sizeof(alone));
+        std::memcpy(body, cam, sizeof(body));
+        viewturn::Level a, b;
+        viewturn::Turn(m, turn, true, 1, false, a, body);
+        viewturn::Turn(alone, turn, true, 1, false, b);
+        lookBad += std::memcmp(body, cam, sizeof(body)) != 0 || std::memcmp(m, alone, sizeof(m)) != 0;
+    }
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    for (int n = 0; n < kJunk; ++n) {
+        float cam[16], body[16];
+        MakeCamera(cam, RandomScripted(80), 1, RandomPlace(), true);
+        std::memcpy(body, cam, sizeof(body));
+        switch (n % 6) {
+        case 0:
+            for (float& f : body)
+                f = static_cast<float>(Uniform(-2, 2));
+            break;
+        case 1:
+            body[4 + n % 3] = nan;
+            break;
+        case 2:
+            body[8 + n % 3] = n % 2 ? inf : -inf;
+            break;
+        case 3:
+            std::memset(body, 0, sizeof(body));
+            break;
+        case 4:
+            for (int i = 0; i < 3; ++i)
+                body[i] *= 1.1f;
+            break;
+        default:
+            body[7] = 10.0f;
+            break;
+        }
+        if (viewturn::Classify(body, true) != viewturn::kNone) {
+            ++junkTaken;
+            continue;
+        }
+        float m[16], alone[16], was[16];
+        std::memcpy(m, cam, sizeof(m));
+        std::memcpy(alone, cam, sizeof(alone));
+        std::memcpy(was, body, sizeof(was));
+        const camera::ViewTurn turn = TurnFor(RandomHead());
+        viewturn::Level a, b;
+        viewturn::Turn(m, turn, true, 1, false, a, body);
+        viewturn::Turn(alone, turn, true, 1, false, b);
+        junkBad += std::memcmp(body, was, sizeof(body)) != 0;
+        junkMainBad += std::memcmp(m, alone, sizeof(m)) != 0;
+    }
+    for (int n = 0; n < 1000; ++n) {
+        float cam[16], body[16], was[16], before[16];
+        MakeCamera(cam, RandomScripted(80), 1, RandomPlace(), true);
+        MakeCamera(body, RandomScripted(80), 1, RandomPlace(), true);
+        std::memcpy(was, body, sizeof(was));
+        std::memcpy(before, cam, sizeof(before));
+        if (n % 2 == 0)
+            std::memset(before, 0, 12 * sizeof(float));
+        else
+            std::memcpy(before + 4, before, 4 * sizeof(float));  // the up row the right row
+        noInverseBad += viewturn::TurnWith(body, before, cam) || std::memcmp(body, was, sizeof(body)) != 0;
+    }
+    Report("15d", "the look still written, or not a camera: the first-person camera left bit for bit",
+           lookBad == 0 && junkBad == 0 && junkMainBad == 0 && junkTaken == 0 && noInverseBad == 0,
+           "%d of %d with the look written changed or changed the main camera; %d of %d not a camera changed (%d taken "
+           "for one), %d changed the main camera; %d of 1000 turned from rows with no inverse",
+           lookBad, kLook, junkBad, kJunk - junkTaken, junkTaken, junkMainBad, noInverseBad);
+}
+
 }  // namespace
 
 int main() {
@@ -1410,6 +1730,7 @@ int main() {
     Check12();
     Check13();
     Check14();
+    Check15();
     std::printf("%d of %d checks failed\n", g_failed, g_counted);
     return g_failed;
 }

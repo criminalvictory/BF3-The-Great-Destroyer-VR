@@ -77,8 +77,12 @@ void SetViewsMode(bool on);
 // A camera transform turned to the head, as the breakpoints turn the render cameras. False (and
 // unchanged) while no view turn is set, or if it isn't a camera. A scripted camera (a cutscene's or a
 // ride's, its rows' w lanes filled: viewturn.h) is turned too, made level about its yaw with the head
-// put on it, its w lanes left as they are; weapon.txt "cutsceneturn 0" refuses it as before.
-bool TurnToHead(float* transform);
+// put on it, its w lanes left as they are; weapon.txt "cutsceneturn 0" refuses it as before. body: the
+// view's first-person camera, which the player's own arms, gun and legs are drawn with (views.cpp), or
+// nullptr. With a scripted camera and no look angles written, it's turned by the same turn about its
+// own place, so the body stays where the scene puts it while the head looks about; with the player's kind
+// it's left as it is (the mod places the gun and arms itself), and with a refused camera too.
+bool TurnToHead(float* transform, float* body = nullptr);
 // views.cpp, once a frame before its TurnToHead calls (on the same thread): the turn published now is the one
 // they all use, so a turn published in between can't give the two eyes and their cull cameras different ones.
 void BeginViews();

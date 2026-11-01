@@ -16,8 +16,8 @@ namespace {
 // The function that builds the frame's view descriptions (bf3.exe 1.6, not relocated). It takes
 // the game's camera state, and fills a count and an array of descriptions 0x1100 bytes each: a
 // name pointer at +4, the viewport at +0x10, then three camera blocks of 0x480 bytes, each starting
-// with its transform: the main view +0x30, the one BF3 culls with +0x4B0, the first person (gun and
-// arms) +0x930. Within a camera block: FOV pair +0x48, aspect +0x58.
+// with its transform: the main view +0x30, the one BF3 culls with +0x4B0, the first person (the
+// player's own arms, gun and legs) +0x930. Within a camera block: FOV pair +0x48, aspect +0x58.
 constexpr uintptr_t kBuildViews = 0x01018E70;
 constexpr uint8_t kBuildViewsStart[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0x74, 0x0E, 0x00, 0x00};
 constexpr size_t kViewSize = 0x1100;
@@ -49,6 +49,10 @@ void WriteFov(uint8_t* camera, float fov) {
 
 // The two views made into the eyes: both start from the first view's cameras (the game's own),
 // are turned to the head, and are shifted half the eye distance each way along the head's right.
+// The first-person camera, which the player's own arms, gun and legs are drawn with, is turned only
+// with a scripted main camera (a cutscene's or a ride's), by the same turn (camera.h TurnToHead): in
+// ordinary play the mod places the gun and arms itself, and left as the game made it in a cutscene the
+// body moved with the head (the user, 2026-11-01: "Only the head moves").
 // The second is also put at the window's left edge, where the first is (overlay.cpp moves its
 // finished picture into the right half): placed at the right, its screen effects worked from that
 // place against pictures only an eye wide, and while suppressed the whole right eye was smeared
@@ -72,7 +76,7 @@ void MakeEyes(uint8_t* views) {
         auto main = reinterpret_cast<float*>(eye[e] + kMainCamera);
         auto cull = reinterpret_cast<float*>(eye[e] + kCullCamera);
         auto firstPerson = reinterpret_cast<float*>(eye[e] + kFirstPersonCamera);
-        camera::TurnToHead(main);
+        camera::TurnToHead(main, firstPerson);
         camera::TurnToHead(cull);
         // The eye's place: along the head's right (the turned main camera's first row).
         const float offset = g_offset[e].load(std::memory_order_relaxed);

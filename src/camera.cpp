@@ -597,7 +597,7 @@ void SetViewsMode(bool on) {
     g_viewsMode = on;
 }
 
-bool TurnToHead(float* transform) {
+bool TurnToHead(float* transform, float* body) {
     // The frame's turn (BeginViews): both eyes and their cull cameras turned alike.
     const ViewTurnState& view = g_frameLatched ? g_frameView : g_view[g_viewIndex.load(std::memory_order_acquire)];
     // Why a camera wasn't turned, counted for TakeTurned's log: after a load the game's own arms showed
@@ -610,7 +610,10 @@ bool TurnToHead(float* transform) {
     // A scripted camera (a cutscene's or a ride's, its rows' w lanes filled: viewturn.h) is turned as well, unless
     // weapon.txt says "cutsceneturn 0": made level about its yaw (viewturn::MakeLevel) and the head put on it, so the
     // game draws where the head looks and there are no edges to see (the opening drive of Comrades, 2026-11-01). The
-    // player's kind of camera (IsCamera) goes as it always went; anything else is refused.
+    // player's kind of camera (IsCamera) goes as it always went; anything else is refused. With a scripted camera the
+    // view's first-person camera (body) is turned by the same turn: the player's own arms, gun and legs are drawn with
+    // it, and left as the game made it they moved with the head ("lock the body while I move my head", the user,
+    // 2026-11-01).
     const viewturn::Kind kind = viewturn::Classify(transform, g_cutsceneTurn.load(std::memory_order_relaxed));
     if (kind == viewturn::kNone) {
         if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
@@ -706,6 +709,7 @@ bool TurnToHead(float* transform) {
     // without one ends it): the run's first takes its own yaw (viewturn::MakeLevel), and is logged with what was left
     // out of it.
     static ULONGLONG s_scriptedAt = 0;
+    static bool s_bodyLogged = false;  // the run's first-person camera logged (below)
     if (scripted) {
         const ULONGLONG now = GetTickCount64();
         if (now - s_scriptedAt > kShownFresh)
@@ -716,14 +720,37 @@ bool TurnToHead(float* transform) {
             Log("Camera: a scripted camera (its rows' w lanes %.3f %.3f %.3f) turned to the head about its own yaw "
                 "%.1f, its pitch %.1f and roll %.1f degrees left out",
                 before[3], before[7], before[11], cameraYaw * 57.29578f, pitch * 57.29578f, hand * roll * 57.29578f);
+            s_bodyLogged = false;
         }
         s_scriptedAt = now;
     }
+    // The run's first first-person camera turned with a scripted one is logged as the game made it, against the main
+    // camera: whether it's the same camera, to tell what the body is drawn from.
+    const bool logBody = body && scripted && !view.turn.haveLook && !s_bodyLogged;
+    float bodyBefore[16];
+    if (logBody)
+        std::memcpy(bodyBefore, body, sizeof(bodyBefore));
     viewturn::Level level = g_levelRef;
-    const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, level);
+    const float taken = viewturn::Turn(transform, view.turn, scripted, hand, mirrored, level, body);
     if (scripted && !g_levelTaken) {
         g_level = level;
         g_levelTaken = true;
+    }
+    if (logBody) {
+        s_bodyLogged = true;
+        auto apart = [](const float* p, const float* q) {  // degrees between two rows
+            const float cross[3] = {p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]};
+            return std::atan2(std::sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]),
+                              p[0] * q[0] + p[1] * q[1] + p[2] * q[2]) * 57.29578f;
+        };
+        const float d[3] = {bodyBefore[12] - before[12], bodyBefore[13] - before[13], bodyBefore[14] - before[14]};
+        Log("Camera: the first-person camera (the player's own arms, gun and legs are drawn with it) %s; as the game "
+            "made it, its forward %.1f and its up %.1f degrees from the scripted camera's, %.3f m from it, its rows' w "
+            "lanes %.3f %.3f %.3f",
+            viewturn::Classify(bodyBefore, true) != viewturn::kNone ? "turned with it, about its own place"
+                                                                    : "left as the game made it: not a camera",
+            apart(bodyBefore + 8, before + 8), apart(bodyBefore + 4, before + 4),
+            std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), bodyBefore[3], bodyBefore[7], bodyBefore[11]);
     }
     g_turned.fetch_add(scripted ? 1 + kScriptedTurned : 1, std::memory_order_relaxed);
     // What the frame's first camera showed, for xr_runtime.cpp's picture body (not a mirrored one: its turn is
