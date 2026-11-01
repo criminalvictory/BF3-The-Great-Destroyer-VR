@@ -58,14 +58,18 @@
 //      latches it)
 //  15  the body (views.cpp hands TurnToHead each eye's first-person camera, which the player's own arms, gun and legs
 //      are drawn with, with its main camera): with a scripted camera and no look written, turned by the main camera's
-//      turn (its rows times the main's inverse as the game made it, times the main's as turned: 1e-6) about its own
-//      place, its w lanes and place kept bit for bit: as the main camera (w lanes as its own, or 0; anywhere near it)
-//      it comes out as the turned main camera (1e-6), turned from it by a turn of its own it keeps that turn (1e-5),
-//      mirrored or not, rows a little off unit or square too; the knees and the gun as the game put them stay where
-//      the scene puts them as the head turns (they moved with the head before); a normal picture's (the player's
-//      camera, 20000 with random turns, look or not, mirrored or not) left bit for bit, and the main camera turned bit
-//      for bit as at 6ee0128; with the look still written, or not a camera, left bit for bit; the main camera turned
-//      bit for bit as without one
+//      turn as the main camera's own frame has it, put on it in its own (the turned main camera's rows taken apart
+//      along the main's as the game made them, the first-person camera's rows put together again in those parts:
+//      1e-6), about its own place, its w lanes and place kept bit for bit: as the main camera (w lanes as its own, or
+//      0; anywhere near it) it comes out as the turned main camera (1e-6); turned from it about a line in the world, or
+//      in its own frame (about a line in the world too), it comes out as the turned one turned so about that line
+//      (1e-5), mirrored or not, rows a little off unit or square too; the knees and the gun as the game put them stay
+//      on the scene they were drawn over as the head turns, the first-person camera as the main one or turned a few
+//      degrees from it, in the arms' space (0.001 deg; at 3cbdb33, the turn put on it from the world's side, 2 degrees
+//      of pitch between the two put them up to 3.9 degrees off it; left as the game made it, they moved with the head);
+//      a normal picture's (the player's camera, 20000 with random turns, look or not, mirrored or not) left bit for bit,
+//      and the main camera turned bit for bit as at 6ee0128; with the look still written, or not a camera, left bit for
+//      bit; the main camera turned bit for bit as without one
 // Usage: viewturntest   The exit code is the number of failed checks.
 
 #include <windows.h>
@@ -205,6 +209,35 @@ void MakeLevel(float* m, int hand, Level& level) {
     m[0] = h * z, m[1] = 0.0f, m[2] = -h * x;
     m[4] = 0.0f, m[5] = 1.0f, m[6] = 0.0f;
     m[8] = x, m[9] = 0.0f, m[10] = z;
+}
+
+// The first-person camera turned with a scripted one as at 3cbdb33 (viewturn.h then), copied as it was, for check
+// 15b: the main camera's turn put on it from the world's side (its rows times before's inverse times after's).
+bool TurnWith(float* m, const float* before, const float* after) {
+    if (viewturn::Classify(m, true) == viewturn::kNone)
+        return false;
+    const float* a = before;
+    const float* b = before + 4;
+    const float* c = before + 8;
+    const float across[3][3] = {{b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0]},
+                                {c[1] * a[2] - c[2] * a[1], c[2] * a[0] - c[0] * a[2], c[0] * a[1] - c[1] * a[0]},
+                                {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
+    const float det = a[0] * across[0][0] + a[1] * across[0][1] + a[2] * across[0][2];
+    if (!(std::fabs(det) > 0.5f))  // also rejects NaN
+        return false;
+    float rows[9];
+    for (int row = 0; row < 3; ++row) {
+        const float* v = m + 4 * row;
+        float part[3];
+        for (int k = 0; k < 3; ++k)
+            part[k] = (v[0] * across[k][0] + v[1] * across[k][1] + v[2] * across[k][2]) / det;
+        for (int i = 0; i < 3; ++i)
+            rows[3 * row + i] = part[0] * after[i] + part[1] * after[4 + i] + part[2] * after[8 + i];
+    }
+    for (int row = 0; row < 3; ++row)
+        for (int i = 0; i < 3; ++i)
+            m[4 * row + i] = rows[3 * row + i];
+    return true;
 }
 
 }  // namespace old
@@ -1429,17 +1462,18 @@ bool SameLevel(const viewturn::Level& a, const viewturn::Level& b) {
     return a.have == b.have && std::memcmp(a.back, b.back, sizeof(a.back)) == 0 &&
            std::memcmp(a.rows, b.rows, sizeof(a.rows)) == 0;
 }
-// How far a first-person camera's rows as turned are from the main camera's turn put on them, in double: each row as
-// the game made it taken apart along the main camera's rows as the game made them (Cramer's rule: its parts there are
-// the main's rows times their inverse), put together again along the turned main camera's.
+// How far a first-person camera's rows as turned are from the main camera's turn put on them, in double: each of the
+// turned main camera's rows taken apart along the main camera's rows as the game made them (Cramer's rule: its parts
+// there are its dots with the columns of the main's inverse), the first-person camera's row put together again from
+// its rows as the game made them in those parts (in rows: after times before's inverse times the body).
 double DeltaOff(const float* turned, const float* body, const float* before, const float* after) {
     const V3 a = Row(before, 0), b = Row(before, 1), c = Row(before, 2);
     const double det = Dot(a, Cross(b, c));
     double off = 0;
     for (int r = 0; r < 3; ++r) {
-        const V3 v = Row(body, r);
+        const V3 v = Row(after, r);
         const double p0 = Dot(v, Cross(b, c)) / det, p1 = Dot(a, Cross(v, c)) / det, p2 = Dot(a, Cross(b, v)) / det;
-        const V3 want = Row(after, 0) * p0 + Row(after, 1) * p1 + Row(after, 2) * p2;
+        const V3 want = Row(body, 0) * p0 + Row(body, 1) * p1 + Row(body, 2) * p2;
         for (int i = 0; i < 3; ++i)
             off = std::max(off, std::fabs(turned[4 * r + i] - want[i]));
     }
@@ -1471,9 +1505,10 @@ viewturn::Level LevelFrom(const float* cam) {
 }
 
 void Check15() {
-    // a. Turned with a scripted main camera (no look written): as the main camera, turned from it by a turn of its
-    // own, its rows a little off unit length and square; the main camera turned bit for bit as without it.
-    double asMain = 0, ownTurn = 0, offSquare = 0, delta = 0;
+    // a. Turned with a scripted main camera (no look written): as the main camera, turned from it about a line in the
+    // world or in its own frame, its rows a little off unit length and square; the main camera turned bit for bit as
+    // without it.
+    double asMain = 0, worldTurn = 0, ownTurn = 0, offSquare = 0, delta = 0;
     int keptBad = 0, mainBad = 0, notFinite = 0, unclassified = 0, runs = 0;
     auto picture = [&](const float* cam, const float* body, const Q& head, int hand, bool mirrored, float* mainOut,
                        float* bodyOut) {
@@ -1515,13 +1550,25 @@ void Check15() {
                 body[i] += static_cast<float>(Uniform(-0.5, 0.5));
         picture(cam, body, head, hand, mirrored, m, b);
         asMain = std::max(asMain, RowsApart(b, m));
-        // Turned from the main camera by a turn of its own (a few degrees, or any): that turn from the turned one.
+        // Turned from the main camera about a line in the world (a few degrees, or any): the turned one turned so.
+        const V3 line(Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1));
+        const double degrees = Coin() ? Uniform(0, 5) : Uniform(-180, 180);
+        TurnedAbout(cam, line, degrees, body);
+        picture(cam, body, head, hand, mirrored, m, b);
+        float want[16];
+        TurnedAbout(m, line, degrees, want);
+        worldTurn = std::max(worldTurn, RowsApart(b, want));
+        // Turned from it in its own frame (a few degrees, or any), which is about its own line in the world as the game
+        // made it (the other way round for rows of the other hand): after times before's inverse times it is the turned
+        // one turned so about that line. (3cbdb33 gave the turned one turned so in its own frame: the body slid off the
+        // scene, 15b.)
         const Q own = Coin() ? AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5)))
                              : RandomRotation();
         TurnedInOwnFrame(cam, own, body);
         picture(cam, body, head, hand, mirrored, m, b);
-        float want[16];
-        TurnedInOwnFrame(m, own, want);
+        const V3 ownLine = Row(cam, 0) * own.x + Row(cam, 1) * own.y + Row(cam, 2) * own.z;
+        const double ownDegrees = Deg(2 * std::atan2(Len({own.x, own.y, own.z}), own.w));
+        TurnedAbout(m, ownLine, hand * ownDegrees, want);
         ownTurn = std::max(ownTurn, RowsApart(b, want));
     }
     // Rows a little off unit length and square, still taken as scripted: as the main camera, out as the turned one.
@@ -1544,53 +1591,103 @@ void Check15() {
         offSquare = std::max(offSquare, RowsApart(b, m));
     }
     Report("15a", "a scripted picture's first-person camera turned by its main camera's turn, about its own place",
-           asMain < 1e-6 && ownTurn < 1e-5 && offSquare < 1e-6 && delta < 1e-6 && keptBad == 0 && mainBad == 0 &&
-               notFinite == 0 && unclassified == 0,
+           asMain < 1e-6 && worldTurn < 1e-5 && ownTurn < 1e-5 && offSquare < 1e-6 && delta < 1e-6 && keptBad == 0 &&
+               mainBad == 0 && notFinite == 0 && unclassified == 0,
            "%d pictures: as the main camera (its w lanes or 0, up to half a metre off) at most %.2g from the turned main "
-           "camera; turned from it by a turn of its own, %.2g from that turn of the turned one; its rows a little off "
-           "unit length and square, %.2g; %.2g from its rows times the main's inverse as the game made it times the "
-           "main's as turned; %d w lanes or places changed, %d main cameras turned otherwise than without it, %d not "
-           "finite (%d off-square cameras not taken as scripted)",
-           runs, asMain, ownTurn, offSquare, delta, keptBad, mainBad, notFinite, unclassified);
+           "camera; turned from it about a line in the world, %.2g from the turned one turned so; in its own frame, "
+           "%.2g from the turned one turned so about its line in the world; its rows a little off unit length and "
+           "square, %.2g; %.2g from the turned main camera times the main's inverse as the game made it times its "
+           "rows; %d w lanes or places changed, %d main cameras turned otherwise than without it, %d not finite (%d "
+           "off-square cameras not taken as scripted)",
+           runs, asMain, worldTurn, ownTurn, offSquare, delta, keptBad, mainBad, notFinite, unclassified);
 
-    // b. The knees and the gun as the game put them (below and ahead of its camera), seen in the picture as the head
-    // turns: from the turned first-person camera where the turned main camera sees the scene there; from the
+    // b. The knees and the gun as the game put them (below and ahead of the first-person camera), seen in the picture
+    // as the head turns, each against the scene it was drawn over (the same way out of the main camera as the game
+    // made it): the first-person camera as the main one, or turned from it in its own frame (2 and 10 degrees of
+    // pitch, 15 of yaw, 8 of roll, about a random line up to 1, 5 and 20), at the main camera's place in the arms'
+    // space (the world less whole metres), mirrored or not. From the turned first-person camera where the turned main
+    // camera sees that scene; at 3cbdb33 (the main camera's turn put on it from the world's side) off it, about as far
+    // as the two cameras' rows were apart or further, though not as the main one (which 15b then had alone); from the
     // first-person camera as the game made it, where they stayed whatever the head did.
     const V3 points[3] = {{-0.15, -0.55, -0.35}, {0.15, -0.55, -0.35}, {0.12, -0.18, -0.40}};  // right, up, back
-    double sceneOff = 0, gluedOff = 0;
-    int heads = 0;
+    // A way in a camera's picture: along that camera's right, up and back.
+    auto seen = [](const float* c, const V3& d) {
+        return Unit({Dot(d, Row(c, 0)), Dot(d, Row(c, 1)), Dot(d, Row(c, 2))});
+    };
+    auto randomLine = [] { return V3(Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)); };
+    constexpr int kFromMain = 8;
+    const char* const fromMainNames[kFromMain] = {"as the main one", "2 of pitch", "10 of pitch", "15 of yaw",
+                                                  "8 of roll",       "up to 1",    "up to 5",     "up to 20"};
+    double sceneOff[kFromMain] = {}, oldOff[kFromMain] = {}, gluedOff = 0;
+    int pictures = 0, placeBad = 0;
     for (int n = 0; n < kLoggedCount + 200; ++n) {
         float cam[16];
-        if (n < kLoggedCount)
+        int hand = 1;
+        if (n < kLoggedCount) {
             LoggedCamera(kLogged[n], cam);
-        else
-            MakeCamera(cam, RandomScripted(60), 1, RandomPlace(), true);
-        for (int yaw = -70; yaw <= 70; yaw += 10) {
-            for (int pitch = -50; pitch <= 50; pitch += 25) {
-                float m[16], b[16];
-                std::memcpy(m, cam, sizeof(m));
-                std::memcpy(b, cam, sizeof(b));
-                viewturn::Level level;
-                viewturn::Turn(m, TurnFor(Mul(Yaw(Rad(yaw)), Pitch(Rad(pitch)))), true, 1, false, level, b);
-                ++heads;
-                for (const V3& p : points) {
-                    const V3 at = Row(cam, 0) * p.x + Row(cam, 1) * p.y + Row(cam, 2) * p.z;  // from the camera
-                    // Its way in a camera's picture: along that camera's right, up and back.
-                    auto seen = [&at](const float* c) {
-                        return Unit({Dot(at, Row(c, 0)), Dot(at, Row(c, 1)), Dot(at, Row(c, 2))});
-                    };
-                    sceneOff = std::max(sceneOff, Len(seen(b) - seen(m)));
-                    gluedOff = std::max(gluedOff, AngleDeg(seen(cam), seen(m)));
+        } else {
+            hand = Coin(0.25) ? -1 : 1;
+            MakeCamera(cam, RandomScripted(60), hand, RandomPlace(), true);
+        }
+        // The first-person camera's turn from the main one, in its own frame.
+        const Q fromMain[kFromMain] = {Q{},
+                                       Pitch(Rad(2)),
+                                       Pitch(Rad(10)),
+                                       Yaw(Rad(15)),
+                                       Roll(Rad(8)),
+                                       AxisAngle(randomLine(), Rad(Uniform(0, 1))),
+                                       AxisAngle(randomLine(), Rad(Uniform(0, 5))),
+                                       AxisAngle(randomLine(), Rad(Uniform(0, 20)))};
+        for (int k = 0; k < kFromMain; ++k) {
+            // The first-person camera as the game made it: the main camera's rows turned so, its w lanes the main's, its
+            // place the main camera's in the arms' space.
+            float body[16];
+            TurnedInOwnFrame(cam, fromMain[k], body);
+            for (int i = 12; i < 15; ++i)
+                body[i] = cam[i] - std::round(cam[i]);
+            for (int yaw = -70; yaw <= 70; yaw += 10) {
+                for (int pitch = -50; pitch <= 50; pitch += 25) {
+                    float m[16], b[16], before[16];
+                    std::memcpy(m, cam, sizeof(m));
+                    std::memcpy(b, body, sizeof(b));
+                    std::memcpy(before, body, sizeof(before));
+                    viewturn::Level level;
+                    viewturn::Turn(m, TurnFor(Mul(Yaw(Rad(yaw)), Pitch(Rad(pitch)))), true, hand, hand < 0, level, b);
+                    old::TurnWith(before, cam, m);
+                    placeBad += !LanesAndPlaceKept(b, body);
+                    ++pictures;
+                    for (const V3& p : points) {
+                        // Where the game put it, from the first-person camera, and the scene it was drawn over: that
+                        // same way out of the main camera, as the game made them.
+                        const V3 at = Row(body, 0) * p.x + Row(body, 1) * p.y + Row(body, 2) * p.z;
+                        const V3 way = seen(body, at);
+                        const V3 scene = Row(cam, 0) * way.x + Row(cam, 1) * way.y + Row(cam, 2) * way.z;
+                        const V3 there = seen(m, scene);  // where the turned main camera shows that scene
+                        sceneOff[k] = std::max(sceneOff[k], AngleDeg(seen(b, at), there));
+                        oldOff[k] = std::max(oldOff[k], AngleDeg(seen(before, at), there));
+                        gluedOff = std::max(gluedOff, AngleDeg(way, there));
+                    }
                 }
             }
         }
     }
-    Report("15b", "the knees and the gun stay where the scene puts them as the head turns",
-           sceneOff < 1e-5 && gluedOff > 60,
-           "%d heads (70 left to 70 right, 50 down to 50 up) on %d cameras: seen from the turned first-person camera at "
-           "most %.2g from where the turned main camera sees the scene there (as the game made it, up to %.1f degrees "
-           "off it: moved with the head)",
-           heads, kLoggedCount + 200, sceneOff, gluedOff);
+    double sceneMost = 0;
+    char now[384] = "", then[384] = "";
+    for (int k = 0; k < kFromMain; ++k) {
+        sceneMost = std::max(sceneMost, sceneOff[k]);
+        std::snprintf(now + std::strlen(now), sizeof(now) - std::strlen(now), "%s%s %.2g", k ? ", " : "",
+                      fromMainNames[k], sceneOff[k]);
+        std::snprintf(then + std::strlen(then), sizeof(then) - std::strlen(then), "%s%s %.2f", k ? ", " : "",
+                      fromMainNames[k], oldOff[k]);
+    }
+    Report("15b", "the knees and the gun stay on the scene they were drawn over as the head turns",
+           sceneMost < 0.001 && oldOff[1] > 2 && gluedOff > 60 && placeBad == 0,
+           "%d pictures (the head 70 left to 70 right, 50 down to 50 up; %d cameras, the first-person camera turned from "
+           "the main one by degrees, or not): seen from the turned first-person camera at most this many degrees from "
+           "where the turned main camera shows the scene they were drawn over: %s (at 3cbdb33: %s); as the game made "
+           "it, up to %.1f off it (moved with the head, and not made level with the camera); %d w lanes or places "
+           "changed",
+           pictures, kLoggedCount + 200, now, then, gluedOff, placeBad);
 
     // c. A normal picture (the player's camera, look or not, mirrored or not): the first-person camera (the main
     // camera's copy, another player's camera or a scripted one) left bit for bit, the main camera turned bit for bit

@@ -611,9 +611,9 @@ bool TurnToHead(float* transform, float* body) {
     // weapon.txt says "cutsceneturn 0": made level about its yaw (viewturn::MakeLevel) and the head put on it, so the
     // game draws where the head looks and there are no edges to see (the opening drive of Comrades, 2026-11-01). The
     // player's kind of camera (IsCamera) goes as it always went; anything else is refused. With a scripted camera the
-    // view's first-person camera (body) is turned by the same turn: the player's own arms, gun and legs are drawn with
-    // it, and left as the game made it they moved with the head ("lock the body while I move my head", the user,
-    // 2026-11-01).
+    // view's first-person camera (body) is turned by the same turn, in its own frame (viewturn::TurnWith): the
+    // player's own arms, gun and legs are drawn with it, and left as the game made it they moved with the head ("lock
+    // the body while I move my head", the user, 2026-11-01).
     const viewturn::Kind kind = viewturn::Classify(transform, g_cutsceneTurn.load(std::memory_order_relaxed));
     if (kind == viewturn::kNone) {
         if (g_refusedNotCamera.fetch_add(1, std::memory_order_relaxed) == 0)
@@ -725,7 +725,10 @@ bool TurnToHead(float* transform, float* body) {
         s_scriptedAt = now;
     }
     // The run's first first-person camera turned with a scripted one is logged as the game made it, against the main
-    // camera: whether it's the same camera, to tell what the body is drawn from.
+    // camera, to tell what the body is drawn from: how far its rows are turned from the main camera's (the body stays
+    // on the scene either way: TurnWith), and its place from the main camera's less whole metres, the whole metres
+    // logged on their own. The game's first-person views come in the arms' space too, the world less whole metres
+    // (skin.cpp): a camera in that space at the main camera's place is that origin turned round from it, the rest 0.
     const bool logBody = body && scripted && !view.turn.haveLook && !s_bodyLogged;
     float bodyBefore[16];
     if (logBody)
@@ -743,14 +746,21 @@ bool TurnToHead(float* transform, float* body) {
             return std::atan2(std::sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]),
                               p[0] * q[0] + p[1] * q[1] + p[2] * q[2]) * 57.29578f;
         };
-        const float d[3] = {bodyBefore[12] - before[12], bodyBefore[13] - before[13], bodyBefore[14] - before[14]};
+        float whole[3], rest[3];
+        for (int i = 0; i < 3; ++i) {
+            const float d = bodyBefore[12 + i] - before[12 + i];
+            whole[i] = std::round(d);
+            rest[i] = d - whole[i];
+        }
         Log("Camera: the first-person camera (the player's own arms, gun and legs are drawn with it) %s; as the game "
-            "made it, its forward %.1f and its up %.1f degrees from the scripted camera's, %.3f m from it, its rows' w "
-            "lanes %.3f %.3f %.3f",
+            "made it, its forward %.1f and its up %.1f degrees from the scripted camera's, its place %.3f m from it less "
+            "whole metres (%.0f %.0f %.0f of them apart: none in the world, the arms' space's origin turned round in "
+            "that space), its rows' w lanes %.3f %.3f %.3f",
             viewturn::Classify(bodyBefore, true) != viewturn::kNone ? "turned with it, about its own place"
                                                                     : "left as the game made it: not a camera",
             apart(bodyBefore + 8, before + 8), apart(bodyBefore + 4, before + 4),
-            std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), bodyBefore[3], bodyBefore[7], bodyBefore[11]);
+            std::sqrt(rest[0] * rest[0] + rest[1] * rest[1] + rest[2] * rest[2]), whole[0], whole[1], whole[2],
+            bodyBefore[3], bodyBefore[7], bodyBefore[11]);
     }
     g_turned.fetch_add(scripted ? 1 + kScriptedTurned : 1, std::memory_order_relaxed);
     // What the frame's first camera showed, for xr_runtime.cpp's picture body (not a mirrored one: its turn is
