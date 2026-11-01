@@ -34,4 +34,16 @@ void SetSteerCone(float fullDegrees, float noneDegrees);
 // Render thread.
 bool PistolSlideHeld();
 
+// The train pistol's magazine by hand (build\pistol.txt "reload on" and "mag 1", the pistol in the right hand; a
+// rehearsal: no rounds change). X tapped (input.cpp MagazineTap): its magazine release. One part way into the grip
+// drops out; otherwise the pistol's own drops out of the grip; with the grip empty nothing (fromScript, F16: one goes
+// in). False when it isn't the pistol's: X as before (the game's reload). Render thread.
+bool PistolMagazineTap(bool fromScript);
+// X held (the game's own reload, R), alike: the pistol's magazine is in again (one part way in drops out first, one in
+// the left hand is gone). Nothing otherwise. Render thread.
+void PistolGameReload();
+// Its magazine out of the grip: the right trigger mustn't fire (input.cpp). False otherwise, and once Update hasn't
+// seen it so with the pistol in hand for 0.2 s. Render thread.
+bool PistolMagazineOut();
+
 }

@@ -27,6 +27,7 @@
 #include "handpose.h"
 #include "input.h"
 #include "log.h"
+#include "pistolmag.h"
 #include "pistolposes.h"
 #include "pistolslide.h"
 #include "pouch.h"
@@ -721,6 +722,13 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
         // game's hold. Let go and squeezed again, it takes hold.
         g_freshSqueeze = false;
         Log("Hands: the left grip squeezed with the slide in the left hand: not a hold of the pistol");
+    } else if (!g_pistolSupport && squeeze > 0.6f && g_freshSqueeze && pistolmag::Holding()) {
+        // The pistol's magazine in the left hand or part way into the grip (PistolMagazine, pistol.txt "mag 1"): a
+        // squeeze then is the hand closing on it, or on its way to push it home, not a hold (22 cm reaches the grip's
+        // bottom too). Once it's home, dropped or fallen, let go and squeezed again, it takes hold.
+        g_freshSqueeze = false;
+        Log("Hands: the left grip squeezed with the pistol's magazine in the left hand or part way into the grip: not "
+            "a hold of the pistol");
     } else if (!g_pistolSupport && g_havePistolLeft && trackedLeft && squeeze > 0.6f && g_freshSqueeze) {
         float at[3];
         Transform(hold, g_leftAnchor, at);
@@ -753,12 +761,24 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 
 // The train pistol's manual reload (docs\research\pistol-manual-reload.md), built a step at a time behind
 // build\pistol.txt, re-read when it changes: "reload on" turns it on ("reload off" wins; no file, or no "reload on":
-// off, and nothing changes). Its own, nothing the M416's. So far it's only drawn (skin.cpp): the slide by the left
-// hand, and tests with nobody in the headset (the pistol in the stand-in's right hand or the controller's). Each is
-// logged as the file is read and does nothing without "reload on" (lengths in cm):
+// off, and nothing changes). Its own, nothing the M416's. So far it's only drawn (skin.cpp): the slide and the magazine
+// by the left hand, and tests with nobody in the headset (the pistol in the stand-in's right hand or the controller's).
+// Each is logged as the file is read and does nothing without "reload on" (lengths in cm):
 //   "slide 1"       the slide worked by the left hand (PistolSlide): the left trigger pressed at its rear grabs it, it
 //                   rides back with the hand and springs home when let go; while it's held the right trigger does
 //                   nothing. No rounds change yet ("slide 0", or no "slide": not worked)
+//   "mag 1"         the magazine by hand (PistolMagazine), a rehearsal: no rounds change. X drops it out of the grip
+//                   (one part way in: that one); the left grip squeezed at the pelvis takes one, carried in the hand,
+//                   the fingers open under the grip, the palm pushes it up and it snaps home; while it's out the right
+//                   trigger does nothing. X held is still the game's own reload ("mag 0", or no "mag": as before)
+//   "carry c2"      the carry: C2, the hand closed round it (the default), or "carry game", the game's own pinch (to
+//                   compare). A full grasp is being fitted: it comes as "carry <file>" (PistolCarry)
+//   "seat 2"        the snap: once the palm has held the magazine's top within this of home for two frames running, it
+//                   goes home by itself (the hands can't close up under the grip as the game's do: the review); each
+//                   try at the grip is logged with how near the palm brought it, to set this from (2 by default)
+//   "loadtest"      with "mag 1" and no left controller tracked: a scripted left hand reloads the pistol every 6 s (X,
+//                   a magazine from the pelvis, up under the grip and home); "loadtest park": it leaves it 4 cm short,
+//                   drops away and comes back to push it home
 //   "racktest"      with "slide 1" and no left controller tracked: a scripted left hand racks the slide every 3 s
 //   "slidetest"     the slide going back and forth over its whole travel, 2 s a cycle
 //   "locktest 4.1"  the slide held open that far back, where the slide stop will hold it (4.1 by default; over
@@ -770,6 +790,8 @@ void PistolSupport(skin::HandTargets& t, bool pistol, bool trackedLeft, const fl
 //                   until the next save); "droptest hand": magtest's let go of, falling from rest
 bool g_pistolReload = false;
 bool g_pistolSlideOn = false;  // "slide 1", with "reload on"
+bool g_pistolMagOn = false;    // "mag 1", with "reload on"
+float g_pistolSnap = 0.02f;    // "seat 2" (m)
 struct PistolTests {
     bool slide = false;
     float lock = -1.0f;       // m back (below 0: off)
@@ -777,6 +799,7 @@ struct PistolTests {
     float magAlong = -0.15f;  // its top's place along the grip's line from home (m)
     int drop = 0;             // a drop waiting: 1 as X, 2 let go of
     bool rack = false;
+    int load = 0;             // loadtest: 1 home in one go, 2 left part way and pushed on
 };
 PistolTests g_pistolTests;
 bool g_magTestGone = false;      // magtest's magazine dropped: not drawn again until the next save
@@ -784,6 +807,26 @@ ULONGLONG g_gripEmptyUntil = 0;  // droptest's drop out of the grip leaves it em
 // The slide's whole travel (the game's own shots, recorded: 4.57 cm) and where the slide stop holds it open (the
 // design's 4.1 cm: the game never shows it, so it's to be set by eye with locktest).
 constexpr float kPistolSlideTravel = 0.0457f, kPistolSlideLock = 0.041f;
+
+// The carry, the magazine in the hand away from the grip (pistol.txt "carry"): the fingers round it (pistolposes.h's
+// bones, blended into the flat base's under the grip) and where it sits on the palm (nullptr: the flat base's own
+// place, so nothing moves in the hand as the fingers open; otherwise it's turned onto the flat base there:
+// pistolmag::SetCarry). The user approved C2, closed round its base; the game's pinch (C1) is kept to compare ("Holding
+// it with one finger is not doable"). A full grasp, all the fingers and the thumb on it, is being fitted
+// (screenshots\wf_reload\grasp): it comes as "carry <file>", a pose file as the study's (its magazine_on_palm times the
+// seat's inverse for the hold, its bone_26..51 through skin.cpp's kBareGlove for the fingers) read into a PistolCarry
+// of its own.
+struct PistolCarry {
+    const char* name;
+    const float (*fingers)[12];
+    const float* hold;
+};
+const PistolCarry kCarryClosed{"C2, closed round its base", pistolposes::kCarry, nullptr};
+const PistolCarry kCarryGame{"the game's own pinch (C1)", pistolposes::kGamePinch, pistolposes::kOnPalmGamePinch};
+const PistolCarry* g_pistolCarry = &kCarryClosed;
+// The pistol's own magazine out of the grip, as the mod draws it (PistolMagazine): X drops it, one pushed home by hand
+// or the game's own reload (X held) puts it back.
+bool g_pistolMagOut = false;
 
 void ReadPistolTuning() {
     static FILETIME lastWrite{};
@@ -807,7 +850,10 @@ void ReadPistolTuning() {
     if (exists && (_wfopen_s(&f, path, L"r") != 0 || !f))
         return;  // still being written (the open isn't shared): read at the next check
     lastWrite = info.ftLastWriteTime;
-    bool on = false, off = false, slide = false;
+    bool on = false, off = false, slide = false, mag = false;
+    const PistolCarry* carry = &kCarryClosed;
+    char unknownCarry[64] = "";
+    float snap = 0.02f;
     PistolTests tests;
     if (f) {
         char line[512];
@@ -821,6 +867,23 @@ void ReadPistolTuning() {
                     off = true;
             } else if (Word(line, "slide", &rest)) {  // "slide 1" (or "on", or alone); "slide 0" / "slide off"
                 slide = !Word(rest, "0") && !Word(rest, "off");
+            } else if (Word(line, "mag", &rest)) {  // "mag 1" (or "on", or alone); "mag 0" / "mag off"
+                mag = !Word(rest, "0") && !Word(rest, "off");
+            } else if (Word(line, "carry", &rest)) {
+                // "carry c2" (or "closed"), "carry game"; anything else will be a pose file's name ("carry <file>").
+                if (Word(rest, "game")) {
+                    carry = &kCarryGame;
+                } else if (Word(rest, "c2") || Word(rest, "closed")) {
+                    carry = &kCarryClosed;
+                } else {
+                    carry = &kCarryClosed;
+                    sscanf_s(rest, "%63s", unknownCarry, static_cast<unsigned>(sizeof(unknownCarry)));
+                }
+            } else if (Word(line, "seat", &rest)) {
+                if (sscanf_s(rest, "%f", &cm) == 1 && cm >= 0.0f)
+                    snap = std::fmin(std::fmax(cm / 100.0f, 0.005f), 0.10f);  // as pistolmag::SetSnap keeps it
+            } else if (Word(line, "loadtest", &rest)) {
+                tests.load = Word(rest, "park") ? 2 : (Word(rest, "0") || Word(rest, "off")) ? 0 : 1;
             } else if (Word(line, "racktest", &rest)) {
                 tests.rack = !Word(rest, "0") && !Word(rest, "off");
             } else if (Word(line, "slidetest")) {
@@ -844,18 +907,52 @@ void ReadPistolTuning() {
     g_pistolTests = g_pistolReload ? tests : PistolTests{};
     g_magTestGone = false;
     g_gripEmptyUntil = 0;
+    // The magazine by hand off: nothing of it is left (one in the hand is gone, the grip drawn as the game has it).
+    const bool wasMag = g_pistolMagOn;
+    g_pistolMagOn = g_pistolReload && mag;
+    if (!g_pistolMagOn) {
+        if (wasMag && (pistolmag::Holding() || g_pistolMagOut))
+            Log("Pistol reload: the magazine by hand off: the one in the hand is gone, the grip drawn full again");
+        pistolmag::Clear();
+        g_pistolMagOut = false;
+    }
+    g_pistolCarry = carry;
+    pistolmag::SetCarry(carry->hold);
+    g_pistolSnap = snap;
+    pistolmag::SetSnap(snap);
     if (!g_pistolReload) {
         Log("Pistol reload: off, the train pistol as before%s", exists ? " (build\\pistol.txt)" : "");
         return;
     }
     const PistolTests& p = g_pistolTests;
-    Log("Pistol reload: on with the train pistol in hand (build\\pistol.txt); so far only drawn: %s",
-        g_pistolSlideOn ? "the slide by the left hand (the left trigger at its rear; no rounds change), and its tests"
-                        : "by its tests");
+    Log("Pistol reload: on with the train pistol in hand (build\\pistol.txt); so far only drawn, no rounds change: "
+        "%s%s%s",
+        g_pistolSlideOn ? "the slide by the left hand (the left trigger at its rear)" : "",
+        g_pistolSlideOn && g_pistolMagOn ? ", " : "",
+        g_pistolMagOn      ? "the magazine by hand (X, the pelvis, the grip)"
+        : !g_pistolSlideOn ? "by its tests"
+                           : "");
+    if (g_pistolMagOn)
+        Log("Pistol reload: mag 1: X drops the magazine; the left grip at the pelvis takes one, carried %s; under the "
+            "grip the fingers open flat and the palm pushes it up; it snaps home once the palm has held it within %.1f "
+            "cm (seat); the right trigger held off while it's out; no rounds change (a rehearsal), X held is the "
+            "game's own reload",
+            g_pistolCarry->name, g_pistolSnap * 100.0f);
+    if (*unknownCarry)
+        Log("Pistol reload: carry \"%s\" isn't known: %s (\"carry c2\" or \"carry game\"; a pose file comes later)",
+            unknownCarry, g_pistolCarry->name);
+    if (p.load)
+        Log("Pistol reload: loadtest%s: %s", p.load == 2 ? " park" : "",
+            !g_pistolMagOn ? "does nothing without \"mag 1\""
+            : p.load == 2  ? "a scripted left hand reloads every 6 s while no left controller is tracked, leaving the "
+                             "magazine 4 cm short, then pushing it home"
+                           : "a scripted left hand reloads every 6 s while no left controller is tracked");
     if (p.rack)
         Log("Pistol reload: racktest: %s",
-            g_pistolSlideOn ? "a scripted left hand racks the slide every 3 s while no left controller is tracked"
-                            : "does nothing without \"slide 1\"");
+            !g_pistolSlideOn          ? "does nothing without \"slide 1\""
+            : p.load && g_pistolMagOn ? "left out: loadtest has the scripted left hand"
+                                      : "a scripted left hand racks the slide every 3 s while no left controller is "
+                                        "tracked");
     if (p.slide && p.lock < 0.0f)
         Log("Pistol reload: slidetest: the slide drawn going back and forth over its %.2f cm travel",
             kPistolSlideTravel * 100.0f);
@@ -950,7 +1047,7 @@ void PistolSlide(skin::HandTargets& t, bool pistolHeld, bool trackedLeft, const 
     g_pistolSlide.Settings().lockAt = in.locked ? g_pistolTests.lock : kPistolSlideLock;
     float palm[3];
     const char* noPalm = !trackedLeft ? "the left controller isn't tracked" : busy;
-    if (on && g_pistolTests.rack && !trackedLeft) {
+    if (on && g_pistolTests.rack && !(g_pistolTests.load && g_pistolMagOn) && !trackedLeft) {
         // racktest, 3 s a cycle: a scripted left hand overhand on the slide's rear with the trigger let go (0.6 s), the
         // trigger pressed and the hand drawn 5 cm back (0.6 s: the slide stops at its 4.57), held there (0.3 s), let go
         // (the slide springs home out of the hand), and back onto the slide's rear (1.5 s). It's drawn there, and the
@@ -1030,6 +1127,234 @@ void OnTheSlide(skin::HandTargets& t, bool pistolHeld) {
     BlendAbout(t.leftPose, onSlide, g_slideBlend, g_leftAnchor, blended);
     std::memcpy(t.leftPose, blended, sizeof(blended));
     Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+}
+
+// The magazine by hand (pistolmag.cpp; pistol.txt "mag 1"), a rehearsal with no ammo: only what's drawn and what the
+// hands and X do, the rounds don't change (the ammo comes later). pouch.cpp's zone and squeeze, the pistol's own well,
+// hands and numbers. While its own magazine is out (g_pistolMagOut) the right trigger does nothing (input.cpp,
+// PistolMagazineOut), as if the pistol were empty.
+std::atomic<ULONGLONG> g_pistolMagOutAt{0};  // when Update last saw it out with the pistol in hand (0: it's in)
+ULONGLONG g_pistolSeatedAt = 0;  // when one was last pushed home: that push isn't a grab of the slide
+// The left fingers on the magazine: how far they're on it (1 at the take, easing out 0.35 a frame after the seat or a
+// fall, as the M416's), and the flat base's and the push home's shares as last held (kept while they ease out).
+float g_pistolMagFingers = 0.0f, g_pistolMagFlat = 0.0f, g_pistolMagPush = 0.0f;
+
+// X (input.cpp MagazineTap) with "mag 1" and the train pistol in the right hand: its magazine release (the M9's button
+// behind the trigger guard). One part way into the grip drops out of it from where it's drawn (the review: from the
+// held draw, not a pose kept from before); otherwise the pistol's own drops out of the grip; with the grip empty
+// nothing (fromScript, F16: one goes in, so a scripted run can always put it back). False: not the pistol's, X as
+// before.
+bool PistolMagazineRelease(bool fromScript) {
+    float hold[12];
+    if (!g_on || !g_pistolMagOn || !skin::BarePistolHand(hold))
+        return false;
+    if (pistolmag::Parked()) {
+        if (!skin::DropPistolMagazine(skin::PistolDrop::kWell))
+            Log("Pistol reload: X: the magazine part way in is gone (not drawn lately, so not seen falling)");
+        pistolmag::Clear();
+        sounds::Play("pistol_mag_out");
+    } else if (pistolmag::Holding()) {
+        Log("Pistol reload: X with a magazine in the left hand: nothing in the grip to drop");
+    } else if (!g_pistolMagOut) {
+        if (!skin::DropPistolMagazine(skin::PistolDrop::kGrip))
+            Log("Pistol reload: X: the magazine out of the grip (not drawn lately, so not seen falling)");
+        g_pistolMagOut = true;
+        sounds::Play("pistol_mag_out");
+    } else if (fromScript) {
+        g_pistolMagOut = false;
+        sounds::Play("pistol_mag_in");
+        Log("Pistol reload: F16 with the magazine out: one put in (a test)");
+    } else {
+        Log("Pistol reload: X with the magazine out: take one at the pelvis with the left grip (X held is the game's "
+            "own reload)");
+    }
+    return true;
+}
+
+// pistol.txt "loadtest" (with "mag 1"): a scripted left hand stands in for the left controller (none tracked) while the
+// pistol is in the right hand. Every 6 s: X; at the pelvis (40 cm down the grip's line, turned 35 degrees) the squeeze
+// takes a magazine (0.6 s); carried up under the grip, straightening (to 2.4 s); pushed up to half the snap short of
+// home, where it goes home by itself (to 3.4 s), held there, then the hand lets go and drops away. "loadtest park"
+// leaves it 4 cm into the grip (3.4 s), lets go and drops 10 cm (it's parked), comes back up under it and pushes it
+// home (to 5.2 s). The hand is drawn holding the magazine there (pistolmag::GloveFor), with the carry's hold until the
+// fingers are flat (a carry with its own place turns the magazine onto the flat base there). flat: the module's flat
+// base share last frame while a magazine's held.
+void LoadTest(skin::HandTargets& t, pistolmag::Frame& f, bool standIn, float flat) {
+    static ULONGLONG s_start = 0, s_cycle = 0;
+    static bool s_took = false, s_on = false;
+    if (!g_pistolTests.load || !standIn) {
+        s_on = false;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (!s_on) {  // its cycles from now, the first starting at once
+        s_on = true;
+        s_start = now;
+        s_cycle = ~0ull;
+        Log("Pistol reload: loadtest: the scripted left hand reloads the pistol (no left controller tracked)");
+    }
+    const ULONGLONG since = now - s_start;
+    if (since / 6000 != s_cycle) {  // a new cycle: X (a magazine left in the hand from before is gone first)
+        s_cycle = since / 6000;
+        s_took = false;
+        if (pistolmag::Holding() && !pistolmag::Parked())
+            pistolmag::Clear();
+        if (pistolmag::Parked() || !g_pistolMagOut)
+            PistolMagazineRelease(false);
+    }
+    const float u = static_cast<float>(since % 6000) / 1000.0f;
+    auto ease = [](float x) {
+        x = std::fmin(std::fmax(x, 0.0f), 1.0f);
+        return x * x * (3.0f - 2.0f * x);
+    };
+    auto between = [&](float from, float to, float a, float b) { return a + (b - a) * ease((u - from) / (to - from)); };
+    const bool park = g_pistolTests.load == 2;
+    const float home = -0.5f * g_pistolSnap;
+    float s = -0.40f, turn = 0.0f, squeeze = u >= 0.6f ? 1.0f : 0.0f;
+    if (u < 0.8f) {
+        turn = 35.0f;
+    } else if (u < 2.4f) {
+        s = between(0.8f, 2.4f, -0.40f, -0.14f);
+        turn = between(0.8f, 2.4f, 35.0f, 0.0f);
+    } else if (!park) {
+        s = u < 3.4f ? between(2.4f, 3.4f, -0.14f, home) : u < 4.0f ? home : between(4.0f, 5.0f, home, home - 0.15f);
+        squeeze = u < 4.0f ? 1.0f : 0.0f;
+    } else {
+        s = u < 3.4f   ? between(2.4f, 3.4f, -0.14f, -0.07f)
+            : u < 3.6f ? -0.07f
+            : u < 4.2f ? between(3.6f, 4.2f, -0.07f, -0.17f)
+            : u < 5.2f ? between(4.2f, 5.2f, -0.17f, home)
+                       : between(5.2f, 6.0f, home, home - 0.15f);
+        squeeze = u < 3.4f ? 1.0f : 0.0f;
+    }
+    float inGun[12], magPose[12];
+    pistolmag::PlaceOnLine(s, turn, inGun);
+    Compose(t.pistolPose, inGun, magPose);
+    pistolmag::GloveFor(magPose, flat > 0.95f, f.glove);
+    f.left = true;
+    f.leftGrip = {};
+    f.squeeze = squeeze;
+    f.reached = u >= 0.6f && !s_took;
+    s_took = s_took || f.reached;
+    f.atPouch = false;
+    f.apart = 0.0f;
+    f.handFree = true;
+    f.wellEmpty = g_pistolMagOut;
+    std::memcpy(t.leftPose, f.glove, sizeof(t.leftPose));
+    Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+    t.left = true;
+}
+
+// After the pouch (its zone and squeeze, the M416's too): the magazine taken at the pelvis, carried, caught under the
+// grip and pushed home, each logged; drawn (HandTargets::pistolMag, pistolMagOut) and its fingers kept for Update. Only
+// with "mag 1" and the train pistol in the right hand, or a magazine still in hand through a moment without it (its "in
+// hand" drops now and then); otherwise nothing. tracked: the left hand as its controller holds it, palm its grip point
+// (the view's space); toView: the room's turn into the view's (a fall's speed).
+pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouchEvents, bool pistolHeld,
+                                 bool trackedLeft, const float* tracked, const float* palm, const float* toView,
+                                 float dt) {
+    pistolmag::Result r;
+    if (g_pistolMagOn && (pistolHeld || pistolmag::Holding())) {
+        float seat[12];
+        skin::PistolMagazineSeat(seat);  // the game's own once it's drawn it home, the recordings' until then
+        pistolmag::SetSeat(seat);
+        pistolmag::Frame f;
+        f.dt = dt;
+        f.pistol = pistolHeld;
+        f.pistolTracked = t.gun;
+        std::memcpy(f.pistolPose, t.pistolPose, sizeof(f.pistolPose));
+        XrPosef leftGrip{};
+        f.left = trackedLeft && input::HandPose(0, leftGrip);
+        f.leftGrip = leftGrip.position;
+        std::memcpy(f.glove, tracked, sizeof(f.glove));
+        f.squeeze = input::LeftSqueeze();
+        if (t.gun && f.left) {
+            const float apart[3] = {palm[0] - t.rightWrist[0], palm[1] - t.rightWrist[1], palm[2] - t.rightWrist[2]};
+            f.apart = Length(apart);
+        }
+        f.reached = pouchEvents.reached;
+        f.atPouch = pouchEvents.atPouch;
+        f.handFree = !g_pistolSupport && !g_lining && !g_pistolSlide.Held() && g_pistolBlend == 0.0f;
+        f.wellEmpty = g_pistolMagOut;
+        f.slideLocked = false;  // the slide stop comes with the ammo
+        f.spare = true;         // a rehearsal: there's always one at the pelvis
+        LoadTest(t, f, pistolHeld && !trackedLeft, pistolmag::Holding() ? g_pistolMagFlat : 0.0f);
+        r = pistolmag::Update(f);
+        if (r.took) {
+            g_freshSqueeze = false;  // not the two-handed hold's as well
+            Log("Pistol reload: a magazine taken at the pelvis, carried %s", g_pistolCarry->name);
+        } else if (f.reached && *r.note) {
+            Log("Pistol reload: the squeeze at the pelvis took nothing: %s", r.note);
+        }
+        if (r.flatOn)
+            Log("Pistol reload: the hand opens flat under the grip, the magazine's top %.0f cm short of home",
+                -r.s * 100.0f);
+        if (r.flatOff)
+            Log("Pistol reload: the hand closes round the magazine again, away from under the grip");
+        if (r.caught)
+            Log("Pistol reload: the magazine caught under the grip");
+        if (r.pushed)
+            Log("Pistol reload: the palm pushes the magazine on from %.1f cm short", -r.s * 100.0f);
+        if (r.offLine)
+            Log("Pistol reload: the magazine pulled off the grip's line: back in the hand");
+        if (r.parked)
+            Log("Pistol reload: the magazine left %.1f cm short in the grip (the palm pushes it on, X drops it)",
+                -r.s * 100.0f);
+        if (r.letGo) {
+            float v[3];  // the hand's speed as it let go, from the room into the view's space
+            for (int i = 0; i < 3; ++i)
+                v[i] = toView[i * 3] * r.dropVelocity[0] + toView[i * 3 + 1] * r.dropVelocity[1] +
+                       toView[i * 3 + 2] * r.dropVelocity[2];
+            if (!skin::DropPistolMagazine(skin::PistolDrop::kHand, v))
+                Log("Pistol reload: the magazine let go of (not drawn lately, so not seen falling)");
+        }
+        if (r.putBack)
+            Log("Pistol reload: the magazine put back at the pelvis");
+        if (r.cancelled)
+            Log("Pistol reload: the magazine in the left hand is gone (the game's own reload put one in, or the pistol "
+                "or the hand was lost a second)");
+        if (r.seated) {
+            g_pistolMagOut = false;
+            g_pistolSeatedAt = GetTickCount64();
+            sounds::Play("pistol_mag_in");
+            Log("Pistol reload: the magazine pushed home (a rehearsal: no rounds change)");
+        }
+        if (r.tried) {
+            // Each try at the grip: how near the palm brought it, to set the snap from (the first headset test).
+            char nearest[48], hands[64] = "";
+            if (r.closest >= 0.0f)
+                std::snprintf(nearest, sizeof(nearest), "home");
+            else
+                std::snprintf(nearest, sizeof(nearest), "%.1f cm short of home", -r.closest * 100.0f);
+            if (r.apartThen > 0.0f)
+                std::snprintf(hands, sizeof(hands), ", the hands' grip points %.0f cm apart then",
+                              r.apartThen * 100.0f);
+            Log("Pistol reload: a try at the grip %s: the palm held the magazine's top %s at the nearest%s (it snaps "
+                "home within %.1f cm: pistol.txt seat)",
+                r.seated ? "seated it" : r.parked ? "left it part way in" : r.offLine ? "came off the line" : "ended",
+                nearest, hands, g_pistolSnap * 100.0f);
+        }
+        if (r.mag) {
+            t.pistolMag = true;  // over magtest's
+            std::memcpy(t.pistolMagPose, r.magPose, sizeof(t.pistolMagPose));
+        }
+    }
+    if (g_pistolMagOut)
+        t.pistolMagOut = true;
+    // Out with the pistol in hand: the right trigger held off (PistolMagazineOut; through a moment without it too).
+    if (!g_pistolMagOn || !g_pistolMagOut)
+        g_pistolMagOutAt = 0;
+    else if (pistolHeld)
+        g_pistolMagOutAt = GetTickCount64();
+    // The fingers on it: on at the take, easing in and out as it's held (onto the line from parked too).
+    if (r.took)
+        g_pistolMagFingers = 1.0f;
+    g_pistolMagFingers += ((r.holding ? 1.0f : 0.0f) - g_pistolMagFingers) * 0.35f;
+    if (g_pistolMagFingers < 0.001f)
+        g_pistolMagFingers = 0.0f;
+    if (r.holding)
+        g_pistolMagFlat = r.flat, g_pistolMagPush = r.push;
+    return r;
 }
 
 // Once a second while the left hand holds on: how far the hands' line strayed from where the right
@@ -1547,6 +1872,13 @@ void Update(const XrPosef& head) {
     float tracked[12];
     std::memcpy(tracked, t.leftPose, sizeof(tracked));
     const bool trackedLeft = t.left;
+    // The train pistol's magazine by hand (pistol.txt "mag 1"; PistolMagazine, after the pouch): a squeeze at the
+    // pelvis with the pistol in hand, or lately (its "in hand" drops for a moment now and then), is for its magazine,
+    // not the game's own reload as with other guns.
+    static ULONGLONG s_pistolAt = 0;
+    if (pistolHeld)
+        s_pistolAt = GetTickCount64();
+    const bool pistolMag = g_pistolMagOn && s_pistolAt && GetTickCount64() - s_pistolAt < 1000;
     // A magazine from the pouch at the pelvis (pouch.cpp), worked out before the handguard: the
     // squeeze that takes one there doesn't also take the handguard.
     pouch::Result magazine;
@@ -1617,12 +1949,15 @@ void Update(const XrPosef& head) {
                 "(%.2f of its size; %s): %s",
                 magazine.fromMiddle[0] * 100.0f, magazine.fromMiddle[1] * 100.0f, magazine.fromMiddle[2] * 100.0f,
                 magazine.size, testing ? "a test's hand" : "tracked",
-                !magazine.reached ? "outside it" : *magazine.note ? magazine.note : "nothing taken");
+                !magazine.reached ? "outside it"
+                : pistolMag       ? "for the train pistol's magazine (Pistol reload)"
+                : *magazine.note  ? magazine.note
+                                  : "nothing taken");
         if (magazine.took)
             g_freshSqueeze = false;  // not the handguard's as well
         // Any other gun (the launchers too) reloads from the pouch as the game does: a fresh squeeze
         // there is its reload (the user: ammo from the pelvis for whatever gun is in hand). The real
-        // hand only, at most once every 1.5 s.
+        // hand only, at most once every 1.5 s. Not the train pistol with its magazine by hand.
         static ULONGLONG s_otherReload = 0;
         // A squeeze the handguard would take (Support: the palm within kGuardReach of its line, the
         // hands more than kHandsTogether apart) stays the handguard's, as before the pouch.
@@ -1631,8 +1966,8 @@ void Update(const XrPosef& head) {
             const float apart[3] = {palm[0] - t.rightWrist[0], palm[1] - t.rightWrist[1], palm[2] - t.rightWrist[2]};
             guardWouldTake = f.guardDistance < kGuardReach && Length(apart) > kHandsTogether;
         }
-        if (magazine.reached && !knownGun && f.handFree && !testing && g_anyGunReload && !guardWouldTake &&
-            GetTickCount64() - s_otherReload > 1500 && ammo::Get(loaded, spare)) {
+        if (magazine.reached && !knownGun && !pistolMag && f.handFree && !testing && g_anyGunReload &&
+            !guardWouldTake && GetTickCount64() - s_otherReload > 1500 && ammo::Get(loaded, spare)) {
             s_otherReload = GetTickCount64();
             g_freshSqueeze = false;
             Log("Pouch: the game's own reload for the gun in hand");
@@ -1669,20 +2004,28 @@ void Update(const XrPosef& head) {
             t.left = true;
         }
     }
-    // The train pistol's manual reload (build\pistol.txt "reload on"; so far only drawn): its tests, and its slide by
-    // the left hand ("slide 1"), by where the hand really is. Not while the glove is lined up (held still, not where
-    // the hand is) or the hand carries the M416's magazine.
+    // The train pistol's manual reload (build\pistol.txt "reload on"; so far only drawn): its tests, its magazine by
+    // hand ("mag 1": pouch.cpp's events, after the pouch) and its slide by the left hand ("slide 1"), by where the hand
+    // really is. The slide not while the glove is lined up (held still, not where the hand is), the hand carries a
+    // magazine (the M416's, or the pistol's in the hand or on the grip's line) or has just pushed the pistol's home.
     PistolReload(t, pistolHeld);
+    const pistolmag::Result pistolMagazine =
+        PistolMagazine(t, magazine, pistolHeld, trackedLeft, tracked, palm, toView, frameSeconds);
     PistolSlide(t, pistolHeld, trackedLeft, tracked,
-                g_lining           ? "the left glove is being lined up"
-                : magazine.holding ? "the left hand carries a magazine"
-                                   : nullptr,
+                g_lining                                    ? "the left glove is being lined up"
+                : magazine.holding                          ? "the left hand carries a magazine"
+                : pistolMagazine.holding                    ? "the left hand has the pistol's magazine"
+                : GetTickCount64() - g_pistolSeatedAt < 300 ? "the pistol's magazine has just been pushed home"
+                                                            : nullptr,
                 frameSeconds);
     const bool holding = magazine.holding;
+    // Either magazine in the left hand keeps it busy: no handguard, no pushing off the gun, no bolt (all the M416's,
+    // left out with the train pistol in hand anyway, but its "in hand" drops for a moment now and then).
+    const bool busyWithMag = holding || pistolMagazine.holding;
     // Both hands on the gun: the hold (Support) and the lines the steer turns the gun by, the glove on
     // the handguard. Not with the train pistol in hand (The Great Destroyer: PistolSupport below): the
     // M416's handguard, unseen, would take the left hand and steer the aim.
-    if (t.gun && t.left && !g_lining && !holding && !pistolHeld) {
+    if (t.gun && t.left && !g_lining && !busyWithMag && !pistolHeld) {
         Support(t, gunTurn, anchor, headTurn);
     } else {
         // Without the left controller's place the hold stays (the gun stays as the hands last had it
@@ -1764,11 +2107,19 @@ void Update(const XrPosef& head) {
         std::memcpy(t.leftPose, blended, sizeof(blended));
         Transform(t.leftPose, g_leftAnchor, t.leftWrist);
     }
+    // The train pistol's on the grip's line (pistol.txt "mag 1"), likewise: the hand drawn under it, on the flat base
+    // and then the push home, easing back out to the hand after the seat or a park.
+    if (pistolMagazine.gloveBlend > 0.0f && t.left) {
+        float blended[12];
+        BlendAbout(t.leftPose, pistolMagazine.glove, pistolMagazine.gloveBlend, g_leftAnchor, blended);
+        std::memcpy(t.leftPose, blended, sizeof(blended));
+        Transform(t.leftPose, g_leftAnchor, t.leftWrist);
+    }
     // The free glove stays out of the gun, and where it touches the gun is felt (the bolt release);
     // not while it carries a magazine up into the well.
     float touch[3];
     const bool free = t.gun && t.left && !g_lining && !g_supporting && g_gripBlend == 0.0f && !reload::HandleHeld() &&
-                      !holding && !testing && !pistolHeld;  // not the M416's shape round the train pistol
+                      !busyWithMag && !testing && !pistolHeld;  // not the M416's shape round the train pistol
     if (!free)
         collide::Reset(g_collide);
     const bool touching = free && KeepOutOfGun(t, fingers, touch);
@@ -1779,7 +2130,8 @@ void Update(const XrPosef& head) {
     // slap, nor does the push that just seated one (for 0.3 s: the bolt release is right by the well):
     // no palm then, which blocks both. The trigger stays the real one, so a trigger held through that
     // time isn't a fresh press when it ends.
-    const bool busy = holding || GetTickCount64() - g_seatedAt < 300;
+    const bool busy =
+        busyWithMag || GetTickCount64() - g_seatedAt < 300 || GetTickCount64() - g_pistolSeatedAt < 300;
     // Not the M416's charging handle and bolt release with the train pistol in hand.
     reload::Update(t.gun && !pistolHeld ? t.gunPose : nullptr, trackedLeft && !busy ? palm : nullptr,
                    input::LeftTrigger(), touching ? touch : nullptr);
@@ -1862,6 +2214,16 @@ void Update(const XrPosef& head) {
             } else {
                 std::memcpy(t.bareLeftFingers[b], own, sizeof(own));
             }
+            // On the pistol's magazine (PistolMagazine): the carry round it, opening into the flat base under the grip,
+            // going over to the push home near the top, eased in and out with the hand.
+            if (g_pistolMagFingers > 0.0f) {
+                float pivot[3], carried[12], target[12], blended[12];
+                handpose::Pivot(b, pivot);
+                BlendAbout(g_pistolCarry->fingers[b], pistolposes::kFlat[b], g_pistolMagFlat, pivot, carried);
+                BlendAbout(carried, pistolposes::kSeated[b], g_pistolMagPush, pivot, target);
+                BlendAbout(t.bareLeftFingers[b], target, g_pistolMagFingers, pivot, blended);
+                std::memcpy(t.bareLeftFingers[b], blended, sizeof(blended));
+            }
             // On the slide (OnTheSlide): over its right side, the thumb on its left, eased in and out with the hand.
             if (g_slideBlend > 0.0f) {
                 float pivot[3], blended[12];
@@ -1894,6 +2256,31 @@ bool PistolSlideHeld() {
     return g_on && at && GetTickCount64() - at < 200;
 }
 
+bool PistolMagazineTap(bool fromScript) {
+    return PistolMagazineRelease(fromScript);
+}
+
+void PistolGameReload() {
+    float hold[12];
+    if (!g_on || !g_pistolMagOn || !skin::BarePistolHand(hold))
+        return;
+    // The game's own reload: its animation brings its magazine back in, so the mod's is in again. One part way into the
+    // grip drops out first; one in the left hand is gone (pistolmag: another went in).
+    if (pistolmag::Parked()) {
+        skin::DropPistolMagazine(skin::PistolDrop::kWell);
+        pistolmag::Clear();
+    }
+    if (g_pistolMagOut) {
+        g_pistolMagOut = false;
+        Log("Pistol reload: X held: the game's own reload puts its magazine back in the grip");
+    }
+}
+
+bool PistolMagazineOut() {
+    const ULONGLONG at = g_pistolMagOutAt.load(std::memory_order_relaxed);
+    return g_on && at && GetTickCount64() - at < 200;
+}
+
 void SetSteerCone(float fullDegrees, float noneDegrees) {
     const bool body = fullDegrees < 0.0f;
     if (g_steerByBody.exchange(body) != body)
@@ -1914,6 +2301,7 @@ void Toggle() {
     if (!g_on) {
         skin::SetHands(nullptr);
         pouch::Clear();
+        pistolmag::Clear();
     }
     Log("Hands: %s", g_on ? "free (the gun in the right hand, the left hand on its own)" : "the game's own");
     Beep(g_on ? 1200 : 440, 200);

@@ -324,6 +324,7 @@ Result Update(const Frame& f) {
                                  (where[2] / g_zone[4]) * (where[2] / g_zone[4]));
     const bool inside = g_zoneOn && f.left && (f.forceInside || size <= 1.0f);
     const bool atPouch = g_zoneOn && f.left && (f.forceInside || size <= kPutBack);
+    r.atPouch = atPouch;
     // The squeeze: armed, crossed, and reaching the pouch within 0.15 s of crossing. Logged once, when
     // it's settled: reached (where the hand came in), or not (where it crossed).
     if (f.squeeze < kArm)

@@ -60,6 +60,7 @@ add_library(bf3vr SHARED
     src/gunshape.cpp
     src/collide.cpp
     src/pouch.cpp
+    src/pistolmag.cpp
     src/pistolslide.cpp
     src/overlay.cpp
     src/shaders.cpp
@@ -104,6 +105,14 @@ target_link_libraries(magtest PRIVATE OpenXR::headers)  # pouch.h's XrPosef: the
 # the slide stop, the trigger's rack, the hand or the pistol lost.
 add_executable(pistolslidetest tools/pistolslidetest.cpp src/pistolslide.cpp)
 target_compile_definitions(pistolslidetest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# The train pistol's magazine by the left hand (src/pistolmag.cpp, as hands.cpp runs it) on scripted frames at
+# 72 Hz: the take at the pelvis, the carry and the flat base, what's caught under the grip and what isn't, the
+# ride up the raked line, the snap home and how near the palm came, parked and pushed on, let go and fallen, the
+# hand or the pistol lost, the game's own reload, the carries, broken inputs. The design's reloadtest, ported.
+add_executable(pistolmagtest tools/pistolmagtest.cpp src/pistolmag.cpp)
+target_compile_definitions(pistolmagtest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(pistolmagtest PRIVATE OpenXR::headers)  # pistolmag.h's XrVector3f: the headers only
 
 # The forearm placed from its hand (src/armik.h, header only): the bind pose, rigid moves, the game's
 # own rifle hold from the mesh dumps, the wrist's readings and range, the twist sweep, degenerate

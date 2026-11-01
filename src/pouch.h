@@ -43,6 +43,9 @@ struct Result {
     float glove[12] = {};  // the glove where it holds the magazine on the well's line ...
     float gloveBlend = 0;  // ... blended in by this much from where the hand is
     bool holding = false;  // a magazine in the hand (the hand is busy: no handguard, no bolt)
+    // The hand within the size a let go puts a magazine back at (1.2 of the pouch's), this frame: the train
+    // pistol's magazine goes by it too (pistolmag.cpp, hands.cpp), its zone the same as the M416's.
+    bool atPouch = false;
     // Events this frame.
     bool reached = false;  // a fresh squeeze reached the pouch (another gun: its own reload)
     bool took = false;     // a magazine taken: this squeeze is spent (not the handguard's)

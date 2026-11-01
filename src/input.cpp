@@ -498,8 +498,9 @@ const char* FireBlocked() {
 bool g_fireToldWhy = false;  // logged once a pull
 // The train pistol's slide held back by the left hand (hands::PistolSlideHeld, build\pistol.txt "slide 1"): the pistol
 // is out of battery, so a pull then does nothing, and one held on as the slide's let go still doesn't fire until it's
-// let go (below 0.4) and pulled again (a real pistol's trigger has to reset). Only ever set with the train pistol in
-// hand.
+// let go (below 0.4) and pulled again (a real pistol's trigger has to reset). Its magazine out of the grip
+// (hands::PistolMagazineOut, "mag 1": a rehearsal, the rounds don't change) holds it off the same way. Only ever set
+// with the train pistol in hand.
 bool g_fireHeldOff = false;
 
 XrVector2f Stick(XrSession session, XrAction action) {
@@ -679,6 +680,10 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
             if (down && !g_fireHeldOff && hands::PistolSlideHeld()) {
                 g_fireHeldOff = true;
                 Log("Input: the trigger didn't fire: the pistol's slide is held back by the left hand");
+            } else if (down && !g_fireHeldOff && hands::PistolMagazineOut()) {
+                g_fireHeldOff = true;
+                Log("Input: the trigger didn't fire: the pistol's magazine is out (pistol.txt mag 1: a rehearsal, no "
+                    "rounds change)");
             }
             if (g_fireHeldOff)
                 down = false;
@@ -725,6 +730,8 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
         PressR(true);            // until X is let go
         skin::InsertMagazine();  // the game's reload puts one in
         reload::ReleaseBolt();   // and chambers a round
+        // The train pistol's too, with its magazine by hand (build\pistol.txt "mag 1").
+        hands::PistolGameReload();
     }
     if (!x && g_xDown) {
         if (g_xHeld)
@@ -995,6 +1002,9 @@ void SetTapInsert(bool on) {
 
 void MagazineTap(bool fromScript) {
     if (!skin::RifleInHand()) {
+        // The train pistol with its magazine by hand (build\pistol.txt "mag 1"): X is its magazine release (hands.cpp).
+        if (hands::PistolMagazineTap(fromScript))
+            return;
         PressR(true);
         g_rUntil = GetTickCount64() + 150;  // the game reads the keys once a frame
         return;
