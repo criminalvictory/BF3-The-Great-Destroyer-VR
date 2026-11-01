@@ -582,6 +582,12 @@ void SetAspect(float aspect) {
                                                   : "in the window's own shape");
 }
 
+float Aspect() {
+    Load();
+    const float aspect = g_aspect.load();
+    return aspect > 0.0f ? std::clamp(aspect, 0.5f, 4.0f) : 0.0f;
+}
+
 void SetFit(bool on) {
     Load();
     g_fit = on;

@@ -13,6 +13,7 @@
 #include "perfinfo.h"
 #include "shaders.h"
 #include "skin.h"
+#include "window.h"
 #include "xr_runtime.h"
 
 namespace {
@@ -128,6 +129,22 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval,
 HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, UINT width, UINT height,
                                               DXGI_FORMAT format, UINT flags) {
     vr::OnResize();
+    // The window fitted to the monitor (window.cpp): the game's picture stays the size it's told its window is (the
+    // headset's), whatever it asks for: none, to take the window's own, or a size it found some other way.
+    DXGI_SWAP_CHAIN_DESC sd{};
+    int toldWidth = 0, toldHeight = 0;
+    if (SUCCEEDED(swap->GetDesc(&sd)) && window::GameSize(sd.OutputWindow, toldWidth, toldHeight) &&
+        (width != static_cast<UINT>(toldWidth) || height != static_cast<UINT>(toldHeight))) {
+        static int s_logged = 0;
+        if (s_logged < 8) {
+            ++s_logged;
+            Log("Window: the game asked for a %ux%u picture; kept at %dx%d, the size it's told its window is (the "
+                "window fitted to the monitor)",
+                width, height, toldWidth, toldHeight);
+        }
+        width = static_cast<UINT>(toldWidth);
+        height = static_cast<UINT>(toldHeight);
+    }
     return g_origResizeBuffers(swap, count, width, height, format, flags);
 }
 

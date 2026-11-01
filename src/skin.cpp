@@ -72,6 +72,7 @@
 #include "streamview.h"
 #include "views.h"
 #include "viewturn.h"
+#include "window.h"
 
 namespace {
 
@@ -1007,6 +1008,14 @@ void ReadWeaponSelection() {
             int n = 120;
             sscanf_s(bt + 9, "%d", &n);
             g_bodyTrace = n;
+            line = next;
+            continue;
+        }
+        // The window fitted to the monitor or as big as the game draws (window.cpp).
+        if (const char* wf = std::strstr(line, "windowfit")) {
+            int on = 1;
+            sscanf_s(wf + 9, "%d", &on);
+            window::SetFit(on != 0);
             line = next;
             continue;
         }

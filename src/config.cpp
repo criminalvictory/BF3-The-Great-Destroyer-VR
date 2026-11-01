@@ -104,6 +104,11 @@ const char kDefaultIni[] =
     "; top to bottom; bigger is sharper in the headset. It may be bigger than the monitor.\n"
     "; 0 = leave the window alone.\n"
     "size=1600\n"
+    "; 1 = the window fills the monitor (borderless, in the shape of the picture it shows) and the game still\n"
+    "; draws at size for the headset, scaled into it: the desktop, Discord and window captures show the whole\n"
+    "; picture. 0 = the window is as big as the game draws, bigger than most monitors (the desktop shows its\n"
+    "; top left only).\n"
+    "fit=1\n"
     "; 1 = the desktop window waits for the monitor's refresh as the game asks; 0 = it doesn't\n"
     "; (the headset sets the pace in VR, and waiting capped the game near 48 fps).\n"
     "vsync=0\n"
@@ -236,6 +241,7 @@ void Load(HMODULE self) {
     s.asyncHandover = ReadBool(L"stereo", L"async_handover", false);
     s.desktopVsync = ReadBool(L"window", L"vsync", false);
     s.windowSize = static_cast<int>(ReadFloat(L"window", L"size", static_cast<float>(s.windowSize)));
+    s.windowFit = ReadBool(L"window", L"fit", s.windowFit);
 
     std::vector<CameraPointer> cameras;
     for (size_t n = 0; n < kMaxCameras; ++n) {

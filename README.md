@@ -68,9 +68,11 @@ If the picture looks wrong:
   second at full deflection). As a mouse move once a frame it stuttered: BF3 reads the mouse on a
   rhythm of its own, and about 6 times a second a frame barely turned and the next turned double.
   In theater mode the stick still moves the mouse, a little every millisecond.
-- **Square window**: in windowed mode the game is kept square (default 1600×1600), which gives
+- **Square window**: in windowed mode the game draws square (default 1600×1600), which gives
   more view top to bottom and a sharper headset image; with per-eye views twice as wide (3200×1600:
-  each eye a square half). It may be bigger than the monitor.
+  each eye a square half). That may be bigger than the monitor, so the window on the desktop is fitted
+  to the monitor instead (borderless, in the shape of the picture it shows) while the game still draws
+  at that size: see [Streaming and recording](#streaming-and-recording).
 - **Floating screen** (theater) mode as an alternative to stereo.
 - **Wide field of view** (Delete on/off, Page Up / Page Down to tune, default 100°): the campaign
   renders a fixed 55° whatever the menu says, which in a headset looks like a square window. The
@@ -198,21 +200,29 @@ runtime path, which a 32-bit game can't load.
 
 ## Streaming and recording
 
-In 3D the game's window holds both eyes side by side, twice as wide as it is tall. Once the headset
-has its frame, the mod draws over the window with one view, the left eye's, so whatever records the
-game gets a normal-looking picture: 85° across, and steadied while you wear the headset (small head
-shakes taken out, the horizon kept level). The headset's own picture isn't touched. **Home** switches
-the window between this view and both eyes (saved; only while the game is in front).
+In 3D the game draws both eyes side by side, twice as wide as it is tall, at the headset's size
+(`[window] size` per eye). Once the headset has its frame, the mod draws over that picture with one
+view, the left eye's, so whatever records the game gets a normal-looking picture: 85° across, and
+steadied while you wear the headset (small head shakes taken out, the horizon kept level). The
+headset's own picture isn't touched. **Home** switches between this view and both eyes (saved; only
+while the game is in front).
+
+The game's window on the desktop fills the monitor, borderless, in the view's shape (16:9; 2:1 with
+both eyes), and shows the same view: the game still draws at the headset's size, told its window is
+that big, and Windows scales the picture into the window. `[window] fit=0` puts back the window as big
+as the game draws, bigger than most monitors (the desktop then shows only its top left).
 
 - **OBS and Streamlabs:** a *Game Capture* source, mode *Capture specific window*, window
   *[bf3.exe]: Battlefield 3*, then right-click it → *Transform* → *Stretch to screen* on a 16:9
-  canvas. The view is drawn 16:9 into the 2:1 window, so stretching it puts it back in proportion.
+  canvas. The view is drawn 16:9 into the 2:1 picture, so stretching it puts it back in proportion.
   The mod finishes each frame before any capture hook sees it, so no capture setting needs changing.
-- **Other recorders that hook the game** (Fraps, Bandicam's game mode, Discord) should get the same
-  view (tested with OBS only). One that saves the game's frame at its own size records it 2:1: stretch
-  it to 16:9, or set `stream_aspect=0` for a picture drawn in the window's own shape.
-- **Screen or display capture** sees only the part of the window on the monitor (the window is
-  bigger than the screen: that's the resolution the headset gets). Capture the game or its window.
+- **Discord** (*Go Live*, streaming Battlefield 3): Discord copies the window as Windows shows it, so
+  it gets the whole view, 16:9. (With the window bigger than the screen, Windows kept only its part on
+  the monitor up to date, and Discord showed that part moving in a corner of an old, frozen picture.)
+- **Other recorders that hook the game** (Fraps, Bandicam's game mode) should get the same view. One
+  that saves the game's own frame at its size records it 2:1: stretch it to 16:9, or set
+  `stream_aspect=0` for a picture drawn in its own shape.
+- **Screen, display or window capture** sees the window as it is on the monitor: the whole view.
 
 `[stereo]` in `build\bf3vr.ini`: `stream_view` (1 = on), `stream_fov` (degrees across),
 `stream_aspect` (the shape it's drawn for; 0 = the window's own), `stream_fit` (1 = the whole eye's
@@ -350,7 +360,8 @@ Windows' default output is the headset) to call the tester back when a test is r
   copies the game rebuilds every frame).
 - `src/input.cpp`: OpenXR actions for the controllers, injected as keyboard and mouse.
 - `src/finder.cpp`: in-game memory finders for the camera, look angles and settings.
-- `src/window.cpp`: keeps the game window square, past the screen size limit.
+- `src/window.cpp`: keeps the game drawing square (twice as wide in stereo), past the screen size
+  limit, with its window fitted to the monitor and the game told it's still that size.
 - `src/skin.cpp`: hooks the bone uploads and draws of skinned meshes; finds the hands' draws and
   draws them with changed bones.
 - `src/views.cpp`: per-eye views: BF3's split-screen test turned on, its view builder hooked so

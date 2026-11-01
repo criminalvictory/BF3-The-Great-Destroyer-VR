@@ -1,5 +1,5 @@
 # The never-break checks, run after every build once the campaign is in stereo (Battlelog's PLAY
-# CAMPAIGN, then tools\resume.ps1 -Stereo), before anyone is called to the headset: what broke on
+# CAMPAIGN, then tools\resume.ps1; the mod switches to stereo itself), before anyone is called to the headset: what broke on
 # 2026-10-30 (the view turning with the gun, the stick turn reversed, the HUD in one eye only, the
 # right eye smeared, the frame rate) checked from the game itself with nobody in the headset
 # (weapon.txt "standin 1" holds the rifle while the controllers sleep). One line per check, PASS /
@@ -79,13 +79,33 @@ if (Test-Path $expectFile) { Get-Content $expectFile | ForEach-Object { if ($_ -
 if (-not (Get-Process bf3 -ErrorAction SilentlyContinue)) { Result 'BF3 running' 'FAIL' 'bf3.exe is not running'; exit 1 }
 $all = LogLines
 $text = $all -join "`n"
+# The window as big as the game draws ("resizing to"), or fitted to the monitor with the game still drawing its size.
+$stereoWindow = 'Window: resizing to \d+x\d+|Window: fitted to the monitor, .* the game still draws \d+x\d+'
 $startup = @(
-    @('Stereo, both eyes side by side', 'Window: resizing to \d+x\d+'),
+    @('Stereo, both eyes side by side', $stereoWindow),
     @('Wide field of view', 'FOV: source [\d.]+, render view 1\d\d'),
     @('God mode', "God mode: the server's soldier is at"),
     @('Look angles found', 'Aim: the look angles found')
 )
 foreach ($s in $startup) { if ($text -match $s[1]) { Result $s[0] 'PASS' '' } else { Result $s[0] 'FAIL' "no '$($s[1])' in the log" } }
+# The headset's resolution never changes with the desktop window (the user, 2026-11-01: "dont ever change the headset
+# resolution unless i absolutely ask"): the game's picture stays two [window] size squares side by side.
+$ini = Join-Path $root 'build\bf3vr.ini'
+$size = 0
+if (Test-Path $ini) {
+    $inWindow = $false
+    foreach ($l in Get-Content $ini) {
+        if ($l -match '^\s*\[(.+)\]') { $inWindow = $matches[1] -eq 'window' }
+        elseif ($inWindow -and $l -match '^\s*size\s*=\s*(\d+)') { $size = [int]$matches[1] }
+    }
+}
+$swap = $all | Select-String 'Swapchains (\d+)x(\d+)' | Select-Object -Last 1
+if (-not $swap -or $size -le 0) { Result 'Headset resolution' 'SKIP' 'no swap chain line, or no [window] size in bf3vr.ini' }
+else {
+    $w = [int]$swap.Matches[0].Groups[1].Value; $h = [int]$swap.Matches[0].Groups[2].Value
+    if ($w -eq 2 * $size -and $h -eq $size) { Result 'Headset resolution' 'PASS' "${w}x${h}: $size per eye ([window] size)" }
+    else { Result 'Headset resolution' 'FAIL' "the game draws ${w}x${h}, not $(2 * $size)x$size ([window] size $size per eye)" }
+}
 if ($text -match '(MH_CreateHook failed|hooking .* failed)') { Result 'Hooks' 'FAIL' $matches[1] } else { Result 'Hooks' 'PASS' '' }
 # Lost again: the search's own lines after the last find.
 $lastFound = ($all | Select-String 'Aim: the look angles found' | Select-Object -Last 1).LineNumber
@@ -218,7 +238,7 @@ else {
 # flexion about the wrist joint; the once-a-second readings must say so. arms.txt is put back as it
 # was (no file: none again, the forearms off).
 if (-not (Get-Process bf3 -ErrorAction SilentlyContinue)) { Result 'Forearms' 'SKIP' 'bf3.exe is not running' }
-elseif ($text -notmatch 'Window: resizing to \d+x\d+') { Result 'Forearms' 'SKIP' 'stereo is not on' }
+elseif ($text -notmatch $stereoWindow) { Result 'Forearms' 'SKIP' 'stereo is not on' }
 else {
     $hadArms = Test-Path $arms
     $armsBefore = if ($hadArms) { [IO.File]::ReadAllText($arms) } else { $null }

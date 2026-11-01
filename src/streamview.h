@@ -25,6 +25,8 @@ void SetFov(float degrees);
 // "streamaspect 1.7778"): 16:9 by default, which OBS's "stretch to screen" on a 16:9 canvas shows in proportion;
 // 0 = the window's own shape (2:1 in per-eye stereo).
 void SetAspect(float aspect);
+// That shape, 0 for the window's own (window.cpp fits the window to the monitor in it).
+float Aspect();
 // The whole eye's picture fitted into that shape, black at its sides, instead of the view filled with its middle
 // ([stereo] stream_fit, weapon.txt "streamfit 1"): as the headset shows it, neither turned nor steadied.
 void SetFit(bool on);

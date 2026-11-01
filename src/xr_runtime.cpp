@@ -1553,6 +1553,19 @@ void OnPresent(IDXGISwapChain* swap) {
         bool perEye = config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews;
         views::Update(perEye);
         window::SetWide(perEye);
+        // The window fitted to the monitor in the shape of the picture it shows: the stream view's while it's drawn
+        // (on, and the headset's frame loop running, which draws it); else both eyes side by side, 2:1 (the review:
+        // without SteamVR, the 2:1 picture was squeezed into a 16:9 window).
+        const bool streamDrawn = perEye && streamview::On() && g_running && !g_failed && g_scWidth;
+        window::SetShape(streamDrawn ? streamview::Aspect() : 0.0f);
+        // The game's own fullscreen leaves its window to it (window.cpp); looked at twice a second.
+        static int s_fullscreenCheck = 0;
+        if (++s_fullscreenCheck >= 36) {
+            s_fullscreenCheck = 0;
+            BOOL fullscreen = FALSE;
+            if (SUCCEEDED(swap->GetFullscreenState(&fullscreen, nullptr)))
+                window::SetGameFullscreen(fullscreen != FALSE);
+        }
     }
     window::Maintain();
     fov::Apply();

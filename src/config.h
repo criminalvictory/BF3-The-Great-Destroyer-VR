@@ -72,6 +72,9 @@ struct Settings {
 
     // Windowed mode: keep BF3's window this many pixels square (0 = leave it alone).
     int windowSize = 1600;
+    // The window fitted to the monitor, borderless, in the shape of the picture it shows, the game told it's
+    // still windowSize big (window.cpp); false = the window as big as the game draws ([window] fit).
+    bool windowFit = true;
     // The desktop window waits for the monitor's refresh, as the game asks ([window] vsync).
     bool desktopVsync = false;
 
