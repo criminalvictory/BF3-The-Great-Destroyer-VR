@@ -196,6 +196,30 @@ This fetches the OpenXR SDK and MinHook and produces `build\bf3vr.dll` and `buil
 The mod fixes up a Steam quirk on its own: games launched while SteamVR runs get the 64-bit
 runtime path, which a 32-bit game can't load.
 
+## Streaming and recording
+
+In 3D the game's window holds both eyes side by side, twice as wide as it is tall. Once the headset
+has its frame, the mod draws over the window with one view, the left eye's, so whatever records the
+game gets a normal-looking picture: 85° across, and steadied while you wear the headset (small head
+shakes taken out, the horizon kept level). The headset's own picture isn't touched. **Home** switches
+the window between this view and both eyes (saved; only while the game is in front).
+
+- **OBS and Streamlabs:** a *Game Capture* source, mode *Capture specific window*, window
+  *[bf3.exe]: Battlefield 3*, then right-click it → *Transform* → *Stretch to screen* on a 16:9
+  canvas. The view is drawn 16:9 into the 2:1 window, so stretching it puts it back in proportion.
+  The mod finishes each frame before any capture hook sees it, so no capture setting needs changing.
+- **Other recorders that hook the game** (Fraps, Bandicam's game mode, Discord) should get the same
+  view (tested with OBS only). One that saves the game's frame at its own size records it 2:1: stretch
+  it to 16:9, or set `stream_aspect=0` for a picture drawn in the window's own shape.
+- **Screen or display capture** sees only the part of the window on the monitor (the window is
+  bigger than the screen: that's the resolution the headset gets). Capture the game or its window.
+
+`[stereo]` in `build\bf3vr.ini`: `stream_view` (1 = on), `stream_fov` (degrees across),
+`stream_aspect` (the shape it's drawn for; 0 = the window's own), `stream_fit` (1 = the whole eye's
+picture, black at its sides), `stream_steady` (1 = steadied), `stream_tilt` (degrees below where you
+look). The subtitles and the HUD's corners sit at the eye's outer edge, so the cropped view leaves
+them out; the pause menu is cropped too (Home shows both eyes).
+
 ## Controls
 
 | Controller | Action |
@@ -228,6 +252,7 @@ and Y are on the left.
 | F11 | How many frames old the head pose each eye image is shown with (0-3, default 1) |
 | Insert | Free hands on / off (the game's own arms) |
 | End | God mode on / off (saved) |
+| Home | Stream view on / off: one eye in the window and OBS, or both eyes (saved) |
 | Ctrl + Scroll Lock | 3D method: depth 3D / hybrid (each frame from one eye, the other from its depth) / alternate eyes / mono / frozen |
 | Pause | Skinning research hooks on / off (off by default: they cost frame rate) |
 
