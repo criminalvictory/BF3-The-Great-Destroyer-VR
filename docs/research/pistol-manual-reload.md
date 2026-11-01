@@ -1,7 +1,8 @@
 # The train pistol's manual reload (The Great Destroyer): study and design
 
 Studied 2026-10-31 from the game's own reload (recorded with `reloadrec`), the M416's manual reload in
-the mod, and the pistol's ammo. Nothing is built yet. The working files (prototype modules, offline
+the mod, and the pistol's ammo. Build steps 2-4 are in (behind `build\pistol.txt`, off by default) and had their
+first headset test on 2026-11-01 (below). The working files (prototype modules, offline
 tests, pose matrices and pictures) are in `screenshots\wf_reload\` on the development machine. They
 are not in the repository, because the pictures and poses are taken from the game's own meshes and
 animations.
@@ -33,6 +34,15 @@ vtable, +0xF4 loaded / +0xF8 spare) fails at its last step. A read-only probe (`
 opens the game for reading only) finds where it breaks and which field drops by one a shot. A
 slide-cycle shot detector, run on the game's own pistol bones, found 12 of 12 shots in the recording
 and none in the reload; it proves the field before anything is written.
+
+**Found at the train (2026-10-31, read-only, from single shots and a reload: 8/114, 2/62, 1/62, 15/47,
+14/47 on the HUD).** Three objects of the rifle's own firing class (vtable bf3+1DAD810) hold the loaded
+rounds at +F4 and the spare at +F8, as the M416's does:
+- the server's, the one that decides: server soldier +4EC, then +40, then +128;
+- two client copies: client soldier +D4, then +C0, then +160 and +164.
+
+Still to check: whether that server path is the pistol's own slot or whichever weapon is in hand
+(switch weapons and look again).
 
 ## The design (its own profile; nothing copied from the M416)
 
@@ -95,6 +105,38 @@ The user's answers to the mechanics:
 - Racking with a round chambered throws that round out, lost, like a real gun.
 - The magazine may snap home by itself once it's most of the way in (the distance set from the first
   headset test).
+
+## The carry the user chose: G2 (2026-10-31)
+
+Three full-grasp carries were fitted on the meshes (`screenshots\wf_reload\grasp\`, picture 23): G1 a fist round
+the magazine, G2 the index straight along its front, G3 C2's place with every finger on it. G1 and G2 pass the
+contact checks; G3 fails (from C2's place the little finger can't reach the body). The user chose **G2**. Its place
+on the palm is 52 degrees and 1.7 cm from the flat base's, so it meets the gun with a regrip; three ways to do that
+were prototyped offline (`screenshots\wf_reload\g2\`).
+
+## The first headset test (2026-11-01, steps 2-4, the closed carry C2, snap 4 cm)
+
+- Works: walking; X drops the magazine and the trigger stays dead while it's out; a magazine taken at the pelvis;
+  pushed home it fires again; firing and the two-handed hold as before; X held is the game's reload.
+- **The slide is hard to grab:** the left trigger missed at 7.1-9.9 cm from the overhand hold (the reach is 7 cm),
+  and only the overhand grip exists. The user: make it "as magnetic as possible", polished, without losing the
+  animation, and three grips: fingers over the right side (today's), fingers over the left side, and a pinch with
+  the index and thumb from behind.
+- **The magazine is hard to get in:** "it takes a couple of attempts". The flat base flickered open and shut, and
+  the magazine slipped past the grip's bottom uncaught (the funnel is 5 mm and 3 degrees at the mouth, and a top that
+  has gone above the mouth isn't caught). Once caught, every push seated it (2.1-3.5 cm short, inside the 4 cm snap).
+  The user: magnetic, from any direction (hand to gun or gun onto the magazine), "make sure there's at least some
+  animation to it".
+- The test's log: `screenshots\logs\bf3vr_0029_firsttest.log`.
+
+## Next round (Wednesday 2026-11-04, at the user's request)
+
+1. The magazine: a magnetic catch from any direction, gliding onto the grip's line, an animated snap home, no
+   flicker; tunable in pistol.txt.
+2. G2 as the default carry, in the magnetic catch (the regrip while the well holds the magazine).
+3. The slide: a much larger reach whatever the hand's turn, the hand eased onto it, and the three grips (two new
+   poses to fit).
+4. Then the ammo proof and the writes (build order 5-6).
 
 ## Open questions for the user
 
