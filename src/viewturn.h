@@ -508,6 +508,24 @@ inline void TurnPerView(float* f, const BodyView& v, const float* turn) {
             f[kFromEyeAt + 4 * r + c] = p[4 * r] * view[c] + p[4 * r + 1] * view[4 + c] + p[4 * r + 2] * view[8 + c];
 }
 
+// A body view read so (ReadPerView), turned or not, moved along its camera's right by along metres, as views.cpp moves
+// each eye's cameras half the eye distance (the game draws the body of a scripted picture from one camera for both
+// eyes: no depth of its own, flat against the stereo scene, "like looking cross-eyed" with the jammer at the face, the
+// user, 2026-11-01): its eye, its translation made again from it, the view-projection again from the projection; the
+// one for points less the eye (the view's turn alone) and the projection kept; the eye at +320 moved as much.
+inline void ShiftPerView(float* f, BodyView& v, double along) {
+    float* view = f + kViewAt;
+    const double right[3] = {view[0], view[1], view[2]};  // row 0: the camera's right
+    for (int i = 0; i < 3; ++i) {
+        v.eye[i] += right[i] * along;
+        f[kEyeAt + i] = static_cast<float>(f[kEyeAt + i] + right[i] * along);
+    }
+    for (int r = 0; r < 3; ++r)
+        view[4 * r + 3] = static_cast<float>(-(view[4 * r] * v.eye[0] + view[4 * r + 1] * v.eye[1] +
+                                               view[4 * r + 2] * v.eye[2]));
+    Mul4(f + kProjectionAt, view, f + kViewProjectionAt);
+}
+
 // A view-projection alone (the 80-byte upload's, in the world) read as the body lock reads one: its w row the forward
 // (unit), its z row along it (a perspective one's depth comes from the view's z row alone), its y and x rows less their
 // parts along it the camera's up and right (square), the eye where its x, y and w rows are 0. Worked out in double:
@@ -723,7 +741,10 @@ inline int PickBuild(const BodyPick& pick, int count) {
 // which in the drive's crash, the camera shaking from one build to the next, shook the body out of its seat (the user,
 // 2026-11-01).
 constexpr float kBodyOwn = 2e-3f;
-inline int OwnBuild(const BodyView& v, const camera::BodyTurn* builds, int count) {
+// prefer: the frame's own pick, which keeps a tie: a still camera's builds have rows alike to the last bit and differ
+// only in the head's turn, so the rows can't tell them apart (the review: the newest taken there turned the body by
+// another build's head than the scene's, 1.5 degrees off at every head turn).
+inline int OwnBuild(const BodyView& v, const camera::BodyTurn* builds, int count, int prefer = -1) {
     int best = -1;
     float bestOff = kBodyOwn;
     for (int b = 0; b < count; ++b) {
@@ -734,7 +755,7 @@ inline int OwnBuild(const BodyView& v, const camera::BodyTurn* builds, int count
             alike = d < kBodyOwn;  // NaN: not alike
             off = std::fmax(off, d);
         }
-        if (alike && off < bestOff)
+        if (alike && (off < bestOff || (off == bestOff && b == prefer)))
             bestOff = off, best = b;
     }
     return best;
@@ -744,7 +765,7 @@ inline int OwnBuild(const BodyView& v, const camera::BodyTurn* builds, int count
 // frames, drawn maybe from the last normal picture, keep their guard), else the frame's. v.own and v.picked say which.
 inline int BodyBuild(BodyView& v, const camera::BodyTurn* builds, int count, const BodyPick& pick) {
     v.picked = PickBuild(pick, count);
-    v.own = v.picked >= 0 ? OwnBuild(v, builds, count) : -1;
+    v.own = v.picked >= 0 ? OwnBuild(v, builds, count, v.picked) : -1;
     return v.own >= 0 ? v.own : v.picked;
 }
 
@@ -796,7 +817,7 @@ inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int
         return kOtherHand;
     if (use < 0)
         return kUnnamed;
-    pick.use = use;
+    pick.use = v.picked;  // the frame's pick, not this view's own build: views with none of their own go by it
     TurnPerView(f, v, build.turn);
     return kBodyTurned;
 }
@@ -822,7 +843,7 @@ inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, 
         return kOtherHand;
     if (use < 0)
         return kUnnamed;
-    pick.use = use;
+    pick.use = v.picked;  // the frame's pick, not this view's own build: views with none of their own go by it
     TurnViewProjection(vp, v, build.turn);
     return kBodyTurned;
 }

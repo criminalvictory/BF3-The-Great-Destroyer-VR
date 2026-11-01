@@ -358,6 +358,14 @@ std::atomic<int> g_eyeTrace{0};
 // weapon.txt "bodylock 0": in a scripted picture turned to the head, the views the player's own body is drawn with
 // left as the game made them, moving with the head; on by default (LockBody).
 std::atomic<bool> g_bodyLock{true};
+// weapon.txt "bodytrace 120": in a scripted picture, the next 120 views the body lock reads logged in order, each with
+// what it made of it, its eye, and where that is along the turned camera's right (which eye's each is).
+std::atomic<int> g_bodyTrace{0};
+// weapon.txt "bodystereo 1": the body of a scripted picture moved to each eye's place (LockBody), its own depth, not left
+// in the middle with both eyes drawing it alike, as the game draws it. Off by default: moved, the right eye showed black
+// holes round the legs, arms and gun (2026-11-01, the drive looking down), most likely what the right eye's pass keeps
+// from the left eye's (both are drawn in the same place on the window, one after the other).
+std::atomic<bool> g_bodyStereo{false};
 // weapon.txt "fpunknown": the next three frames' first-person draws (drawn with a first-person
 // view's constants bound) that the mod leaves where the game put them, each kind logged once: the
 // ACOG's lens tint and reticle stayed at the game's own gun, floating in the sky (user, 2026-10-30).
@@ -919,6 +927,9 @@ void ReadWeaponSelection() {
     //   "bodylock 0"         in a scripted picture turned to the head, the views the player's own body is drawn
     //                        with left as the game made them, moving with the head ("bodylock 1", the default,
     //                        turns them with it: LockBody)
+    //   "bodystereo 1"       that body moved to each eye's place, its own depth (off by default: the right eye
+    //                        showed black holes round it; "bodystereo 0" both eyes draw it alike, as the game does)
+    //   "bodytrace 120"      the next 120 views the body lock reads logged in order (which eye's pass each is)
     //   "steer 35 65"        the left hand on the handguard steers the gun only within 35 degrees of the
     //                        right hand's line, not at all past 65 (without it: while out ahead of the
     //                        body, the left hand aims and the right levels: hands.cpp, steer.h)
@@ -981,6 +992,23 @@ void ReadWeaponSelection() {
         char* next = std::strchr(line, '\n');
         if (next)
             *next++ = 0;
+        if (const char* bs = std::strstr(line, "bodystereo")) {
+            int on = 1;
+            sscanf_s(bs + 10, "%d", &on);
+            if (g_bodyStereo.exchange(on != 0) != (on != 0))
+                Log("Camera: the body of a scripted picture %s", on ? "moved to each eye's place (its own depth)"
+                                                                    : "left in the middle, both eyes drawing it alike");
+            line = next;
+            continue;
+        }
+        // The body lock's trace, before "trace" (the gun's) would take it.
+        if (const char* bt = std::strstr(line, "bodytrace")) {
+            int n = 120;
+            sscanf_s(bt + 9, "%d", &n);
+            g_bodyTrace = n;
+            line = next;
+            continue;
+        }
         // The stream view's (streamview.cpp), first: no other word is part of them.
         if (const char* sv = std::strstr(line, "streamview")) {
             int on = 1;
@@ -1788,6 +1816,14 @@ struct BodyLatch {
     bool counted = false;       // the frame counted as named or guessed
     uint32_t turned = 0, turnedBefore = 0;  // the body's 352-byte views turned this frame so far, and the last frame
     double firstEye[3] = {};  // this frame's first one's eye
+    // Which eye's pass each of the frame's turned body views falls in. The game draws one view, then the other (views.cpp
+    // makes them the eyes), each pass starting with a body view before its main view's (bodytrace, 2026-11-01: five
+    // body views a pass): a body view goes with the next main view's eye, which comes only after it, so each frame's
+    // order is learned for the next, as NoteFirstPersonView learns the arms' eyes in ordinary play.
+    double passAlong[2] = {}, lastPassAlong[2] = {};  // each pass's main view's eye along the turned right (m)
+    int passes = 0, lastPasses = 0;                   // the passes seen this frame, and the last frame (0 to 2)
+    int8_t order[32] = {}, lastOrder[32] = {};        // each body view's pass, this frame and the last
+    uint32_t pendingFrom = 0;                         // body views from here on wait for the next main view's pass
 };
 // Since the last log (LogBodyLock), under g_bodyMutex.
 struct BodyStats {
@@ -1806,8 +1842,11 @@ struct BodyStats {
     float widenedLo = 0.0f, widenedHi = 0.0f;
     double spread = 0.0;  // the most a frame's body views' eyes were apart (m)
     // Turned by the build they were made in (viewturn::OwnBuild), of those a build off the frame's own pick, and the
-    // 352-byte ones turned in the world (not the arms' space).
+    // 352-byte ones turned with their eye past the arms' space's reach (viewturn::kBodyReach).
     uint32_t own = 0, offPick = 0, perViewWorld = 0;
+    // The body's 352-byte views moved to their eye's place (BodyLatch's passes), and the most the eyes were apart (m).
+    uint32_t shifted = 0;
+    double eyesApart = 0.0;
     bool loggedView = false, loggedOdd = false;  // this scripted run's first body view and odd upload logged
     bool loggedElsewhere = false;                // and its first 352-byte view in the world left as it was
     int namedLogged = 0, namedWorldLogged = 0;   // views of frames the main view named logged this second (LogLeftView)
@@ -1903,6 +1942,15 @@ void LockBody(uint8_t* data, UINT size) {
         l.pick = viewturn::BodyPick{};
         l.pick.guess = l.lastNamed;
         l.counted = false;
+        // The frame before's body views after its last main view's go with that one's pass; its order and its passes'
+        // places are the new frame's to go by.
+        for (uint32_t i = l.pendingFrom; i < l.turned && i < 32; ++i)
+            l.order[i] = static_cast<int8_t>(l.passes > 0 ? l.passes - 1 : 0);
+        std::memcpy(l.lastOrder, l.order, sizeof(l.order));
+        std::memcpy(l.lastPassAlong, l.passAlong, sizeof(l.passAlong));
+        l.lastPasses = l.passes;
+        l.passes = 0;
+        l.pendingFrom = 0;
         l.turnedBefore = l.turned;
         l.turned = 0;
     }
@@ -1915,26 +1963,70 @@ void LockBody(uint8_t* data, UINT size) {
     const viewturn::BodyPick was = l.pick;
     const viewturn::BodyVerdict verdict = perView ? viewturn::LockBodyPerView(f, l.builds, l.count, l.pick, v, fault)
                                                   : viewturn::LockBodyWorldView(f, l.builds, l.count, l.pick, v);
+    if (verdict != viewturn::kNotView && l.count > 0 && g_bodyTrace.load(std::memory_order_relaxed) > 0) {
+        --g_bodyTrace;
+        static const char* const kVerdict[] = {"not a view", "the main view's", "turned before", "away", "elsewhere",
+                                               "the other hand's", "unnamed", "the body's, turned"};
+        const float* right = l.builds[0].after;  // the newest build's camera as turned: its right
+        const double along = v.eye[0] * right[0] + v.eye[1] * right[1] + v.eye[2] * right[2];
+        Log("Body trace: frame %u, %u bytes, %s, its eye (%.4f %.4f %.4f), %+.1f mm along the turned right", l.frame,
+            size, kVerdict[verdict], v.eye[0], v.eye[1], v.eye[2], along * 1000.0);
+    }
     switch (verdict) {
-    case viewturn::kMainView:
+    case viewturn::kMainView: {
         ++s.main;
         if (!was.named && l.pick.named) {
             l.lastNamed = l.pick.use;
             // The frame's views turned before it by the last frame's age: by another build than its own?
             s.renamed += was.use >= 0 && was.use != l.pick.use;
         }
+        // Its eye's pass: its place along the turned right a centimetre or more from the first pass's (and within an eye
+        // distance or so) is the other's. The body views since the last main view's go with this one's.
+        const float* right = l.builds[0].after;
+        const double along = v.eye[0] * right[0] + v.eye[1] * right[1] + v.eye[2] * right[2];
+        int pass = -1;
+        if (l.passes == 0)
+            l.passAlong[0] = along, l.passes = 1, pass = 0;
+        else if (std::fabs(along - l.passAlong[l.passes - 1]) < 0.01)
+            pass = l.passes - 1;
+        else if (l.passes == 1 && std::fabs(along - l.passAlong[0]) < 0.2)
+            l.passAlong[1] = along, l.passes = 2, pass = 1;
+        else if (l.passes == 2)
+            pass = std::fabs(along - l.passAlong[0]) < std::fabs(along - l.passAlong[1]) ? 0 : 1;
+        if (pass >= 0) {
+            for (uint32_t i = l.pendingFrom; i < l.turned && i < 32; ++i)
+                l.order[i] = static_cast<int8_t>(pass);
+            l.pendingFrom = l.turned;
+        }
         return;
+    }
     case viewturn::kTurnedBefore:
         ++s.before;
         break;  // already turned (the view description's first-person camera), but at the picture's FOV too
     case viewturn::kAway:
         ++s.away;
         return;
-    case viewturn::kElsewhere:
+    case viewturn::kElsewhere: {
         ++s.elsewhere;
-        // In a frame the main view has named (the shots the body went in, 2026-11-01): a 352-byte view left as it was,
-        // against each of the frame's builds, two a second at most, to tell what it is.
-        if (perView && l.pick.named && l.count > 0 && s.namedLogged < 2) {
+        if (!perView || l.count <= 0)
+            return;
+        // Logged only if it could be the body's: its rows near a build's camera as made, or its eye within the arms'
+        // space's reach across (another camera, hundreds of metres off, used the logs up: the review, 2026-11-01).
+        int nearest = 0;
+        float nearestOff = 1e9f;
+        for (int b = 0; b < l.count; ++b) {
+            float off = 0.0f;
+            for (int i = 0; i < 9; ++i)
+                off = std::max(off, std::fabs(v.rows[i] - l.builds[b].before[i]));
+            if (off < nearestOff)
+                nearestOff = off, nearest = b;
+        }
+        if (!(nearestOff < 0.05f ||
+              (std::fabs(v.eye[0]) < viewturn::kBodyReach && std::fabs(v.eye[2]) < viewturn::kBodyReach)))
+            return;
+        // In a frame the main view has named (the shots the body went in, 2026-11-01): against each of the frame's
+        // builds, two a second at most, to tell what it is.
+        if (l.pick.named && s.namedLogged < 2) {
             static int s_budget = 60;
             if (s_budget > 0) {
                 --s_budget;
@@ -1942,19 +2034,9 @@ void LockBody(uint8_t* data, UINT size) {
                 LogLeftView(f, v, l, true, "a 352-byte view left as it was");
             }
         }
-        // One a scripted run: a 352-byte view in the world left as it was, against the frame's builds, to tell what it
-        // is (the nearest scripted camera's rows as made, and how far its eye is from that camera).
-        if (perView && !s.loggedElsewhere && l.count > 0) {
+        // One a scripted run: against the nearest build (its scripted camera's rows as made, and how far its eye is).
+        if (!s.loggedElsewhere) {
             s.loggedElsewhere = true;
-            int nearest = 0;
-            float nearestOff = 1e9f;
-            for (int b = 0; b < l.count; ++b) {
-                float off = 0.0f;
-                for (int i = 0; i < 9; ++i)
-                    off = std::max(off, std::fabs(v.rows[i] - l.builds[b].before[i]));
-                if (off < nearestOff)
-                    nearestOff = off, nearest = b;
-            }
             const float* at = l.builds[nearest].place;
             const double d[3] = {v.eye[0] - at[0], v.eye[1] - at[1], v.eye[2] - at[2]};
             Log("Camera: a 352-byte view left as it was in a scripted picture (this run's first): its eye (%.2f %.2f %.2f), "
@@ -1963,6 +2045,7 @@ void LockBody(uint8_t* data, UINT size) {
                 v.eye[0], v.eye[1], v.eye[2], std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), nearest, nearestOff);
         }
         return;
+    }
     case viewturn::kOtherHand:
         ++s.otherHand;
         return;
@@ -2027,10 +2110,26 @@ void LockBody(uint8_t* data, UINT size) {
         }
         return;
     }
-    // Its eye, by its place in the frame: both eyes' come from one camera (so not by their places, as
-    // NoteFirstPersonView tries first), the left eye's first half of the last frame's, as there.
+    // Its eye's pass, as the same place in the last frame's was (both passes seen then), else the first half of the last
+    // frame's; with both passes' places known, moved half the eye distance that way, as views.cpp moves each eye's
+    // cameras: the game draws the body from one camera for both eyes, flat against the stereo scene ("like I'm looking
+    // cross-eyed" with the jammer raised to the face, the gun inspected close up, the user, 2026-11-01). weapon.txt
+    // "bodystereo 0" leaves it in the middle, both eyes drawing it alike.
     const uint32_t k = l.turned++, n = l.turnedBefore;
-    const int eye = views::Active() && n >= 2 && n % 2 == 0 ? (k < n / 2 ? 0 : 1) : -1;
+    int pass = -1;
+    if (l.lastPasses == 2 && k < n && k < 32)
+        pass = l.lastOrder[k];
+    else if (n >= 2 && n % 2 == 0)
+        pass = k < n / 2 ? 0 : 1;
+    if (pass >= 0 && l.lastPasses == 2 && g_bodyStereo.load(std::memory_order_relaxed)) {
+        const double mid = 0.5 * (l.lastPassAlong[0] + l.lastPassAlong[1]);
+        viewturn::ShiftPerView(f, v, l.lastPassAlong[pass] - mid);
+        ++s.shifted;
+        s.eyesApart = std::max(s.eyesApart, std::fabs(l.lastPassAlong[1] - l.lastPassAlong[0]));
+    }
+    const int eye = !views::Active() || pass < 0 ? -1
+                    : l.lastPasses == 2      ? (l.lastPassAlong[pass] <= l.lastPassAlong[1 - pass] ? 0 : 1)
+                                             : pass;
     ++s.byEye[eye + 1];
     if (k == 0) {
         std::memcpy(l.firstEye, v.eye, sizeof(l.firstEye));
@@ -2040,7 +2139,7 @@ void LockBody(uint8_t* data, UINT size) {
     }
     if (keep && !s.loggedView) {
         s.loggedView = true;
-        LogBodyView(made, v, l.builds[l.pick.use], fov);
+        LogBodyView(made, v, l.builds[v.own >= 0 ? v.own : l.pick.use], fov);
     }
 }
 
@@ -2084,13 +2183,14 @@ void LogBodyLock() {
             "for the FOV fix, %u at the picture's already, %u left at their own (the FOV fix off); frames turned by "
             "the view build the main view's own upload named %u (the newest %u, the one before %u, older %u), with "
             "none named yet by the age the last frame's named %u (%u of them then named another); %u turned by the "
-            "build they were made in (%u of them a build off the frame's), %u of the 352-byte ones in the world; left "
-            "as they were: %u the main view's, %u turned already, %u looking away from the scripted camera, %u other "
-            "views, %u of the other handedness, %u with no build to turn them by yet; a frame's body views' eyes up to "
-            "%.0f mm apart",
+            "build they were made in (%u of them a build off the frame's), %u with their eye past the arms' space's "
+            "5 m; %u moved to their eye's place (the eyes %.0f mm apart); left as they were: %u the main view's, %u "
+            "turned already, %u looking away from the scripted camera, %u other views, %u of the other handedness, %u "
+            "with no build to turn them by yet; a frame's body views' eyes up to %.0f mm apart",
             turned, s.byEye[1], s.byEye[2], unknown, s.world, fov, s.atGame, s.atPicture, s.fovLeft, sum(s.named),
             s.named[0], s.named[1], s.named[2] + s.named[3], sum(s.guessed), s.renamed, s.own, s.offPick,
-            s.perViewWorld, s.main, s.before, s.away, s.elsewhere, s.otherHand, s.unnamed, s.spread * 1000.0);
+            s.perViewWorld, s.shifted, s.eyesApart * 1000.0, s.main, s.before, s.away, s.elsewhere, s.otherHand,
+            s.unnamed, s.spread * 1000.0);
     } else if (on) {
         Log("Camera: the body's first-person views: none seen this second in a scripted picture (left as they were: %u "
             "the main view's, %u turned already, %u looking away from the scripted camera, %u other views, %u of the "
