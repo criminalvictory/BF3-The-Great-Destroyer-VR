@@ -368,6 +368,29 @@ inline void PitchRoll(const float* m, float& pitch, float& roll) {
 // projection, the eye and the rest are left as they are. Whatever the game made a view from, it's turned once: a view
 // with the turned main camera's rows (the main view's, which also tells the build the frame is drawn from) or the
 // turned first-person camera's is left as it is.
+//
+// The turn keeps the body on the scene only with one field of view for both (TurnWith), and the game draws the body at
+// one of its own: 55 degrees in ordinary play, where the FOV fix (skin.cpp) finds it at the game's FOV and widens it to
+// the picture's. In the drive of Comrades the game's FOV is the scripted camera's 49.5, and the FOV fix found nothing
+// at it all the drive through (09:24). Left at 55 in the 100-degree picture, the body is drawn 2.3 times too big about
+// where the head looks: turned, a knee was up to 23 degrees off the scene under it with the head 10 to 30 degrees down
+// and round, 0.0 at the picture's (the review, 2026-11-01). So a body view the lock turns is made the picture's field
+// of view as well, as the FOV fix makes one (BodyFovOf, WidenPerView, WidenViewProjection), unless it's the picture's
+// already or the game's (the FOV fix widens it next, as in ordinary play).
+//
+// Only a view of the scripted camera's handedness is turned. The turn is that camera's rows' (OwnFrameTurn), and put on
+// rows of the other hand (a mirrored camera drawn as its unmirrored twin, as the mirror fix takes one to be:
+// tools/viewturntest.cpp 7a) it turns them with the yaw and the roll the other way: the body up to 88 degrees off the
+// turned picture, and the main view's own view-projection in the world turned a second time (the review, 2026-11-01;
+// no mirrored camera has been seen since: the Great Destroyer's wasn't one).
+//
+// A frame's views are turned by one view build's turn (BodyPick): the one the main view's own upload names; before it
+// has, the one as many builds old as the last frame's main view named (drawing can run that far behind the views
+// built), if the frame has it and more than one; with none named all session, the newest, once the frame has three;
+// else none, and they're left as the game made them. A run's first build can come while the last normal picture is
+// still being drawn, and that picture's arms and gun, turned by the newest, would have jumped by the cutscene's turn
+// for a frame at every cutscene's start (the review, 2026-11-01). A frame or two of a run's start left as the game made
+// them is nothing to see.
 constexpr unsigned kPerViewBytes = 352, kWorldViewBytes = 80;
 constexpr int kViewAt = 48 / 4, kProjectionAt = 112 / 4, kViewProjectionAt = 176 / 4, kFromEyeAt = 240 / 4,
               kEyeAt = 320 / 4;  // where in a 352-byte upload, in floats
@@ -582,24 +605,122 @@ inline bool RowsAlike(const float* a, const float* b) {
     return true;
 }
 
+// A camera's rows' handedness (nine numbers: right, up, back), as camera.cpp tells it: the sign of their determinant.
+inline int Hand9(const float* r) {
+    const float det = r[0] * (r[4] * r[8] - r[5] * r[7]) - r[1] * (r[3] * r[8] - r[5] * r[6]) +
+                      r[2] * (r[3] * r[7] - r[4] * r[6]);
+    return det < 0.0f ? -1 : 1;
+}
+
+// ---- The body's field of view ----
+// The length of a matrix row's x, y and z: a perspective one's x and y rows' scales along the camera's right and up
+// (1/tan of half the field of view), its w row's 1. The FOV fix (skin.cpp RescaleProjections) reads them so.
+inline float RowLength(const float* row) {
+    return std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+}
+// A scale within 0.2% of another, as the FOV fix tells one (skin.cpp Near; NaN never).
+inline bool NearScale(float a, float b) {
+    return std::fabs(a - b) < 0.002f * b;
+}
+
+// What the body lock made of a body view's field of view (skin.cpp counts them).
+enum BodyFov {
+    kFovLeft,     // no picture's field of view to widen to (the FOV fix off), or no scale to read: left as it is
+    kFovPicture,  // the picture's already: left as it is
+    kFovGame,     // the game's: left for the FOV fix, which widens it next, as in ordinary play
+    kFovWidened,  // neither: widened here to the picture's
+};
+
+// A body view's projection or view-projection (m: rows, points taken as columns) against the picture's field of view
+// and the game's (wide and game: their scales, 1/tan of half of each, as skin.cpp's FOV fix has them; 0 with it off).
+// scale: its own, its y row's length (the x row's can carry an x offset as well). The game's as the FOV fix finds one:
+// its x and y rows at the game's scale and its w row unit, with the picture's another.
+inline BodyFov BodyFovOf(const float* m, float wide, float game, float& scale) {
+    scale = RowLength(m + 4);
+    if (!(wide > 0.0f) || !(scale > 0.05f) || !std::isfinite(scale))
+        return kFovLeft;
+    if (NearScale(scale, wide))
+        return kFovPicture;
+    if (game > 0.0f && !NearScale(wide, game) && NearScale(RowLength(m), game) && NearScale(scale, game) &&
+        NearScale(RowLength(m + 12), 1.0f))
+        return kFovGame;
+    return kFovWidened;
+}
+
+// A 352-byte upload read as per-view constants (ReadPerView) at the picture's field of view, as the FOV fix widens a
+// first-person view: the x and y rows of the projection, the view-projection and the one for points less the eye
+// times the picture's scale over its own, where BodyFovOf finds it neither the picture's nor the game's. The eye, the
+// view and the rest are left as they are, and the view-projections stay the projection times the view. from: its scale
+// as it came.
+inline BodyFov WidenPerView(float* f, float wide, float game, float& from) {
+    const BodyFov fov = BodyFovOf(f + kProjectionAt, wide, game, from);
+    if (fov == kFovWidened) {
+        const float k = wide / from;
+        for (int at : {kProjectionAt, kViewProjectionAt, kFromEyeAt})
+            for (int c = 0; c < 8; ++c)
+                f[at + c] *= k;
+    }
+    return fov;
+}
+
+// The same for a view-projection alone (the 80-byte upload's, in the world): its x and y rows.
+inline BodyFov WidenViewProjection(float* vp, float wide, float game, float& from) {
+    const BodyFov fov = BodyFovOf(vp, wide, game, from);
+    if (fov == kFovWidened) {
+        const float k = wide / from;
+        for (int c = 0; c < 8; ++c)
+            vp[c] *= k;
+    }
+    return fov;
+}
+
+// ---- Which uploads are turned, and by which build's turn ----
 // What the body lock made of an upload (skin.cpp counts them). Only the body's own is changed.
 enum BodyVerdict {
     kNotView,       // not a view as the body lock reads them, or no scripted picture: left as it is
     kMainView,      // the main camera's turn already in it (the turned main camera's rows): the main view's, which
                     // names the build the frame is drawn from
-    kTurnedBefore,  // the turned first-person camera's rows (+0x930), should the game draw from it: left as it is
+    kTurnedBefore,  // the turned first-person camera's rows (+0x930), should the game draw from it: its turn left as it
+                    // is (skin.cpp makes its field of view the picture's, as the body's own)
     kAway,          // the body's place, but looking away from the scripted camera: left as it is
     kElsewhere,     // another view (a 352-byte one in the world, or an 80-byte one away from the camera): left
+    kOtherHand,     // the body's place and looking its way, but its rows the other handedness from the scripted
+                    // camera's (a mirrored camera drawn as its twin, a reflection): left as it is
+    kUnnamed,       // the body's own, but no build to turn it by yet (BodyPick): left as it is
     kBodyTurned,    // the body's own: turned with the head
 };
 
+// The view build a frame's views are turned by (the age of one: 0 the newest of the frame's builds, 1 the one before):
+// the one the main view's own upload names; with none named yet, the one as old as the last frame's main view named
+// (guess; -1 with none named all session), PickBuild. skin.cpp begins each frame's with use -1, named false and guess
+// the age the last named.
+struct BodyPick {
+    int use = -1;        // the build the frame's views have been turned by (-1: none yet)
+    bool named = false;  // use named by the main view's own upload
+    int guess = -1;      // the age the last frame's main view named (-1: none named yet)
+};
+
+// The build a body view is turned by (BodyPick), or -1 for none. With none named in the frame: the guess, if the frame
+// has it and more than one build (a run's first, with nothing named, can come while the last normal picture is still
+// drawn; a guess beyond the frame's builds, drawing from before the run); with no guess, the newest, once the frame has
+// three (drawn up to two builds behind, the picture is the run's).
+inline int PickBuild(const BodyPick& pick, int count) {
+    if (pick.named)
+        return pick.use;
+    if (pick.guess < 0)
+        return count >= 3 ? 0 : -1;
+    return count >= 2 && pick.guess < count ? pick.guess : -1;
+}
+
 // Which of a frame's view builds' turns (builds, the newest first; none in a normal picture) names a view as one they
-// turned already: kMainView or kTurnedBefore, use set to the build if the frame hasn't one yet; else kNotView.
-inline BodyVerdict TurnedAlready(const BodyView& v, const camera::BodyTurn* builds, int count, int& use) {
+// turned already: kMainView, the build named for the frame if none was yet, or kTurnedBefore; else kNotView.
+inline BodyVerdict TurnedAlready(const BodyView& v, const camera::BodyTurn* builds, int count, BodyPick& pick) {
     for (int b = 0; b < count; ++b)
         if (RowsAlike(v.rows, builds[b].after)) {
-            if (use < 0)
-                use = b;
+            if (!pick.named) {
+                pick.use = b;
+                pick.named = true;
+            }
             return kMainView;
         }
     for (int b = 0; b < count; ++b)
@@ -610,9 +731,9 @@ inline BodyVerdict TurnedAlready(const BodyView& v, const camera::BodyTurn* buil
 
 // A 352-byte upload (f, as uploaded) in a frame whose view builds' turns are builds (the newest first; count 0 in a
 // normal picture: nothing is read or changed): the body's own view (per-view constants in the arms' space, looking
-// within 45 degrees of the scripted camera as the game made it, not turned already) turned by the frame's build's turn
-// (use: that build, the newest if the frame hasn't one yet; a main view's upload sets it). v and fault: what was read.
-inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int count, int& use, BodyView& v,
+// within 45 degrees of the scripted camera as the game made it, of its handedness, not turned already) turned by the
+// frame's build's turn (pick: PickBuild's; a main view's upload names it). v and fault: what was read.
+inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int count, BodyPick& pick, BodyView& v,
                                    PerViewFault& fault) {
     fault = kPerViewOk;
     if (count <= 0)
@@ -620,27 +741,34 @@ inline BodyVerdict LockBodyPerView(float* f, const camera::BodyTurn* builds, int
     fault = ReadPerView(f, v);
     if (fault != kPerViewOk)
         return kNotView;
-    if (const BodyVerdict already = TurnedAlready(v, builds, count, use); already != kNotView)
+    if (const BodyVerdict already = TurnedAlready(v, builds, count, pick); already != kNotView)
         return already;
     if (!(std::fabs(v.eye[0]) < kBodyReach && std::fabs(v.eye[1]) < kBodyReach && std::fabs(v.eye[2]) < kBodyReach))
         return kElsewhere;
+    const int use = PickBuild(pick, count);
     const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
     const float* back = build.before + 6;
     if (!(v.rows[6] * back[0] + v.rows[7] * back[1] + v.rows[8] * back[2] > kBodyToward))
         return kAway;
+    if (Hand9(v.rows) != Hand9(build.before))
+        return kOtherHand;
     if (use < 0)
-        use = 0;
+        return kUnnamed;
+    pick.use = use;
     TurnPerView(f, v, build.turn);
     return kBodyTurned;
 }
 
 // An 80-byte upload's view-projection (vp, in the world) the same way: the body's own (its eye within 1.5 m of the
-// scripted camera's place, looking within 45 degrees of it, not turned already) turned by the frame's build's turn.
-inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, int count, int& use, BodyView& v) {
+// scripted camera's place, looking within 45 degrees of it, of its handedness, not turned already) turned by the
+// frame's build's turn.
+inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, int count, BodyPick& pick,
+                                     BodyView& v) {
     if (count <= 0 || !ReadViewProjection(vp, v))
         return kNotView;
-    if (const BodyVerdict already = TurnedAlready(v, builds, count, use); already != kNotView)
+    if (const BodyVerdict already = TurnedAlready(v, builds, count, pick); already != kNotView)
         return already;
+    const int use = PickBuild(pick, count);
     const camera::BodyTurn& build = builds[use < 0 ? 0 : use];
     const double d[3] = {v.eye[0] - build.place[0], v.eye[1] - build.place[1], v.eye[2] - build.place[2]};
     if (!(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < static_cast<double>(kBodyNear) * kBodyNear))
@@ -648,8 +776,11 @@ inline BodyVerdict LockBodyWorldView(float* vp, const camera::BodyTurn* builds, 
     const float* back = build.before + 6;
     if (!(v.rows[6] * back[0] + v.rows[7] * back[1] + v.rows[8] * back[2] > kBodyToward))
         return kAway;
+    if (Hand9(v.rows) != Hand9(build.before))
+        return kOtherHand;
     if (use < 0)
-        use = 0;
+        return kUnnamed;
+    pick.use = use;
     TurnViewProjection(vp, v, build.turn);
     return kBodyTurned;
 }

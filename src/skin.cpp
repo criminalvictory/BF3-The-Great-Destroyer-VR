@@ -1716,20 +1716,24 @@ bool ChangedRange(const uint8_t* data, const std::vector<uint8_t>& shadow, UINT 
 // body moved with the head (the user, 2026-11-01, the drive of Comrades: "everywhere I look, I still see my knees and
 // hands hovering"; turning the view description's first-person camera changed nothing). Each of its views is turned
 // here as it's uploaded (viewturn.h LockBodyPerView, LockBodyWorldView), by the turn the view build put on the main
-// camera, before anything else reads it: the FOV fix then widens the turned one, and the eyes' labels and the free
-// hands' places come from it, all as if the game had built it turned. A frame's uploads are turned by one build's
-// turn, latched at its first: the one the main view's own upload names (its turned camera's rows), else the newest.
-// Found by their shape, not by the game's FOV: in the drive the FOV fix found none at it (its camera's 49.5, the
-// first-person views' not), all the drive through. weapon.txt "bodylock 0" leaves them as the game made them
-// (g_bodyLock).
+// camera, before anything else reads it, and drawn at the picture's field of view (viewturn.h WidenPerView,
+// WidenViewProjection): at the game's FOV the FOV fix widens the turned one next, and the eyes' labels and the free
+// hands' places come from it, all as if the game had built it turned; at another the lock widens it itself, the FOV
+// fix finding nothing to widen (in the drive it found none at the game's 49.5, all the drive through, where in ordinary
+// play the body comes at the game's 55: left so in the 100-degree picture, it was drawn 2.3 times too big about where
+// the head looks, and off the scene as the head turned). A frame's uploads are turned by one build's turn, latched at
+// its first (viewturn::BodyPick): the one the main view's own upload names (its turned camera's rows); before it has,
+// the one as old as the last frame's main view named, given more than one (with none named all session, the newest,
+// given three); else they're left as the game made them. Only views of the scripted camera's handedness are turned.
+// Found by their shape, not by the game's FOV. weapon.txt "bodylock 0" leaves them as the game made them (g_bodyLock).
 constexpr int kBodyLatched = 4;  // view builds' turns a frame looks among (camera.cpp keeps as many)
 struct BodyLatch {
     uint32_t frame = 0xFFFFFFFFu;  // g_frameSerial it was taken at
     camera::BodyTurn builds[kBodyLatched];
-    int count = 0;     // of them (0: no scripted picture)
-    int use = -1;      // the one this frame's views are turned by (-1 not chosen yet)
-    bool named = false;    // chosen by the main view's own upload
-    bool counted = false;  // the frame counted as named or the newest taken
+    int count = 0;              // of them (0: no scripted picture)
+    viewturn::BodyPick pick;    // the one this frame's views are turned by
+    int lastNamed = -1;         // the age the last frame's main view named (the next frame's guess; -1 none yet)
+    bool counted = false;       // the frame counted as named or guessed
     uint32_t turned = 0, turnedBefore = 0;  // the body's 352-byte views turned this frame so far, and the last frame
     double firstEye[3] = {};  // this frame's first one's eye
 };
@@ -1737,10 +1741,17 @@ struct BodyLatch {
 struct BodyStats {
     uint32_t byEye[3] = {};  // the body's 352-byte views turned: eye not known, left, right
     uint32_t world = 0;      // its 80-byte view-projections in the world turned
-    uint32_t main = 0, before = 0, away = 0, elsewhere = 0;  // left as they were (viewturn::BodyVerdict)
+    // Left as they were (viewturn::BodyVerdict).
+    uint32_t main = 0, before = 0, away = 0, elsewhere = 0, otherHand = 0, unnamed = 0;
     // Frames turned by the build the main view named (by its age: the newest, the one before, ...: how far the frame
-    // drawn is behind the views built), or by the newest with none named.
-    uint32_t named[kBodyLatched] = {}, newest = 0;
+    // drawn is behind the views built), or with none named yet by the age the last frame's named (guessed), and of
+    // those how many the main view then named another for (renamed: their first views turned a build off).
+    uint32_t named[kBodyLatched] = {}, guessed[kBodyLatched] = {}, renamed = 0;
+    // The body's views widened to the picture's field of view (viewturn::kFovWidened), and the fields of view they
+    // came at (degrees, the lowest and the highest); left for the FOV fix at the game's; at the picture's already; left
+    // at their own with no picture's to widen to (the FOV fix off).
+    uint32_t widened = 0, atGame = 0, atPicture = 0, fovLeft = 0;
+    float widenedLo = 0.0f, widenedHi = 0.0f;
     double spread = 0.0;  // the most a frame's body views' eyes were apart (m)
     bool loggedView = false, loggedOdd = false;  // this scripted run's first body view and odd upload logged
 };
@@ -1754,28 +1765,31 @@ float DegreesApart(const float* a, const float* b) {  // two directions, any len
     return std::atan2(Length3(cross[0], cross[1], cross[2]), a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) * 57.29578f;
 }
 
+// A field of view in degrees from its scale (1/tan of half of it; 0 for none).
+float FovDegrees(float scale) {
+    return scale > 0.0f ? 2.0f * std::atan(1.0f / scale) * 57.29578f : 0.0f;
+}
+
 // A scripted run's first body view as the game uploaded it (made), to tell what it's made from: its eye in the arms'
 // space, its forward from the scripted camera's and from the view's first-person camera's (+0x930) as the game made
-// them, and from the turned main camera's; its field of view against the picture's and the game's own (the FOV fix
-// widens only the game's); its 22 rows.
-void LogBodyView(const float* made, const viewturn::BodyView& v, const camera::BodyTurn& build) {
+// them, and from the turned main camera's; its field of view against the picture's and the game's own, and what the
+// lock made of it (fov: viewturn::WidenPerView's); its 22 rows.
+void LogBodyView(const float* made, const viewturn::BodyView& v, const camera::BodyTurn& build, viewturn::BodyFov fov) {
     const float* p = made + viewturn::kProjectionAt;
     const float wide = g_wideScale.load(std::memory_order_relaxed), game = g_gameScale.load(std::memory_order_relaxed);
-    auto fov = [](float scale) { return scale > 0.0f ? 2.0f * std::atan(1.0f / scale) * 57.29578f : 0.0f; };
     const bool firstPerson = Length3(build.firstPersonMade[6], build.firstPersonMade[7], build.firstPersonMade[8]) > 0.5f;
     char fromFirstPerson[48] = "no first-person camera";
     if (firstPerson)
         std::snprintf(fromFirstPerson, sizeof(fromFirstPerson), "%.2f", DegreesApart(v.rows + 6, build.firstPersonMade + 6));
+    static const char* const kFov[] = {"left as it is: no picture's to widen it to", "the picture's already",
+                                       "the game's: the FOV fix widens it", "widened here to the picture's"};
     Log("Camera: the body's first-person view as the game uploaded it (this scripted run's first): its eye (%.3f %.3f "
         "%.3f) in the arms' space; its forward %.2f degrees from the scripted camera's and %s from the view's "
         "first-person camera's (+0x930) as the game made them, %.2f from the turned main camera's; its field of view "
         "%.1f by %.1f degrees (the picture's %.1f, the game's own %.1f: %s); its projection's w row %+.0f",
         v.eye[0], v.eye[1], v.eye[2], DegreesApart(v.rows + 6, build.before + 6), fromFirstPerson,
-        DegreesApart(v.rows + 6, build.after + 6), fov(p[0]), fov(p[5]), fov(wide), fov(game),
-        wide > 0.0f && Near(p[5], wide)   ? "the picture's already"
-        : game > 0.0f && Near(p[5], game) ? "the FOV fix widens it"
-                                          : "the FOV fix leaves it as it is",
-        p[14]);
+        DegreesApart(v.rows + 6, build.after + 6), FovDegrees(p[0]), FovDegrees(p[5]), FovDegrees(wide),
+        FovDegrees(game), kFov[fov], p[14]);
     for (int r = 0; r < 22; ++r)
         Log("Camera:   +%3d: %12.5f %12.5f %12.5f %12.5f", r * 16, made[4 * r], made[4 * r + 1], made[4 * r + 2],
             made[4 * r + 3]);
@@ -1803,8 +1817,9 @@ void LockBody(uint8_t* data, UINT size) {
     if (const uint32_t frame = g_frameSerial.load(std::memory_order_relaxed); l.frame != frame) {
         l.frame = frame;
         l.count = camera::BodyTurns(l.builds, kBodyLatched);
-        l.use = -1;
-        l.named = l.counted = false;
+        l.pick = viewturn::BodyPick{};
+        l.pick.guess = l.lastNamed;
+        l.counted = false;
         l.turnedBefore = l.turned;
         l.turned = 0;
     }
@@ -1814,23 +1829,32 @@ void LockBody(uint8_t* data, UINT size) {
         std::memcpy(made, f, sizeof(made));
     viewturn::BodyView v;
     viewturn::PerViewFault fault = viewturn::kPerViewOk;
-    const int useWas = l.use;
-    const viewturn::BodyVerdict verdict = perView ? viewturn::LockBodyPerView(f, l.builds, l.count, l.use, v, fault)
-                                                  : viewturn::LockBodyWorldView(f, l.builds, l.count, l.use, v);
+    const viewturn::BodyPick was = l.pick;
+    const viewturn::BodyVerdict verdict = perView ? viewturn::LockBodyPerView(f, l.builds, l.count, l.pick, v, fault)
+                                                  : viewturn::LockBodyWorldView(f, l.builds, l.count, l.pick, v);
     switch (verdict) {
     case viewturn::kMainView:
         ++s.main;
-        if (useWas < 0 && l.use >= 0)
-            l.named = true;
+        if (!was.named && l.pick.named) {
+            l.lastNamed = l.pick.use;
+            // The frame's views turned before it by the last frame's age: by another build than its own?
+            s.renamed += was.use >= 0 && was.use != l.pick.use;
+        }
         return;
     case viewturn::kTurnedBefore:
         ++s.before;
-        return;
+        break;  // already turned (the view description's first-person camera), but at the picture's FOV too
     case viewturn::kAway:
         ++s.away;
         return;
     case viewturn::kElsewhere:
         ++s.elsewhere;
+        return;
+    case viewturn::kOtherHand:
+        ++s.otherHand;
+        return;
+    case viewturn::kUnnamed:
+        ++s.unnamed;
         return;
     case viewturn::kNotView:
         if (!perView || fault == viewturn::kPerViewOk)
@@ -1854,9 +1878,25 @@ void LockBody(uint8_t* data, UINT size) {
     case viewturn::kBodyTurned:
         break;
     }
+    // At the picture's field of view, as the FOV fix makes a first-person view: at the game's it widens it next.
+    const float wide = g_wideScale.load(std::memory_order_relaxed), game = g_gameScale.load(std::memory_order_relaxed);
+    float from = 0.0f;
+    const viewturn::BodyFov fov = perView ? viewturn::WidenPerView(f, wide, game, from)
+                                          : viewturn::WidenViewProjection(f, wide, game, from);
+    if (fov == viewturn::kFovWidened) {
+        const float degrees = FovDegrees(from);
+        s.widenedLo = s.widened ? std::min(s.widenedLo, degrees) : degrees;
+        s.widenedHi = s.widened ? std::max(s.widenedHi, degrees) : degrees;
+        ++s.widened;
+    }
+    s.atGame += fov == viewturn::kFovGame;
+    s.atPicture += fov == viewturn::kFovPicture;
+    s.fovLeft += fov == viewturn::kFovLeft;
+    if (verdict == viewturn::kTurnedBefore)
+        return;
     if (!l.counted) {
         l.counted = true;
-        ++(l.named ? s.named[l.use] : s.newest);
+        ++(l.pick.named ? s.named[l.pick.use] : s.guessed[l.pick.use]);
     }
     if (!perView) {
         ++s.world;
@@ -1875,7 +1915,7 @@ void LockBody(uint8_t* data, UINT size) {
     }
     if (keep && !s.loggedView) {
         s.loggedView = true;
-        LogBodyView(made, v, l.builds[l.use]);
+        LogBodyView(made, v, l.builds[l.pick.use], fov);
     }
 }
 
@@ -1894,23 +1934,41 @@ void LogBodyLock() {
     }
     const uint32_t notPerView = g_bodyNotPerView.exchange(0, std::memory_order_relaxed);
     const uint32_t turned = s.byEye[0] + s.byEye[1] + s.byEye[2];
+    auto sum = [](const uint32_t* n) { return n[0] + n[1] + n[2] + n[3]; };
     if (turned || s.world) {
         char unknown[48] = "";
         if (s.byEye[0])
             std::snprintf(unknown, sizeof(unknown), ", %u eye not known", s.byEye[0]);
+        char fov[200] = "";
+        if (s.widened) {
+            const float wide = g_wideScale.load(std::memory_order_relaxed);
+            const float game = g_gameScale.load(std::memory_order_relaxed);
+            char from[48];
+            if (s.widenedHi - s.widenedLo >= 0.05f)
+                std::snprintf(from, sizeof(from), "%.1f to %.1f", s.widenedLo, s.widenedHi);
+            else
+                std::snprintf(from, sizeof(from), "%.1f", s.widenedLo);
+            std::snprintf(fov, sizeof(fov),
+                          "%u widened here from %s degrees to the picture's %.1f (the FOV fix looks for the game's "
+                          "%.1f), ",
+                          s.widened, from, FovDegrees(wide), FovDegrees(game));
+        }
         Log("Camera: the body's first-person views turned with the head: %u uploads this second (%u left eye, %u right "
-            "eye%s); %u of its view-projections in the world (80 bytes) too; frames turned by the view build the main "
-            "view's own upload named %u (the newest %u, the one before %u, older %u), by the newest with none named "
-            "%u; left as they were: %u the main view's, %u turned already, %u looking away from the scripted camera, "
-            "%u other views; a frame's body views' eyes up to %.0f mm apart",
-            turned, s.byEye[1], s.byEye[2], unknown, s.world, s.named[0] + s.named[1] + s.named[2] + s.named[3],
-            s.named[0], s.named[1], s.named[2] + s.named[3], s.newest, s.main, s.before, s.away, s.elsewhere,
-            s.spread * 1000.0);
+            "eye%s); %u of its view-projections in the world (80 bytes) too; their field of view: %s%u at the game's "
+            "for the FOV fix, %u at the picture's already, %u left at their own (the FOV fix off); frames turned by "
+            "the view build the main view's own upload named %u (the newest %u, the one before %u, older %u), with "
+            "none named yet by the age the last frame's named %u (%u of them then named another); left as they were: "
+            "%u the main view's, %u turned already, %u looking away from the scripted camera, %u other views, %u of "
+            "the other handedness, %u with no build to turn them by yet; a frame's body views' eyes up to %.0f mm "
+            "apart",
+            turned, s.byEye[1], s.byEye[2], unknown, s.world, fov, s.atGame, s.atPicture, s.fovLeft, sum(s.named),
+            s.named[0], s.named[1], s.named[2] + s.named[3], sum(s.guessed), s.renamed, s.main, s.before, s.away,
+            s.elsewhere, s.otherHand, s.unnamed, s.spread * 1000.0);
     } else if (on) {
         Log("Camera: the body's first-person views: none seen this second in a scripted picture (left as they were: %u "
-            "the main view's, %u turned already, %u looking away from the scripted camera, %u other views; %u 352-byte "
-            "uploads not per-view constants)",
-            s.main, s.before, s.away, s.elsewhere, notPerView);
+            "the main view's, %u turned already, %u looking away from the scripted camera, %u other views, %u of the "
+            "other handedness, %u with no build to turn them by yet; %u 352-byte uploads not per-view constants)",
+            s.main, s.before, s.away, s.elsewhere, s.otherHand, s.unnamed, notPerView);
     }
 }
 

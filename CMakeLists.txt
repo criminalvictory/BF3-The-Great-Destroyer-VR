@@ -136,7 +136,9 @@ target_compile_definitions(steertest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 # far a 1-degree turn of a scripted camera turns its level yaw (the review's finding), the drive of Comrades as at
 # 833abbd, the yaw going on from frame to frame (spins, pans, cuts, tumbling, a frame's cameras alike); the body's own
 # views turned where they're uploaded (skin.cpp's body lock): the math, which uploads are turned, a normal picture's
-# left bit for bit, the FOV fix after it as before, the time.
+# left bit for bit, the FOV fix after it as before, the time; and the review's findings: the body at the picture's
+# field of view (the knees on the scene as the head turns), a mirrored camera's twin left alone, a frame's build (a
+# normal picture drawn behind left bit for bit).
 add_executable(viewturntest tools/viewturntest.cpp)
 target_compile_definitions(viewturntest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 

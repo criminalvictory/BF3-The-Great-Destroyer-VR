@@ -81,11 +81,23 @@
 //      the scene they were drawn over (0.001 deg); its view-projection alone in the world (80 bytes) turned alike:
 //      the same rows, the eye kept, what each row gives at the eye kept, points near the eye where the turned view
 //      shows them (2e-4 of the picture). Which uploads are turned (LockBodyPerView, LockBodyWorldView): the body's own
-//      by the frame's view build's turn, the newest or the one the main view's own upload names; the main view's
+//      by the frame's view build's turn, the one the main view's own upload names, or as old as the last frame's main
+//      view named given more than one build (with none named all session, the newest given three); the main view's
 //      (its turned camera's rows, in the world or not), the turned first-person camera's, one looking away, one
-//      elsewhere, and what isn't a view (random, orthographic, not the projection's product, +240 otherwise, NaN,
-//      infinite, zeros) left bit for bit. A normal picture's (no scripted build) all left bit for bit. The FOV fix
-//      after the turn as before it (1e-6). The time
+//      elsewhere, one with no build to turn it by, and what isn't a view (random, orthographic, not the projection's
+//      product, +240 otherwise, NaN, infinite, zeros) left bit for bit. A normal picture's (no scripted build) all left
+//      bit for bit. The FOV fix after the turn as before it (1e-6). The time. Then the review of a8f26b1's findings
+//      (2026-11-01), through skin.cpp's order (the lock, then the FOV fix, its rule copied): f, the body's field of
+//      view (the game draws the body at 55, and in the drive the FOV fix found nothing at the game's 49.5): at another
+//      made the picture's (its scale 1e-6, its aspect and x offset kept, the view-projections remade from the
+//      projection, the eye kept, the rest bit for bit, the FOV fix finding nothing more), at the game's left for the
+//      FOV fix and widened by it as before, at the picture's or with the FOV fix off left, its world view-projection
+//      alike; g, the knees, hands and gun on the scene as the head turns at the picture's field of view (0.001 deg; the
+//      review's case: turned alone at 55, 23 degrees off); h, a mirrored camera drawn as its unmirrored twin: the
+//      body's views of the twin's kind and the main view's own left bit for bit (turned by the mirrored camera's turn,
+//      88 degrees off), those of its own kind turned as before; i, a frame's build, over runs drawn 0 to 2 builds
+//      behind, the body before or after the main view: a normal picture drawn while a run's first builds come left bit
+//      for bit, the run's body turned by its own picture's build bit for bit once a main view has named one
 // Usage: viewturntest   The exit code is the number of failed checks.
 
 #include <windows.h>
@@ -1994,6 +2006,72 @@ void RandomProjection(double* p, bool rh) {
     MakeProjection(p, Uniform(40, 110), Uniform(0.9, 1.1), Coin(0.3) ? Uniform(-0.05, 0.05) : 0.0, Uniform(0.01, 0.1),
                    Uniform(100, 5000), rh);
 }
+// A field of view's scale (1/tan of half of it), as skin.cpp's FOV fix keeps one.
+float ScaleOf(double fovDeg) {
+    return static_cast<float>(1.0 / std::tan(Rad(fovDeg) / 2));
+}
+// skin.cpp's FOV fix (RescaleProjections) on an upload, its rule copied: every matrix at a 16-byte register whose x and
+// y columns, or rows, are at the game's scale and whose w column or row is unit has those columns or rows times the
+// picture's scale over the game's. The matrices it widened.
+int FovFix(float* f, int floats, float game, float wide) {
+    auto within = [](float a, float b) { return std::fabs(a - b) < 0.002f * b; };  // skin.cpp Near
+    auto length = [](float x, float y, float z) { return std::sqrt(x * x + y * y + z * z); };
+    if (!(game > 0.0f && wide > 0.0f) || within(wide, game))
+        return 0;
+    const float k = wide / game, lo = game * game * 0.995f, hi = game * game * 1.005f;
+    int widened = 0;
+    for (int i = 0; i + 16 <= floats; i += 4) {
+        float* m = f + i;
+        const float column = m[0] * m[0] + m[4] * m[4] + m[8] * m[8];
+        const float row = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+        if (!(column > lo && column < hi) && !(row > lo && row < hi))
+            continue;
+        if (within(length(m[0], m[4], m[8]), game) && within(length(m[1], m[5], m[9]), game) &&
+            within(length(m[3], m[7], m[11]), 1.0f)) {
+            for (int r = 0; r < 4; ++r)
+                m[4 * r] *= k, m[4 * r + 1] *= k;
+        } else if (within(length(m[0], m[1], m[2]), game) && within(length(m[4], m[5], m[6]), game) &&
+                   within(length(m[12], m[13], m[14]), 1.0f)) {
+            for (int c = 0; c < 4; ++c)
+                m[c] *= k, m[4 + c] *= k;
+        } else {
+            continue;
+        }
+        ++widened;
+        i += 12;
+    }
+    return widened;
+}
+// An upload through skin.cpp's body lock and FOV fix in their order (HandleUpload: LockBody, then RescaleProjections):
+// turned or left by LockBodyPerView or LockBodyWorldView, the body's own turned or turned before made the picture's
+// field of view (WidenPerView, WidenViewProjection), then the FOV fix. fov: what the lock made of its field of view
+// (kFovLeft for one it didn't look at); widened: the matrices the FOV fix widened after.
+viewturn::BodyVerdict ThroughSkin(float* f, bool perView, const camera::BodyTurn* builds, int count,
+                                  viewturn::BodyPick& pick, float wide, float game, viewturn::BodyFov* fov = nullptr,
+                                  int* widened = nullptr) {
+    viewturn::BodyView v;
+    viewturn::PerViewFault fault;
+    const viewturn::BodyVerdict verdict = perView ? viewturn::LockBodyPerView(f, builds, count, pick, v, fault)
+                                                  : viewturn::LockBodyWorldView(f, builds, count, pick, v);
+    viewturn::BodyFov made = viewturn::kFovLeft;
+    float from = 0.0f;
+    if (verdict == viewturn::kBodyTurned || verdict == viewturn::kTurnedBefore)
+        made = perView ? viewturn::WidenPerView(f, wide, game, from) : viewturn::WidenViewProjection(f, wide, game, from);
+    const int n = FovFix(f, perView ? kUploadFloats : kWorldFloats, game, wide);
+    if (fov)
+        *fov = made;
+    if (widened)
+        *widened = n;
+    return verdict;
+}
+// Where a point at shows in the picture through a view-projection (rows, points as columns): clip x and y over w.
+void NdcOf(const float* vp, const V3& at, double& x, double& y) {
+    double clip[4];
+    for (int r = 0; r < 4; ++r)
+        clip[r] = vp[4 * r] * at.x + vp[4 * r + 1] * at.y + vp[4 * r + 2] * at.z + vp[4 * r + 3];
+    x = clip[0] / clip[3];
+    y = clip[1] / clip[3];
+}
 
 void Check16() {
     // The knees and the gun as the game put them (right, up, back from the first-person camera).
@@ -2216,45 +2294,57 @@ void Check16() {
         const int b = static_cast<int>(Uniform(0, count - 1e-9));
         const V3 place(builds[b].place[0], builds[b].place[1], builds[b].place[2]);
         // The main view's own (its turned camera's rows), in the world and an eye's shift along its right, or in the
-        // arms' space: left as it is, and it names its build for the frame.
+        // arms' space: left as it is, and it names its build for the frame, whatever the frame guessed or turned by.
         {
             CameraOf(builds[b].after, place, cam);
             const V3 at = Coin() ? place + Row9(builds[b].after, 0) * 0.032 : RandomArmsEye();
             MakeUpload(f, cam, at, p, rh, Coin());
             std::memcpy(was, f, sizeof(f));
-            int use = -1;
-            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kMainView, f, was, kUploadFloats);
-            useBad += use != b;
+            viewturn::BodyPick pick;
+            pick.guess = static_cast<int>(Uniform(0, 4));
+            pick.use = Coin() ? -1 : pick.guess;
+            expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault), viewturn::kMainView, f, was, kUploadFloats);
+            useBad += pick.use != b || !pick.named;
         }
         // The turned first-person camera's: left as it is, naming nothing.
         {
             CameraOf(builds[b].firstPerson, place, cam);
             MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
             std::memcpy(was, f, sizeof(f));
-            int use = -1;
-            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kTurnedBefore, f, was,
+            viewturn::BodyPick pick;
+            expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault), viewturn::kTurnedBefore, f, was,
                    kUploadFloats);
-            useBad += use != -1;
+            useBad += pick.use != -1 || pick.named;
         }
-        // The body's own (a few degrees from the newest scripted camera), with no main view first: turned by the newest
-        // build's turn; after the main view of build b: by build b's.
+        // The body's own (a few degrees from its build's scripted camera), with no main view first: turned by the build
+        // as old as the last frame's main view named (the guess, 0 to 4), given more than one build and that one among
+        // them, else left as it is (the run's first build: the frame drawn may be the last normal one; the frame
+        // drawn from before the run); with no guess (none named all session), by the newest given three builds;
+        // after the main view of build b: by build b's.
         for (int named = 0; named < 2; ++named) {
+            viewturn::BodyPick pick;
+            pick.guess = static_cast<int>(Uniform(0, 6)) - 1;
+            if (named)
+                pick.use = b, pick.named = true;
+            const int by = named           ? b
+                           : pick.guess < 0 ? (count >= 3 ? 0 : -1)
+                                            : (count >= 2 && pick.guess < count ? pick.guess : -1);
             float rows[16];
-            CameraOf(builds[named ? b : 0].before, place, rows);
+            CameraOf(builds[by < 0 ? 0 : by].before, place, rows);
             TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 10))),
                              cam);
             MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
             std::memcpy(was, f, sizeof(f));
-            int use = named ? b : -1;
             float alike[kUploadFloats];
             std::memcpy(alike, f, sizeof(f));
             viewturn::BodyView read;
             viewturn::ReadPerView(alike, read);
-            viewturn::TurnPerView(alike, read, builds[named ? b : 0].turn);
-            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kBodyTurned, f, was,
-                   kUploadFloats);
+            if (by >= 0)
+                viewturn::TurnPerView(alike, read, builds[by].turn);
+            expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault),
+                   by >= 0 ? viewturn::kBodyTurned : viewturn::kUnnamed, f, was, kUploadFloats);
             turnBad += std::memcmp(f, alike, sizeof(f)) != 0;
-            useBad += use != (named ? b : 0);
+            useBad += pick.use != by || pick.named != (named != 0);
         }
         // Looking away from the scripted camera (60 to 180 degrees): left as it is.
         {
@@ -2265,8 +2355,8 @@ void Check16() {
             if (Dot(back, Row9(builds[0].before, 2)) < 0.6) {
                 MakeUpload(f, cam, RandomArmsEye(), p, rh, Coin());
                 std::memcpy(was, f, sizeof(f));
-                int use = -1;
-                expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kAway, f, was, kUploadFloats);
+                viewturn::BodyPick pick;
+                expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault), viewturn::kAway, f, was, kUploadFloats);
             }
         }
         // Another view in the world: left as it is.
@@ -2274,8 +2364,8 @@ void Check16() {
             MakeCamera(cam, RandomRotation(), 1, RandomPlace(), false);
             MakeUpload(f, cam, place + V3(Uniform(-50, 50), 6, Uniform(-50, 50)), p, rh, Coin());
             std::memcpy(was, f, sizeof(f));
-            int use = -1;
-            expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kElsewhere, f, was, kUploadFloats);
+            viewturn::BodyPick pick;
+            expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault), viewturn::kElsewhere, f, was, kUploadFloats);
         }
         // Not per-view constants: left as they are, each for its reason.
         {
@@ -2326,16 +2416,17 @@ void Check16() {
                     break;
                 }
                 std::memcpy(was, f, sizeof(f));
-                int use = -1;
-                expect(viewturn::LockBodyPerView(f, builds, count, use, v, fault), viewturn::kNotView, f, was,
+                viewturn::BodyPick pick;
+                expect(viewturn::LockBodyPerView(f, builds, count, pick, v, fault), viewturn::kNotView, f, was,
                        kUploadFloats);
                 faultBad += fault != want;
-                useBad += use != -1;
+                useBad += pick.use != -1 || pick.named;
             }
         }
         // The view-projections alone in the world (80 bytes): the body's (its eye by the scripted camera's place) turned
-        // by the frame's build's turn; the main view's, the turned first-person camera's, one away from the place, one
-        // looking away, and random numbers left as they are.
+        // by the frame's build's turn (the newest, guessed 0, given more than one build; else left as it is); the main
+        // view's, the turned first-person camera's, one away from the place, one looking away, and random numbers left
+        // as they are.
         {
             float w[kWorldFloats], wasWorld[kWorldFloats], rows[16];
             CameraOf(builds[0].before, place, rows);
@@ -2348,48 +2439,52 @@ void Check16() {
             float alike[kWorldFloats];
             std::memcpy(alike, w, sizeof(w));
             viewturn::BodyView read;
-            if (viewturn::ReadViewProjection(alike, read))
+            if (count >= 2 && viewturn::ReadViewProjection(alike, read))
                 viewturn::TurnViewProjection(alike, read, builds[0].turn);
-            int use = -1;
-            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kBodyTurned, w, wasWorld, kWorldFloats);
+            viewturn::BodyPick pick;
+            pick.guess = 0;
+            expect(viewturn::LockBodyWorldView(w, builds, count, pick, v),
+                   count >= 2 ? viewturn::kBodyTurned : viewturn::kUnnamed, w, wasWorld, kWorldFloats);
             turnBad += std::memcmp(w, alike, sizeof(w)) != 0;
-            useBad += use != 0;
+            useBad += pick.use != (count >= 2 ? 0 : -1);
             MakeWorldUpload(w, cam, by0 + V3(0, 3, 0), p, rh);  // 3 m from the scripted camera
             std::memcpy(wasWorld, w, sizeof(w));
-            use = -1;
-            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kElsewhere, w, wasWorld, kWorldFloats);
+            pick = viewturn::BodyPick{};
+            expect(viewturn::LockBodyWorldView(w, builds, count, pick, v), viewturn::kElsewhere, w, wasWorld, kWorldFloats);
             CameraOf(builds[b].after, place, cam);
             MakeWorldUpload(w, cam, place, p, rh);
             std::memcpy(wasWorld, w, sizeof(w));
-            use = -1;
-            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kMainView, w, wasWorld, kWorldFloats);
-            useBad += use != b;
+            pick = viewturn::BodyPick{};
+            expect(viewturn::LockBodyWorldView(w, builds, count, pick, v), viewturn::kMainView, w, wasWorld, kWorldFloats);
+            useBad += pick.use != b || !pick.named;
             CameraOf(builds[b].firstPerson, place, cam);
             MakeWorldUpload(w, cam, place, p, rh);
             std::memcpy(wasWorld, w, sizeof(w));
-            use = -1;
-            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kTurnedBefore, w, wasWorld,
+            pick = viewturn::BodyPick{};
+            expect(viewturn::LockBodyWorldView(w, builds, count, pick, v), viewturn::kTurnedBefore, w, wasWorld,
                    kWorldFloats);
             TurnedInOwnFrame(rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(60, 180))), cam);
             if (Dot(Row(cam, 2), Row9(builds[0].before, 2)) < 0.6) {
                 MakeWorldUpload(w, cam, byCamera, p, rh);
                 std::memcpy(wasWorld, w, sizeof(w));
-                use = -1;
-                expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kAway, w, wasWorld, kWorldFloats);
+                pick = viewturn::BodyPick{};
+                expect(viewturn::LockBodyWorldView(w, builds, count, pick, v), viewturn::kAway, w, wasWorld, kWorldFloats);
             }
             for (float& x : w)
                 x = static_cast<float>(Uniform(-2, 2));
             std::memcpy(wasWorld, w, sizeof(w));
-            use = -1;
-            expect(viewturn::LockBodyWorldView(w, builds, count, use, v), viewturn::kNotView, w, wasWorld, kWorldFloats);
+            pick = viewturn::BodyPick{};
+            expect(viewturn::LockBodyWorldView(w, builds, count, pick, v), viewturn::kNotView, w, wasWorld, kWorldFloats);
         }
     }
     Report("16b", "which uploads are turned: the body's own by the frame's build's turn; the main view's, the turned "
-                  "first-person camera's, one away, one elsewhere and what isn't a view left bit for bit",
+                  "first-person camera's, one away, one elsewhere, one with no build to turn it by and what isn't a "
+                  "view left bit for bit",
            verdictBad == 0 && changedBad == 0 && turnBad == 0 && useBad == 0 && faultBad == 0,
            "%d uploads in 4000 frames of 1 to 4 view builds: %d taken for another kind, %d of those left as they are "
-           "changed, %d of the body's turned otherwise than by its frame's build's turn (the newest, or the one the main "
-           "view named), %d frames' builds chosen wrong, %d not read for another reason",
+           "changed, %d of the body's turned otherwise than by its frame's build's turn (the one the main view named, "
+           "or as old as the last frame's, given more than one), %d frames' builds chosen wrong, %d not read for "
+           "another reason",
            cases, verdictBad, changedBad, turnBad, useBad, faultBad);
 
     // c. A normal picture (no scripted view build: the player's camera, an unturned one, "cutsceneturn 0", the look
@@ -2421,12 +2516,13 @@ void Check16() {
                 x = static_cast<float>(Uniform(-2, 2));
         std::memcpy(was, f, sizeof(f));
         std::memcpy(wasWorld, w, sizeof(w));
-        int use = -1;
+        viewturn::BodyPick pick;
+        pick.guess = static_cast<int>(Uniform(0, 4));
         viewturn::BodyView v;
         viewturn::PerViewFault fault;
-        normalTaken += viewturn::LockBodyPerView(f, builds, 0, use, v, fault) != viewturn::kNotView;
-        normalTaken += viewturn::LockBodyWorldView(w, builds, 0, use, v) != viewturn::kNotView;
-        normalTaken += use != -1;
+        normalTaken += viewturn::LockBodyPerView(f, builds, 0, pick, v, fault) != viewturn::kNotView;
+        normalTaken += viewturn::LockBodyWorldView(w, builds, 0, pick, v) != viewturn::kNotView;
+        normalTaken += pick.use != -1 || pick.named;
         normalChanged += std::memcmp(f, was, sizeof(f)) != 0;
         normalChanged += std::memcmp(w, wasWorld, sizeof(w)) != 0;
         normalUploads += 2;
@@ -2528,30 +2624,481 @@ void Check16() {
         };
         viewturn::BodyView v;
         viewturn::PerViewFault fault;
+        const float wide = static_cast<float>(1.0 / std::tan(Rad(100) / 2)),
+                    game = static_cast<float>(1.0 / std::tan(Rad(49.5) / 2));
+        float from = 0.0f;
         const double body = time([&](int i) {
             float f[kUploadFloats];
             std::memcpy(f, bodies[i], sizeof(f));
-            int use = -1;
-            viewturn::LockBodyPerView(f, builds, 4, use, v, fault);
+            viewturn::BodyPick pick;
+            if (viewturn::LockBodyPerView(f, builds, 4, pick, v, fault) == viewturn::kBodyTurned)
+                viewturn::WidenPerView(f, wide, game, from);
             sink = sink + f[20];
         });
         const double notView = time([&](int i) {
-            int use = -1;
-            viewturn::LockBodyPerView(junk[i], builds, 4, use, v, fault);
+            viewturn::BodyPick pick;
+            viewturn::LockBodyPerView(junk[i], builds, 4, pick, v, fault);
             sink = sink + junk[i][20];
         });
         const double world = time([&](int i) {
             float w[kWorldFloats];
             std::memcpy(w, worlds[i], sizeof(w));
-            int use = -1;
-            viewturn::LockBodyWorldView(w, builds, 4, use, v);
+            viewturn::BodyPick pick;
+            if (viewturn::LockBodyWorldView(w, builds, 4, pick, v) == viewturn::kBodyTurned)
+                viewturn::WidenViewProjection(w, wide, game, from);
             sink = sink + w[3];
         });
         Report("16e", "the time the body lock takes an upload", body < 2.0 && notView < 2.0 && world < 2.0,
-               "%.3f us a body view read and turned, %.3f a 352-byte upload that isn't per-view constants, %.3f a world "
-               "view-projection (< 2)",
+               "%.3f us a body view read, turned and widened, %.3f a 352-byte upload that isn't per-view constants, "
+               "%.3f a world view-projection (< 2)",
                body, notView, world);
     }
+}
+
+// The ways out of the body's camera (right, up, back) its knees, hands and gun lie: the knees 15 to 35 degrees below
+// its forward, the hands and the gun 10 to 20 below and to the side.
+const V3 kBodyWays[] = {{0.12, -0.27, -1.0}, {0.12, -0.47, -1.0}, {-0.12, -0.70, -1.0},
+                        {-0.15, -0.36, -1.0}, {0.20, -0.15, -1.0}, {-0.25, -0.20, -1.0}};
+
+// ---- 16f, 16g. The body's field of view (the review's finding, 2026-11-01) ----
+// In the drive the FOV fix found nothing at the game's 49.5, and a body drawn at another field of view in the picture's
+// 100 moves off the scene as the head turns. Through skin.cpp's order (the lock, then the FOV fix): a body view at
+// another (BF3's own 55, or 40 to 110 degrees, square or not, an x offset or not) made the picture's: the projection's
+// scale the picture's, its aspect and x offset kept, the view-projections the projection times the turned view, the
+// eye kept, the view and the rest bit for bit as turned, and the FOV fix finding nothing more to widen; at the game's,
+// left for the FOV fix, which widens it as before (as widened here: 1e-6); at the picture's already, or with the FOV
+// fix off, left at its own. Its view-projection in the world alike. The knees, hands and gun on the scene they were
+// drawn over as the head turns (the review's check: the head 10 to 30 degrees down and up to 30 round; and any head):
+// widened, as at the picture's field of view (0.001 deg); turned alone (a8f26b1) and as the game made them, off it.
+void Check16Fov() {
+    const float game = ScaleOf(49.5);
+    int kindBad = 0, keptBad = 0, fixBad = 0, notFinite = 0, unturned = 0, runs = 0, worldRuns = 0;
+    double scaleOff = 0, aspectOff = 0, offsetOff = 0, vpOff = 0, fromEyeOff = 0, eyeOff = 0, gameOff = 0,
+           worldScaleOff = 0, worldRowsOff = 0, worldEyeOff = 0;
+    for (int n = 0; n < 20000; ++n) {
+        float cam[16], fp[16];
+        const int hand = Coin(0.25) ? -1 : 1;
+        MakeCamera(cam, RandomScripted(80), hand, RandomPlace(), true);
+        TurnedInOwnFrame(cam,
+                         Coin(0.3) ? Q{}
+                                   : AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 10))),
+                         fp);
+        fp[3] = fp[7] = fp[11] = 0.0f;
+        camera::BodyTurn builds[3];
+        builds[0] = MakeBuild(cam, RandomHead(), hand, hand < 0 && Coin(0.8), nullptr, nullptr);
+        builds[1] = builds[2] = builds[0];
+        const double wideDeg = Coin(0.7) ? 100.0 : Uniform(80, 120);
+        const float wide = ScaleOf(wideDeg);
+        // The body's: 0 another, 1 the picture's, 2 the game's (square, no offset: as the FOV fix finds one), 3 any
+        // with the FOV fix off.
+        const int kind = n % 4;
+        double bodyDeg = kind == 1 ? wideDeg : kind == 2 ? 49.5 : n % 8 == 0 ? 55.0 : Uniform(40, 110);
+        if (kind == 0 && (std::fabs(bodyDeg - wideDeg) < 1.0 || std::fabs(bodyDeg - 49.5) < 1.0))
+            bodyDeg = wideDeg > 70 ? 60.0 : 90.0;
+        const bool square = kind == 2 || Coin(0.5);
+        const double aspect = square ? 1.0 : Uniform(0.9, 1.1), ox = kind == 2 || Coin(0.7) ? 0.0 : Uniform(-0.05, 0.05);
+        const bool rh = Coin(0.8);
+        double p[16];
+        MakeProjection(p, bodyDeg, aspect, ox, Uniform(0.01, 0.1), Uniform(100, 5000), rh);
+        const V3 eye = RandomArmsEye();
+        float f[kUploadFloats], turned[kUploadFloats];
+        MakeUpload(f, fp, eye, p, rh, Coin());
+        // As the lock turns it alone (a8f26b1), to hold it against.
+        std::memcpy(turned, f, sizeof(f));
+        {
+            viewturn::BodyPick pick;
+            viewturn::BodyView v;
+            viewturn::PerViewFault fault;
+            unturned += viewturn::LockBodyPerView(turned, builds, 3, pick, v, fault) != viewturn::kBodyTurned;
+        }
+        ++runs;
+        viewturn::BodyPick pick;
+        viewturn::BodyFov fov = viewturn::kFovLeft;
+        int fixed = 0;
+        const float wideNow = kind == 3 ? 0.0f : wide, gameNow = kind == 3 ? 0.0f : game;
+        if (ThroughSkin(f, true, builds, 3, pick, wideNow, gameNow, &fov, &fixed) != viewturn::kBodyTurned) {
+            ++unturned;
+            continue;
+        }
+        const viewturn::BodyFov want[] = {viewturn::kFovWidened, viewturn::kFovPicture, viewturn::kFovGame,
+                                          viewturn::kFovLeft};
+        kindBad += fov != want[kind];
+        for (float x : f)
+            notFinite += !std::isfinite(x);
+        const float* proj = f + viewturn::kProjectionAt;
+        const float* view = f + viewturn::kViewAt;
+        if (kind == 0) {
+            // Widened here: its scale the picture's, its aspect and x offset as they came, the view-projections remade
+            // alike, the eye kept; the view and everything but the x and y rows as turned, bit for bit; the FOV fix
+            // finding nothing more.
+            const float* was = turned + viewturn::kProjectionAt;
+            scaleOff = std::max(scaleOff, std::fabs(viewturn::RowLength(proj + 4) / wide - 1.0));
+            aspectOff = std::max(aspectOff, std::fabs((proj[0] / proj[5]) / (was[0] / was[5]) - 1.0));
+            offsetOff = std::max(offsetOff, static_cast<double>(std::fabs(proj[2] / proj[0] - was[2] / was[0])));
+            double pv[16], fe[16];
+            ProductOf(proj, view, pv);
+            vpOff = std::max(vpOff, RelOff(f + viewturn::kViewProjectionAt, pv, 16));
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 3; ++c)
+                    fe[4 * r + c] = static_cast<double>(proj[4 * r]) * view[c] +
+                                    static_cast<double>(proj[4 * r + 1]) * view[4 + c] +
+                                    static_cast<double>(proj[4 * r + 2]) * view[8 + c];
+                fe[4 * r + 3] = proj[4 * r + 3];
+            }
+            fromEyeOff = std::max(fromEyeOff, RelOff(f + viewturn::kFromEyeAt, fe, 16));
+            eyeOff = std::max(eyeOff, Len(EyeOf(f + viewturn::kViewProjectionAt) - eye));
+            // +0 to +112 (the view in it), +304 on (the eye in it); the z and w rows of the three matrices.
+            bool kept = std::memcmp(f, turned, viewturn::kProjectionAt * sizeof(float)) == 0 &&
+                        std::memcmp(f + 76, turned + 76, (kUploadFloats - 76) * sizeof(float)) == 0;
+            for (int at : {viewturn::kProjectionAt, viewturn::kViewProjectionAt, viewturn::kFromEyeAt})
+                kept = kept && std::memcmp(f + at + 8, turned + at + 8, 8 * sizeof(float)) == 0;
+            keptBad += !kept;
+            fixBad += fixed != 0;
+        } else if (kind == 2) {
+            // The game's: the lock leaves its field of view, the FOV fix widens it (the projection, the
+            // view-projection, the one for points less the eye), as widened by the rule (1e-6), to the picture's.
+            float alike[kUploadFloats];
+            std::memcpy(alike, turned, sizeof(alike));
+            Rescale(alike, wide / game);
+            double want16[kUploadFloats];
+            for (int i = 0; i < kUploadFloats; ++i)
+                want16[i] = alike[i];
+            gameOff = std::max(gameOff, RelOff(f, want16, kUploadFloats));
+            scaleOff = std::max(scaleOff, std::fabs(viewturn::RowLength(proj + 4) / wide - 1.0));
+            fixBad += fixed != 3;
+        } else {
+            // The picture's already, or the FOV fix off: as turned, bit for bit, the FOV fix finding nothing.
+            keptBad += std::memcmp(f, turned, sizeof(f)) != 0;
+            fixBad += fixed != 0;
+        }
+        // Its view-projection alone in the world (80 bytes), its eye by the scripted camera's place.
+        if (kind == 0 || kind == 2) {
+            const V3 place(builds[0].place[0], builds[0].place[1], builds[0].place[2]);
+            const V3 eyeWorld = place + V3(Uniform(-0.5, 0.5), Uniform(-0.5, 0.5), Uniform(-0.5, 0.5));
+            float w[kWorldFloats], wasWorld[kWorldFloats];
+            MakeWorldUpload(w, fp, eyeWorld, p, rh);
+            std::memcpy(wasWorld, w, sizeof(w));
+            viewturn::BodyPick worldPick;
+            viewturn::BodyFov worldFov = viewturn::kFovLeft;
+            int worldFixed = 0;
+            ++worldRuns;
+            if (ThroughSkin(w, false, builds, 3, worldPick, wide, game, &worldFov, &worldFixed) != viewturn::kBodyTurned) {
+                ++unturned;
+                continue;
+            }
+            kindBad += worldFov != want[kind];
+            fixBad += worldFixed != (kind == 2 ? 1 : 0);
+            worldScaleOff = std::max(worldScaleOff, std::fabs(viewturn::RowLength(w + 4) / wide - 1.0));
+            // Its turn and scales the arms' view's, row by row (the arms' space has the world's axes).
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 3; ++c) {
+                    const double arms = f[viewturn::kViewProjectionAt + 4 * r + c];
+                    worldRowsOff = std::max(worldRowsOff, std::fabs(w[4 * r + c] - arms) / (1.0 + std::fabs(arms)));
+                }
+            worldEyeOff = std::max(worldEyeOff, Len(EyeOf(w) - eyeWorld));
+            keptBad += std::memcmp(w + 16, wasWorld + 16, (kWorldFloats - 16) * sizeof(float)) != 0;
+        }
+    }
+    Report("16f", "the body's field of view made the picture's where the FOV fix wouldn't: the view-projections remade, "
+                  "the eye kept, the rest bit for bit; the game's left for the FOV fix; the picture's left",
+           kindBad == 0 && keptBad == 0 && fixBad == 0 && notFinite == 0 && unturned == 0 && scaleOff < 1e-6 &&
+               aspectOff < 1e-6 && offsetOff < 1e-6 && vpOff < 1e-5 && fromEyeOff < 1e-5 && eyeOff < 1e-4 &&
+               gameOff < 1e-6 && worldScaleOff < 1e-6 && worldRowsOff < 1e-5 && worldEyeOff < 1e-3,
+           "%d body views (%d of them in the world too): %d told the wrong way, %d not turned; widened, the scale %.2g "
+           "from the picture's, the aspect %.2g and the x offset %.2g from theirs, the view-projection %.2g from the "
+           "projection times the turned view, the one for points less the eye %.2g, the eye %.2g m off; %d with anything "
+           "else changed, %d with the FOV fix widening the wrong number after (none once widened here, the three at the "
+           "game's), %d numbers not finite; at the game's the FOV fix's %.2g from the rule's; in the world the scale %.2g "
+           "off, the rows %.2g from the arms' view's, the eye %.2g m",
+           runs, worldRuns, kindBad, unturned, scaleOff, aspectOff, offsetOff, vpOff, fromEyeOff, eyeOff, keptBad, fixBad,
+           notFinite, gameOff, worldScaleOff, worldRowsOff, worldEyeOff);
+
+    // The knees, hands and gun on the scene they were drawn over (where the main view showed it at one field of view
+    // for both, as in ordinary play), seen through the picture: the body's view as uploaded against the scene through
+    // the turned main camera at the picture's field of view, in degrees on the display.
+    const double W = 1.0 / std::tan(Rad(100) / 2);
+    double fixedOff[2] = {}, turnedOff[2] = {}, madeOff[2] = {};
+    int seen[2] = {};
+    for (int n = 0; n < 8000; ++n) {
+        const int set = n < 2000 ? 0 : 1;  // 0: the review's (a level camera, the head 10-30 down, 0-30 round, 55)
+        float cam[16], fp[16], turnedCam[16];
+        MakeCamera(cam, set == 0 ? Q{} : RandomScripted(45), 1, RandomPlace(), true);
+        TurnedInOwnFrame(cam,
+                         set == 0 || Coin(0.3)
+                             ? Q{}
+                             : AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 3))),
+                         fp);
+        fp[3] = fp[7] = fp[11] = 0.0f;
+        const Q head = set == 0 ? Ypr(Rad(Uniform(0, 30)), -Rad(Uniform(10, 30)), 0)
+                                : Ypr(Rad(Uniform(-70, 70)), Rad(Uniform(-50, 50)), Rad(Uniform(-20, 20)));
+        camera::BodyTurn builds[3];
+        builds[0] = MakeBuild(cam, head, 1, false, nullptr, turnedCam);
+        builds[1] = builds[2] = builds[0];
+        // (Within a degree of the game's 49.5 it's the FOV fix's, widened by its own rule, which takes a scale within
+        // 0.2% of the game's for it: up to 0.06 degrees off at the picture's edge, as in ordinary play. Part 1 and 16d
+        // have it.)
+        double bodyFov = set == 0 || Coin() ? 55.0 : Uniform(40, 90);
+        if (std::fabs(bodyFov - 49.5) < 1.0)
+            bodyFov = 60.0;
+        double p[16];
+        MakeProjection(p, bodyFov, 1.0, 0.0, 0.05, 2000, Coin(0.8));
+        const bool rh = p[14] < 0;
+        const V3 eye = RandomArmsEye();
+        float made[kUploadFloats], alone[kUploadFloats], f[kUploadFloats];
+        MakeUpload(made, fp, eye, p, rh, Coin());
+        std::memcpy(alone, made, sizeof(made));
+        std::memcpy(f, made, sizeof(made));
+        viewturn::BodyPick pickAlone, pick;
+        viewturn::BodyView v;
+        viewturn::PerViewFault fault;
+        viewturn::LockBodyPerView(alone, builds, 3, pickAlone, v, fault);
+        ThroughSkin(f, true, builds, 3, pick, static_cast<float>(W), game);
+        for (const V3& way : kBodyWays) {
+            const V3 u = Unit(way);
+            const V3 d = Row(fp, 0) * u.x + Row(fp, 1) * u.y + Row(fp, 2) * u.z;  // from the eye
+            const V3 scene = Row(cam, 0) * u.x + Row(cam, 1) * u.y + Row(cam, 2) * u.z;
+            const double depth = -Dot(scene, Row(turnedCam, 2));
+            if (!(depth > 0.2))
+                continue;
+            const double sx = W * Dot(scene, Row(turnedCam, 0)) / depth, sy = W * Dot(scene, Row(turnedCam, 1)) / depth;
+            if (std::fabs(sx) > 1 || std::fabs(sy) > 1)
+                continue;  // the scene there not in the picture
+            ++seen[set];
+            auto shown = [&](double x, double y) { return Unit({x / W, y / W, -1.0}); };
+            const V3 at = eye + d * 0.6;
+            double x, y;
+            NdcOf(f + viewturn::kViewProjectionAt, at, x, y);
+            fixedOff[set] = std::max(fixedOff[set], AngleDeg(shown(x, y), shown(sx, sy)));
+            NdcOf(alone + viewturn::kViewProjectionAt, at, x, y);
+            turnedOff[set] = std::max(turnedOff[set], AngleDeg(shown(x, y), shown(sx, sy)));
+            NdcOf(made + viewturn::kViewProjectionAt, at, x, y);
+            madeOff[set] = std::max(madeOff[set], AngleDeg(shown(x, y), shown(sx, sy)));
+        }
+    }
+    Report("16g", "the knees, hands and gun on the scene as the head turns: drawn at the picture's field of view",
+           fixedOff[0] < 0.001 && fixedOff[1] < 0.001 && turnedOff[0] > 10 && madeOff[0] > 20 && seen[0] > 1000 &&
+               seen[1] > 5000,
+           "the review's (a level camera, the head 10 to 30 down and up to 30 round, the body at BF3's 55 in the "
+           "picture's 100; %d seen): %.4f degrees off the scene they were drawn over (turned alone, as a8f26b1 did, "
+           "%.1f; as the game made them %.1f); any head, the body at 40 to 90 (%d seen): %.4f (%.1f, %.1f)",
+           seen[0], fixedOff[0], turnedOff[0], madeOff[0], seen[1], fixedOff[1], turnedOff[1], madeOff[1]);
+}
+
+// ---- 16h. The other handedness (the review's finding, 2026-11-01) ----
+// A mirrored scripted camera turned with the mirror fix, drawn as its unmirrored twin (the mod's model of one: 7a).
+// The body's views (the twin's rows, or a few degrees from them) and the main view's own (the twin as turned: in 352
+// bytes in the world, its view-projection alone 3 cm off the camera's place) left bit for bit, where a8f26b1 turned
+// the body's by the mirrored camera's turn off the turned picture, and the main view's view-projection a second time.
+// The body's views of the camera's own handedness turned as before, on the turned picture, mirrored or not.
+void Check16Hand() {
+    int otherBad = 0, mainBad = 0, sameBad = 0, runs = 0, twiceWas = 0, mainOtherHand = 0;
+    double wrongWas = 0, sameOff = 0;
+    for (int n = 0; n < 4000; ++n) {
+        const Q q = Ypr(Uniform(-kPi, kPi), Rad(Uniform(-30, 30)), Rad(Uniform(-10, 10)));
+        const Q head = Ypr(Rad(Uniform(-40, 40)), Rad(Uniform(-30, 30)), Rad(Uniform(-10, 10)));
+        const V3 at = RandomPlace();
+        float mirror[16], twin[16], mirrorTurned[16], twinTurned[16];
+        MakeCamera(mirror, q, -1, at, true);
+        MakeCamera(twin, q, 1, at, true);
+        camera::BodyTurn builds[3];
+        builds[0] = MakeBuild(mirror, head, -1, true, nullptr, mirrorTurned);
+        builds[1] = builds[2] = builds[0];
+        std::memcpy(twinTurned, twin, sizeof(twin));
+        {
+            viewturn::Level level;
+            viewturn::Turn(twinTurned, TurnFor(head), true, 1, false, level);
+        }
+        const bool rh = Coin(0.8);
+        double p[16];
+        RandomProjection(p, rh);
+        const Q apart = Coin(0.3) ? Q{} : AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0, 5)));
+        ++runs;
+        // The body's view, the twin's kind: left as it is. As a8f26b1 turned it (by the mirrored camera's turn),
+        // against the twin's own turn of it (TurnWith), which keeps it on the picture the twin is drawn as.
+        {
+            float body[16];
+            TurnedInOwnFrame(twin, apart, body);
+            body[3] = body[7] = body[11] = 0.0f;
+            float f[kUploadFloats], was[kUploadFloats];
+            MakeUpload(f, body, RandomArmsEye(), p, rh, Coin());
+            std::memcpy(was, f, sizeof(f));
+            viewturn::BodyPick pick;
+            viewturn::BodyView v;
+            viewturn::PerViewFault fault;
+            otherBad += viewturn::LockBodyPerView(f, builds, 3, pick, v, fault) != viewturn::kOtherHand ||
+                        std::memcmp(f, was, sizeof(f)) != 0 || pick.use != -1;
+            viewturn::ReadPerView(was, v);
+            viewturn::TurnPerView(was, v, builds[0].turn);
+            float want[16];
+            std::memcpy(want, body, sizeof(want));
+            viewturn::TurnWith(want, twin, twinTurned);
+            viewturn::BodyView t;
+            viewturn::ReadPerView(was, t);
+            wrongWas = std::max(wrongWas, AngleDeg(Row9(t.rows, 2), Row(want, 2)));
+        }
+        // The main view's own: the twin as turned, in the world, and its view-projection alone 3 cm off the camera's
+        // place along its right (an eye's): left as they are.
+        {
+            float f[kUploadFloats], was[kUploadFloats], w[kWorldFloats], wasWorld[kWorldFloats], shifted[16];
+            std::memcpy(shifted, twinTurned, sizeof(shifted));
+            for (int i = 0; i < 3; ++i)
+                shifted[12 + i] += 0.032f * twinTurned[i];
+            const V3 eyeWorld(shifted[12], shifted[13], shifted[14]);
+            MakeUpload(f, twinTurned, eyeWorld, p, rh, Coin());
+            MakeWorldUpload(w, twinTurned, eyeWorld, p, rh);
+            std::memcpy(was, f, sizeof(f));
+            std::memcpy(wasWorld, w, sizeof(w));
+            viewturn::BodyPick pick;
+            viewturn::BodyView v;
+            viewturn::PerViewFault fault;
+            mainBad += viewturn::LockBodyPerView(f, builds, 3, pick, v, fault) == viewturn::kBodyTurned ||
+                       std::memcmp(f, was, sizeof(f)) != 0;
+            // In the world it's near the camera's place: looking its way, told the other handedness (else away).
+            const bool toward = Dot(Row(twinTurned, 2), Row9(builds[0].before, 2)) > viewturn::kBodyToward;
+            const viewturn::BodyVerdict world = viewturn::LockBodyWorldView(w, builds, 3, pick, v);
+            mainBad += world != (toward ? viewturn::kOtherHand : viewturn::kAway) ||
+                       std::memcmp(w, wasWorld, sizeof(w)) != 0;
+            mainOtherHand += world == viewturn::kOtherHand;
+            // a8f26b1 turned it a second time wherever it looked the camera's way (all it asked, with its place).
+            twiceWas += toward;
+        }
+        // The body's view of the camera's own handedness (the GPU drawing the mirrored camera as it is): turned, as
+        // TurnWith turns that camera with it (1e-6).
+        {
+            float body[16];
+            TurnedInOwnFrame(mirror, apart, body);
+            body[3] = body[7] = body[11] = 0.0f;
+            float f[kUploadFloats];
+            MakeUpload(f, body, RandomArmsEye(), p, rh, Coin());
+            viewturn::BodyPick pick;
+            viewturn::BodyView v;
+            viewturn::PerViewFault fault;
+            if (viewturn::LockBodyPerView(f, builds, 3, pick, v, fault) != viewturn::kBodyTurned) {
+                ++sameBad;
+                continue;
+            }
+            float want[16];
+            std::memcpy(want, body, sizeof(want));
+            viewturn::TurnWith(want, mirror, mirrorTurned);
+            viewturn::BodyView t;
+            viewturn::ReadPerView(f, t);
+            for (int r = 0; r < 3; ++r)
+                for (int i = 0; i < 3; ++i)
+                    sameOff = std::max(sameOff, Abs(t.rows[3 * r + i] - want[4 * r + i]));
+        }
+    }
+    Report("16h", "a mirrored camera drawn as its twin: the body's views and the main view's own left bit for bit; "
+                  "the camera's own kind turned as before",
+           otherBad == 0 && mainBad == 0 && sameBad == 0 && sameOff < 1e-6 && wrongWas > 30 && twiceWas > runs / 2,
+           "%d pictures (the head up to 40 round, 30 up or down, 10 aside): %d of the twin's kind of body view not left "
+           "as they were (a8f26b1 turned them up to %.1f degrees off the turned picture), %d of the main view's own "
+           "touched or told otherwise (%d of their view-projections in the world told the other handedness: a8f26b1 "
+           "turned %d a second time); of the camera's own kind %d not turned, the rest %.2g from TurnWith's turn",
+           runs, otherBad, wrongWas, mainBad, mainOtherHand, twiceWas, sameBad, sameOff);
+}
+
+// ---- 16i. A frame's build (the review's findings, 2026-11-01) ----
+// Runs of scripted view builds, each picture drawn 0, 1 or 2 builds behind the newest (the last normal picture while a
+// run's first builds come), its body views before or after its main view's own upload, latched as skin.cpp latches
+// them (each frame's pick begun with the age the last frame's main view named; none at the session's start). A normal
+// picture's body views, looking the cutscene camera's way, left bit for bit (a8f26b1 turned them by the newest at a
+// run's first build); a run's turned by their own picture's build, bit for bit, but before the session's first main
+// view has named one; left as they are at most a frame's worth at a run's start; the main view naming its own.
+void Check16Frames() {
+    int normalChanged = 0, normalViews = 0, wrongAfter = 0, wrongBefore = 0, right = 0, left = 0, mainBad = 0, runs = 0,
+        mostLeft = 0;
+    for (int behind = 0; behind <= 2; ++behind)
+        for (int bodyFirst = 0; bodyFirst < 2; ++bodyFirst) {
+            int lastNamed = -1;  // skin.cpp's BodyLatch::lastNamed
+            bool everNamed = false;
+            for (int run = 0; run < 3; ++run) {
+                ++runs;
+                constexpr int kRun = 12;
+                camera::BodyTurn made[kRun];
+                const Q start = RandomScripted(40), head = RandomHead();
+                const V3 place = RandomPlace();
+                for (int k = 0; k < kRun; ++k) {
+                    float cam[16];
+                    MakeCamera(cam, Mul(Yaw(Rad(0.4 * k)), start), 1, place + V3(0.3 * k, 0, 0), true);
+                    made[k] = MakeBuild(cam, Mul(head, Yaw(Rad(1.5 * k))), 1, false, nullptr, nullptr);
+                }
+                double p[16];
+                MakeProjection(p, 55, 1.0, 0.0, 0.05, 2000, true);
+                int leftThisRun = 0;
+                for (int i = 0; i < kRun; ++i) {
+                    camera::BodyTurn latched[4];
+                    const int count = std::min(i + 1, 4);
+                    for (int a = 0; a < count; ++a)
+                        latched[a] = made[i - a];
+                    viewturn::BodyPick pick;
+                    pick.guess = lastNamed;
+                    const int drawn = i - behind;  // the build the picture drawn was made from (< 0: a normal one)
+                    for (int u = 0; u < 3; ++u) {
+                        const bool mainNow = u == (bodyFirst ? 1 : 0);
+                        float f[kUploadFloats], was[kUploadFloats], cam[16];
+                        viewturn::BodyView v;
+                        viewturn::PerViewFault fault;
+                        if (mainNow) {
+                            // The main view's own, in the world: the turned camera's rows (a normal picture's: the
+                            // player's camera, which names nothing).
+                            if (drawn >= 0)
+                                CameraOf(made[drawn].after, place, cam);
+                            else
+                                MakeCamera(cam, RandomRotation(), 1, place, false);
+                            MakeUpload(f, cam, place + V3(0, 1.6, 0), p, true, false);
+                            const bool namedWas = pick.named;
+                            const viewturn::BodyVerdict verdict =
+                                viewturn::LockBodyPerView(f, latched, count, pick, v, fault);
+                            if (drawn >= 0) {
+                                mainBad += verdict != viewturn::kMainView || pick.use != behind || !pick.named;
+                                if (!namedWas && pick.named)
+                                    lastNamed = pick.use, everNamed = true;
+                            } else {
+                                mainBad += verdict == viewturn::kMainView || verdict == viewturn::kBodyTurned;
+                            }
+                            continue;
+                        }
+                        // A body view of the picture drawn, a few degrees from its camera (a normal picture's from the
+                        // run's first scripted camera, as at a cutscene's start).
+                        float rows[16];
+                        CameraOf(made[std::max(drawn, 0)].before, place, rows);
+                        TurnedInOwnFrame(
+                            rows, AxisAngle({Uniform(-1, 1), Uniform(-1, 1), Uniform(-1, 1)}, Rad(Uniform(0.5, 8))), cam);
+                        MakeUpload(f, cam, RandomArmsEye(), p, true, Coin());
+                        std::memcpy(was, f, sizeof(f));
+                        const bool informed = everNamed;
+                        const viewturn::BodyVerdict verdict = viewturn::LockBodyPerView(f, latched, count, pick, v, fault);
+                        if (drawn < 0) {
+                            ++normalViews;
+                            normalChanged += std::memcmp(f, was, sizeof(f)) != 0;
+                            continue;
+                        }
+                        if (verdict != viewturn::kBodyTurned) {
+                            ++left, ++leftThisRun;
+                            continue;
+                        }
+                        float alike[kUploadFloats];
+                        std::memcpy(alike, was, sizeof(alike));
+                        viewturn::BodyView read;
+                        viewturn::ReadPerView(alike, read);
+                        viewturn::TurnPerView(alike, read, made[drawn].turn);
+                        if (std::memcmp(f, alike, sizeof(f)) == 0)
+                            ++right;
+                        else
+                            ++(informed ? wrongAfter : wrongBefore);
+                    }
+                }
+                mostLeft = std::max(mostLeft, leftThisRun);
+            }
+        }
+    Report("16i", "a frame's build: a normal picture drawn while a run's first builds come left bit for bit; a run's "
+                  "body turned by its own picture's build",
+           normalChanged == 0 && normalViews > 0 && wrongAfter == 0 && mainBad == 0 && mostLeft <= 2 && right > 300,
+           "%d runs of 12 builds, drawn 0 to 2 behind, the body's views before or after the main view's: %d of %d normal "
+           "pictures' body views changed (a8f26b1 turned every one); the run's %d turned by their own picture's build, "
+           "%d by another after a main view had named one, %d before any had (the session's first run, drawn 2 behind, "
+           "the newest taken); %d left as they were, at most %d a run; %d main views not naming their own",
+           runs, normalChanged, normalViews, right, wrongAfter, wrongBefore, left, mostLeft, mainBad);
 }
 
 }  // namespace
@@ -2580,6 +3127,9 @@ int main() {
     Check14();
     Check15();
     Check16();
+    Check16Fov();
+    Check16Hand();
+    Check16Frames();
     std::printf("%d of %d checks failed\n", g_failed, g_counted);
     return g_failed;
 }
