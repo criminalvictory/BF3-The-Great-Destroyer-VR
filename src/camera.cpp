@@ -702,9 +702,10 @@ bool TurnToHead(float* transform) {
         const float forward[3] = {-2 * (q[0] * q[2] + q[3] * q[1]), -2 * (q[1] * q[2] - q[3] * q[0]),
                                   -(1 - 2 * (q[0] * q[0] + q[1] * q[1]))};
         const float deg = 57.29578f;
-        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f", view.turn.currentYaw * deg,
-            view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12], before[13], before[14],
-            std::atan2(-forward[0], -forward[2]) * deg, std::atan2(transform[8], -transform[10]) * deg);
+        Log("View: hand %.2f written %.2f | camera %.2f at %.3f %.3f %.3f | head %.2f shown %.2f%s",
+            view.turn.currentYaw * deg, view.turn.lookYaw * deg, std::atan2(before[8], -before[10]) * deg, before[12],
+            before[13], before[14], std::atan2(-forward[0], -forward[2]) * deg,
+            std::atan2(transform[8], -transform[10]) * deg, view.turn.nudging ? " | nudge" : "");
     }
     return true;
 }

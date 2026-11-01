@@ -1174,12 +1174,19 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         if (g_turnDirect || !useHand)
             s_handYaw = yaw;
         const float viewYaw = s_handYaw;
+        // While mouse aim holds its corrections for the search's nudge of a candidate (aim::Nudging), the game's
+        // facing keeps the stick's turn but not the hand's: it stays where the hand was as the nudge began. The
+        // walk and the yaw a cutscene's picture is kept at (g_yawHistory) are taken from there, as they were
+        // while mouse aim paused outright; the picture takes out the hand's turn as it is (viewYaw, LookYaw).
+        static float s_facingYaw = 0.0f;
+        if (!aim::Nudging())
+            s_facingYaw = viewYaw;
         // Walking goes where the head faces, not where the gun points (user, 2026-10-30): the game
         // walks along its own facing, which is the hand's yaw the view turn takes out.
         if (useHand) {
             float headYaw = 0.0f, headPitch = 0.0f;
             LookAngles(head, headYaw, headPitch);
-            float apart = std::fmod(headYaw - viewYaw, 2 * kPi);
+            float apart = std::fmod(headYaw - s_facingYaw, 2 * kPi);
             if (apart > kPi)
                 apart -= 2 * kPi;
             if (apart < -kPi)
@@ -1188,7 +1195,7 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
         } else {
             input::SetMoveTurn(0.0f);
         }
-        g_yawHistory[g_yawHistoryNext] = viewYaw;
+        g_yawHistory[g_yawHistoryNext] = s_facingYaw;
         int lagged = (g_yawHistoryNext - config::Get().viewLag + kYawHistory) % kYawHistory;
         g_yawHistoryNext = (g_yawHistoryNext + 1) % kYawHistory;
         if (useHand) {
@@ -1197,10 +1204,35 @@ void BuildStereo(ID3D11Texture2D* back, const D3D11_TEXTURE2D_DESC& desc, XrTime
             g_viewTurnOn = true;
             g_viewTurnYaw = g_yawHistory[lagged];
             turn.haveLook = g_turnDirect && aim::LookYaw(turn.lookYaw, turn.lookSign);
+            turn.nudging = aim::Nudging();
             camera::SetViewTurn(&turn);
             // The picture's turn: the look yaw written against the controller's (camera.cpp).
             if (turn.haveLook)
                 input::NoteTurnStep(1, turn.lookSign * turn.lookYaw - yaw);
+            // Pictures turned from the game camera's own yaw (the hand's frozen) instead of the aim's: each hand-
+            // over between the two moves the picture by the gap between them (the interrogation room's
+            // "teleporting", 2026-10-31). Counted while the game draws with the head's turn, logged once a second
+            // when there were any.
+            {
+                static int s_own = 0, s_pictures = 0, s_switches = 0;
+                static bool s_lastLook = true;
+                static ULONGLONG s_countedAt = 0;
+                if (!g_unturnedLogged) {
+                    ++s_pictures;
+                    s_own += turn.haveLook ? 0 : 1;
+                    s_switches += turn.haveLook != s_lastLook ? 1 : 0;
+                    s_lastLook = turn.haveLook;
+                }
+                const ULONGLONG now = GetTickCount64();
+                if (now - s_countedAt >= 1000) {
+                    if (s_own)
+                        Log("View: %d of the last second's %d pictures turned from the game camera's own yaw, not the "
+                            "aim's (%d hand-overs%s)",
+                            s_own, s_pictures, s_switches, aim::Scripted() ? "; a scripted moment" : "");
+                    s_countedAt = now;
+                    s_own = s_pictures = s_switches = 0;
+                }
+            }
         } else {
             camera::SetViewTurn(nullptr);
             g_viewTurnOn = false;

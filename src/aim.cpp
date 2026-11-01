@@ -142,8 +142,9 @@ std::vector<uintptr_t> Pairs(uintptr_t soldier, float cameraYaw, float cameraPit
                     float yaw, pitch;
                     std::memcpy(&yaw, &window[i], 4);
                     std::memcpy(&pitch, &window[i + 3], 4);
+                    // Any yaw, but not a zero (a null pointer as often as an angle: Proves).
                     if (LooksLikeAngle(yaw, false) &&
-                        (anyYaw ? std::fabs(yaw) < 7.0f : YawApart(yaw, cameraYaw) < 0.01f) &&
+                        (anyYaw ? std::fabs(yaw) >= 0.02f && std::fabs(yaw) < 7.0f : YawApart(yaw, cameraYaw) < 0.01f) &&
                         std::fabs(pitch - cameraPitch) < 0.01f &&
                         std::find(pairs.begin(), pairs.end(), v + i * 4) == pairs.end()) {
                         pairs.push_back(v + i * 4);
@@ -262,12 +263,42 @@ enum class Proof { kNo, kKept, kYes, kBusy };
 // (the user's shots missed, 16:04). The nudge it then has to follow, and come back from, still proves it.
 constexpr float kStillMost = 0.006f;
 
-// While a candidate is being nudged (Proves): mouse aim waits, or it would undo the nudge.
+// While a candidate is being nudged (Proves): mouse aim holds its corrections, or they would undo the nudge
+// (MouseAim). How long it held them in the current search, and for how many candidates (the search's own
+// thread; Search logs them).
 std::atomic<bool> g_proving{false};
+ULONGLONG g_heldMs = 0;
+int g_nudged = 0;
 struct Proving {
+    const ULONGLONG since = GetTickCount64();
     Proving() { g_proving = true; }
-    ~Proving() { g_proving = false; }
+    ~Proving() {
+        g_proving = false;
+        g_heldMs += GetTickCount64() - since;
+        ++g_nudged;
+    }
 };
+
+// Puts value at address only if it still holds expected, bit for bit: false if it doesn't (or can't be
+// written).
+bool SwapIfUnchanged(uintptr_t address, float expected, float value) {
+    LONG was = 0, now = 0;
+    std::memcpy(&was, &expected, sizeof(was));
+    std::memcpy(&now, &value, sizeof(now));
+    __try {
+        return InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(address), now, was) == was;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// A nudge undone where it's still there: by the nudge alone, so a turn the game added meanwhile stays; a
+// value the game replaced is left as the game made it.
+void Undo(uintptr_t address, float nudged, float nudge) {
+    float now = 0.0f;
+    if (camera::SafeRead(address, &now, sizeof(now)) && std::fabs(now - nudged) < kNudge * 0.3f)
+        SwapIfUnchanged(address, now, now - nudge);
+}
 
 Proof Proves(uintptr_t at, bool anyYaw = false) {
     const Proving proving;
@@ -275,14 +306,26 @@ Proof Proves(uintptr_t at, bool anyYaw = false) {
     if (!camera::SafeRead(at, &yaw, sizeof(yaw)) || !camera::SafeRead(at + 0xC, &pitch, sizeof(pitch)) ||
         !camera::GameWeaponAngles(still[0][0], still[0][1]) || (!anyYaw && YawApart(yaw, still[0][0]) > 0.02f))
         return Proof::kNo;
+    // Only real angles are nudged, never a zero: zeros near the soldier are null pointers and empty lists as
+    // often as level views, and the pitch-alone pass (any yaw) let them through. Nudged, the game read the
+    // 0.03 as a pointer and crashed (bf3.exe+179AE2 reading 3CF5C28F, 2026-10-31 19:54); the crashes just
+    // after the interrogation (lists and nodes that looked freed) were likely the same.
+    if (std::fabs(yaw) < 0.02f || std::fabs(pitch) < 0.02f || !LooksLikeAngle(yaw, false) || !LooksLikeAngle(pitch, true))
+        return Proof::kNo;
     Sleep(120);
     if (!camera::GameWeaponAngles(still[1][0], still[1][1]) || YawApart(still[1][0], still[0][0]) > kStillMost ||
         std::fabs(still[1][1] - still[0][1]) > kStillMost)
         return Proof::kBusy;
-    // The pitch towards level, so the nudge never goes past the game's limits.
+    // The pitch towards level, so the nudge never goes past the game's limits. Each nudge goes only over the
+    // value read, and is undone only where it's still there (Undo): put back regardless, as it was, a stale
+    // value could land over whatever the game had put there meanwhile.
     const float pitchNudge = pitch > 0.0f ? -kNudge : kNudge;
-    if (!SafeWrite(at, yaw + kNudge) || !SafeWrite(at + 0xC, pitch + pitchNudge))
+    if (!SwapIfUnchanged(at, yaw, yaw + kNudge))
         return Proof::kNo;
+    if (!SwapIfUnchanged(at + 0xC, pitch, pitch + pitchNudge)) {
+        Undo(at, yaw + kNudge, kNudge);
+        return Proof::kNo;
+    }
     Sleep(150);
     float keptYaw = 0.0f, keptPitch = 0.0f, nudged[2] = {};
     const bool kept = camera::SafeRead(at, &keptYaw, sizeof(keptYaw)) &&
@@ -297,10 +340,11 @@ Proof Proves(uintptr_t at, bool anyYaw = false) {
         followed = std::fabs(yawMoved - kNudge) < kNudge * 0.3f &&
                    std::fabs((nudged[1] - still[1][1]) - pitchNudge) < kNudge * 0.3f;
     }
+    // Undone first, kept or not: one of the two kept while the other was rebuilt stayed nudged before.
+    Undo(at, yaw + kNudge, kNudge);
+    Undo(at + 0xC, pitch + pitchNudge, pitchNudge);
     if (!kept)
         return Proof::kNo;
-    SafeWrite(at, yaw);
-    SafeWrite(at + 0xC, pitch);
     if (!followed)
         return Proof::kKept;
     Sleep(150);
@@ -313,6 +357,9 @@ Proof Proves(uintptr_t at, bool anyYaw = false) {
 // Background thread: the pairs tested in turn; the first that proves to be the player's look
 // (Proves) is used.
 void Search(uintptr_t soldier) {
+    const ULONGLONG searchStart = GetTickCount64();
+    g_heldMs = 0, g_nudged = 0;
+    int byPitch = 0;  // candidates nudged by the pitch alone (the "no look angles yet" line doesn't count them)
     float cameraYaw = 0.0f, cameraPitch = 0.0f;
     for (int wait = 0; wait < 20 && !camera::GameWeaponAngles(cameraYaw, cameraPitch); ++wait)  // just after a load
         Sleep(50);
@@ -373,6 +420,7 @@ void Search(uintptr_t soldier) {
         const std::vector<uintptr_t> pairs = PitchPairs(soldier, cameraPitch, &routes);
         for (size_t k = 0; k < pairs.size() && k < kMostPairs && !found; ++k) {
             float yaw = 0.0f;
+            ++byPitch;
             if (Proves(pairs[k], true) == Proof::kYes && camera::SafeRead(pairs[k], &yaw, sizeof(yaw))) {
                 found = pairs[k], ++kept;
                 g_yawOffset = std::remainder(cameraYaw - yaw, 2.0f * kPi);
@@ -402,6 +450,12 @@ void Search(uintptr_t soldier) {
             "it, %d not tried with the camera moving); the view follows the head meanwhile",
             candidates, kept, busy);
     s_logged = found;
+    // How long the search took, and how long mouse aim held its corrections for the nudges: most of each search
+    // in the interrogation room (2026-10-31: 3.5-4.4 s searches back to back, the view tilted, so the pitch-alone
+    // pass nudged up to 16 candidates each time).
+    Log("Aim: the search took %llu ms; mouse aim held its corrections %llu ms for %d candidates (%d by the pitch "
+        "alone)",
+        GetTickCount64() - searchStart, g_heldMs, g_nudged, byPitch);
     g_yawAddress = found;
     g_foundFor = soldier;
     g_searching = false;
@@ -464,22 +518,26 @@ namespace aim {
 // aim, 16:17): the game's view steered with the mouse towards where the hand points, closing half the
 // gap each frame from the weapon camera's angles as the game made them. Nothing in memory is searched
 // or written, so it works at once. The picture takes the hand's turn out by the yaw aimed for
-// (g_target, LookYaw) as it does with the angles written. Off while the search nudges a candidate
-// (g_proving: the mouse would undo the nudge), without the game's window in front, and with
-// weapon.txt "mouseaim 0".
+// (g_target, LookYaw) as it does with the angles written. Off without the game's window in front and
+// with weapon.txt "mouseaim 0". While the search nudges a candidate (g_proving) only its corrections
+// wait (they would undo the nudge): the aim and the picture go on, and the stick's turn is sent as it is.
 std::atomic<bool> g_mouseAimOn{true};
 bool g_mouseHave = false;
 float g_mouseBase = 0.0f;   // the game yaw with the hand's yaw at 0 and no stick turn
 float g_mouseTurned = 0.0f;
 constexpr float kMousePixelsPerRadian = 230.0f;  // about 4 a degree (TiltView's 24 for some 6)
+float g_mouseCarry = 0.0f;  // during a nudge: the stick's turn not yet sent (a fraction of a count)
+bool g_mouseHeld = false;   // this frame's corrections held for a nudge (Nudging)
 
 bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
+    g_mouseHeld = false;
     float cameraYaw = 0.0f, cameraPitch = 0.0f;
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (!g_mouseAimOn.load(std::memory_order_relaxed) || g_proving.load() || pid != GetCurrentProcessId() ||
+    if (!g_mouseAimOn.load(std::memory_order_relaxed) || pid != GetCurrentProcessId() ||
         !camera::GameWeaponAngles(cameraYaw, cameraPitch))
         return false;  // paused: its centring kept (re-centred each time, the aim jumped, 16:21)
+    const bool nudging = g_proving.load();
     // Centred afresh only for a new soldier (a respawn, a load) or after the look angles were written.
     static uintptr_t s_soldier = 0;
     const uintptr_t soldier = god::PlayerClientSoldier();
@@ -488,6 +546,8 @@ bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
         g_mouseHave = false;
     }
     if (!g_mouseHave) {
+        if (nudging)
+            return false;  // never centred on a nudged camera: paused, as it always was through a nudge
         g_mouseBase = cameraYaw - sign * headYaw;
         g_mouseTurned = 0.0f;
         g_mouseHave = true;
@@ -496,13 +556,27 @@ bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
     }
     g_mouseTurned += turn;
     const float yaw = g_mouseBase + sign * (headYaw + g_mouseTurned);
-    const float pitch = std::clamp(headPitch, -1.4f, 1.4f);
-    const float yawError = std::remainder(yaw - cameraYaw, 2.0f * kPi), pitchError = pitch - cameraPitch;
     INPUT in{};
     in.type = INPUT_MOUSE;
-    in.mi.dx = static_cast<LONG>(std::clamp(yawError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
-    in.mi.dy = static_cast<LONG>(std::clamp(-pitchError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
     in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    if (nudging) {
+        // A candidate being nudged (Proves): no correction, which would undo the nudge, but the aim and the
+        // picture (LookYaw) go on, and the stick's own turn is sent as input.cpp's mouse thread sent it while
+        // mouse aim paused. Paused outright (returning false), the picture switched to the game's camera for
+        // each nudge and back after, undoing the stick's turn made meanwhile in one frame: the interrogation
+        // room's "teleporting" (2026-10-31 18:07, 75-86% of the stick-turning frames during nudges; 112
+        // degrees in one frame at 18:31:16, 162 and 180 on the train at 18:42).
+        g_mouseCarry += sign * turn * kMousePixelsPerRadian;
+        in.mi.dx = static_cast<LONG>(g_mouseCarry);
+        g_mouseCarry -= static_cast<float>(in.mi.dx);
+        g_mouseHeld = true;
+    } else {
+        g_mouseCarry = 0.0f;
+        const float pitch = std::clamp(headPitch, -1.4f, 1.4f);
+        const float yawError = std::remainder(yaw - cameraYaw, 2.0f * kPi), pitchError = pitch - cameraPitch;
+        in.mi.dx = static_cast<LONG>(std::clamp(yawError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
+        in.mi.dy = static_cast<LONG>(std::clamp(-pitchError * kMousePixelsPerRadian * 0.5f, -150.0f, 150.0f));
+    }
     if (in.mi.dx || in.mi.dy)
         SendInput(1, &in, sizeof(in));
     g_target = yaw - 2 * kPi * std::floor(yaw / (2 * kPi));
@@ -513,6 +587,10 @@ bool MouseAim(float headYaw, float headPitch, float turn, float sign) {
 void SetMouseAim(bool on) {
     if (g_mouseAimOn.exchange(on) != on)
         Log("Aim: mouse aim %s", on ? "on (until the look angles are found)" : "off");
+}
+
+bool Nudging() {
+    return g_mouseHeld && g_mouseHave;
 }
 
 bool Update(float headYaw, float headPitch, float turn) {

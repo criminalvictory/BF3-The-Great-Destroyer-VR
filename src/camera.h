@@ -46,6 +46,9 @@ struct ViewTurn {
     float currentYaw;
     float lookYaw;
     float lookSign;
+    // Mouse aim holding its corrections for the search's nudge this frame (aim::Nudging): weapon.txt "viewlog"
+    // marks those frames.
+    bool nudging;
 };
 // nullptr = off (render cameras keep the game's own direction).
 void SetViewTurn(const ViewTurn* turn);
