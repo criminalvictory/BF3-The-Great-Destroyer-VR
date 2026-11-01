@@ -1292,13 +1292,15 @@ void LoadTest(skin::HandTargets& t, pistolmag::Frame& f, bool standIn) {
 // After the pouch (its zone and squeeze, the M416's too): the magazine taken at the pelvis, carried, caught under the
 // grip and pushed home, each logged; drawn (HandTargets::pistolMag, pistolMagOut) and its fingers kept for Update. Only
 // with "mag 1" and the train pistol in the right hand, or a magazine still in hand through a moment without it (its "in
-// hand" drops now and then); otherwise nothing. tracked: the left hand as its controller holds it, palm its grip point
-// (the view's space); toView: the room's turn into the view's (a fall's speed).
+// hand" drops now and then), or the hand drawn on one still easing back to the controller after it's gone (the review:
+// stopped there, it came back off the controller once the pistol was back in hand); otherwise nothing. tracked: the
+// left hand as its controller holds it, palm its grip point (the view's space); toView: the room's turn into the view's
+// (a fall's speed).
 pistolmag::Result PistolMagazine(skin::HandTargets& t, const pouch::Result& pouchEvents, bool pistolHeld,
                                  bool trackedLeft, const float* tracked, const float* palm, const float* toView,
                                  float dt) {
     pistolmag::Result r;
-    if (g_pistolMagOn && (pistolHeld || pistolmag::Holding())) {
+    if (g_pistolMagOn && (pistolHeld || pistolmag::Holding() || pistolmag::EasingBack())) {
         float seat[12];
         skin::PistolMagazineSeat(seat);  // the game's own once it's drawn it home, the recordings' until then
         pistolmag::SetSeat(seat);

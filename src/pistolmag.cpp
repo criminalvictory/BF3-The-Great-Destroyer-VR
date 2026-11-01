@@ -41,10 +41,15 @@ float g_base[3] = {};  // home, in gun space (from the seat)
 // there. Not while it's plainly going away or passing by fast: where its top will be 0.08 s on, at the speed it's going
 // relative to the pistol, must be in reach too (or up the grip, where one going in is going), so a swipe past at 2 m/s
 // isn't caught; nor faster than 4 m/s (not a hand: a tracking jump), nor the frame it's seen again (its speed not
-// known). Pulled back out of the grip, it isn't caught again until it's been out of reach.
+// known). Out of reach means 1.5 cm beyond it (the review: a top trembling at its edge was in and out of it every
+// frame, 72 near misses told in 3 s): a near miss is told once it's that far out. Pulled back out of the grip, it isn't
+// caught again until it heads back in, its top 2 cm nearer home than the furthest it's been since (both two frames
+// running: a tracking jump does neither), or it's been out of reach (the review: pulled out and pushed straight back up
+// into the grip, it wasn't caught).
 float g_reach = 0.075f, g_angle = 55.0f * kDegree;
 constexpr float kReachLeast = 0.01f, kReachMost = 0.15f, kAngleLeast = 5.0f, kAngleMost = 80.0f;
 constexpr float kInGrip = 0.03f, kLead = 0.08f, kFastest = 4.0f;
+constexpr float kReachSlack = 0.015f, kHeadingIn = 0.02f;
 // Caught, it glides onto the line: an eased move (pistol.txt "glide": 0.15 s) from where the hand has it to the line,
 // its top 1.5 cm into the grip (where the well holds it) or as far in as it already was; the hand drawn holding it goes
 // with it. Every eased move takes the glide's time: the snap home, the hand drawn going over from the carry to the flat
@@ -58,15 +63,22 @@ constexpr float kGlideLeast = 0.05f, kGlideMost = 0.5f, kGlideIn = 0.015f;
 // frames (a one-frame tracking jump moves nothing), at most 2 cm a frame, never past home and never back down (the well
 // holds it). How the hand is turned doesn't come into it (read through the hand's whole pose, a wrist straightening the
 // magazine after the catch swung its top centimetres off). The palm leaving it, three frames running (a tracking jump
-// is one or two), leaves it there (parked): 2.5 cm back down from where it pushes it or 5 cm off the line; still
-// gliding in with the grip squeezed, 3 cm down or 4 cm off takes it back out into the hand (it glides back). A hand
-// lost a moment (0.25 s: the catch can leave the hand some centimetres under the magazine, out of a parked push's
-// reach) keeps it on the line; longer, it's parked.
+// is one or two), leaves it there (parked): 2.5 cm back down from where it pushes it and 2.5 cm further from where it
+// would hold it than the nearest it's come since, or across the grip's line both further than it was as the try began
+// and 5 cm further than the nearest it's come since (the nearest two frames running); still gliding in with the grip
+// squeezed, 3 cm down or 4 cm back across takes it back out into the hand (it glides back). Where it would hold it, and
+// how far across the line it is from there, go by where the palm would be holding the magazine where it's drawn on the
+// line as the try's hold does, the hand not turned (a wrist turning doesn't move the palm), so a hand going on towards
+// the grip after the catch never leaves it, down and in from above the grip's mouth too: caught 6-7.5 cm off, a real
+// hand carries on in (the review: the palm's move since the catch was read as leaving, so every catch from the side,
+// the front or a diagonal with the hand still moving was pulled back out or parked out of the palm's reach; only one
+// straight up from below went in). A hand lost a moment (0.25 s: the catch can leave the hand some centimetres under
+// the magazine, out of a parked push's reach) keeps it on the line; longer, it's parked.
 constexpr float kPalmBind[3] = {0.5182f, 1.1075f, 0.1756f};
 constexpr float kMaxStep = 0.02f;
 constexpr int kHeldFrames = 2, kOffFrames = 3;
-constexpr float kOffBelow = 0.03f, kOffAside = 0.04f;
-constexpr float kLeaveBelow = 0.025f, kLeaveAside = 0.05f;
+constexpr float kOffBelow = 0.03f, kOffAcross = 0.04f;
+constexpr float kLeaveBelow = 0.025f, kLeaveAcross = 0.05f;
 constexpr float kLostOnLine = 0.25f;
 // Home (the review: the controllers can't overlap as the hands would under the grip, so seating by the palm alone is
 // probably out of reach). Once the push has been within the snap of home for two frames running (a tracking jump is
@@ -83,8 +95,11 @@ float g_dwell = 0.4f;
 constexpr float kDwellLeast = 0.1f, kDwellMost = 3.0f, kDwellSlack = 0.01f;
 // A parked magazine is pushed on by a palm under its floorplate: the hand holding it as the carry would or as the flat
 // base would (an open palm) puts its top within 1 cm below where it's parked (or above), within 4 cm of the line and 45
-// degrees (leaving it takes 2.5 cm: nothing goes back and forth between). The hand drawn under it then is the flat
-// base's, eased in.
+// degrees. The hand leaving it again is read from where the push began and the nearest it has come since, not from that
+// reach, so it can leave it within the reach (the hand turned about the magazine's top swings the palm across): parked
+// by the hand leaving it, it isn't pushed on again until the hand has been out of the reach (the review: a hand in from
+// the side 2 cm above it and then lowered was pushed and parked twice). The hand drawn under it then is the flat base's,
+// eased in.
 constexpr float kPushReach = 0.01f, kPushAside = 0.04f, kPushTurned = 45.0f * kDegree;
 // The game's own push home (2.421 s) comes in over the magazine's last 3 cm.
 constexpr float kPushFrom = 0.03f;
@@ -124,6 +139,13 @@ float g_handIn = 0.0f;
 bool g_trying = false, g_snapping = false, g_dwelt = false;
 float g_tryPalm[3] = {};
 float g_tryFrom = 0.0f;
+// ... and the hand leaving it: the hold the palm's measured by (the carry's, or a parked push's open palm), how far
+// across the line it was as the try began, the nearest since (two frames running) and last frame's, and the same of how
+// far it is from where it would hold the magazine where it's drawn.
+const float* g_tryHold = g_carry;
+float g_acrossFrom = 0.0f, g_acrossLeast = 0.0f, g_lastAcross = 0.0f;
+float g_awayLeast = 0.0f, g_lastAway = 0.0f;
+bool g_pushArmed = true;  // parked by the hand leaving it: not pushed on again until the hand's been out of reach
 float g_lastPush = 0.0f, g_closest = 0.0f, g_closestApart = 0.0f;
 float g_speed = 0.0f;
 float g_snapFrom = 0.0f, g_snapSpeed = 0.0f, g_snapFor = 0.0f;
@@ -137,9 +159,11 @@ float g_awayShare = 0.0f, g_awayFor = -1.0f, g_awayFingers = 0.0f, g_awayFlat = 
 float g_glove[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 float g_drawn[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 float g_drawnShare = 0.0f, g_shownFingers = 0.0f, g_shownFlat = 0.0f, g_shownPush = 0.0f;
-// The catch: armed (not just pulled back out of the grip); the top as last seen in the hand (its speed); a near miss
-// so far (the nearest it came to the mouth in reach and uncaught, its turn then and why: below 0, none).
+// The catch: armed (not just pulled back out of the grip; pulled out, the furthest its top has been from home since, two
+// frames running, and last frame's); the top as last seen in the hand (its speed); a near miss so far (the nearest it
+// came to the mouth in reach and uncaught, its turn then and why: below 0, none).
 bool g_armed = true, g_haveTop = false;
+float g_pulledFar = 0.0f, g_lastFromHome = 0.0f;
 float g_lastTop[3] = {};
 float g_missFrom = -1.0f, g_missTurned = 0.0f;
 const char* g_missWhy = "";
@@ -340,9 +364,9 @@ void Turns(const float* inGun, float& tilt, float& twist) {
 }
 
 // A top at p (gun space) in the catch's reach: within the reach of the grip's mouth, or in the grip (within 3 cm of its
-// line from the mouth up to home; heading: past home too, where one going up the grip is going). fromMouth: how far it
-// is from the mouth.
-bool InReach(const float* p, bool heading, float* fromMouth) {
+// line from the mouth up to home; heading: past home too, where one going up the grip is going), both that much wider
+// by slack. fromMouth: how far it is from the mouth.
+bool InReach(const float* p, bool heading, float* fromMouth, float slack = 0.0f) {
     const float d[3] = {p[0] - g_top[0], p[1] - g_top[1], p[2] - g_top[2]};
     const float s = Dot(d, g_line);
     const float m[3] = {d[0] - kMouth * g_line[0], d[1] - kMouth * g_line[1], d[2] - kMouth * g_line[2]};
@@ -350,7 +374,15 @@ bool InReach(const float* p, bool heading, float* fromMouth) {
     if (fromMouth)
         *fromMouth = mouth;
     const float off[3] = {d[0] - s * g_line[0], d[1] - s * g_line[1], d[2] - s * g_line[2]};
-    return mouth <= g_reach || (s >= kMouth && (heading || s <= 0.0f) && std::sqrt(Dot(off, off)) <= kInGrip);
+    return mouth <= g_reach + slack ||
+           (s >= kMouth && (heading || s <= 0.0f) && std::sqrt(Dot(off, off)) <= kInGrip + slack);
+}
+
+// How far a top at p (gun space) is from home: nearer is heading in, whichever way it comes (up the line, across onto
+// it, up the grip with it already in).
+float FromHome(const float* p) {
+    const float d[3] = {p[0] - g_top[0], p[1] - g_top[1], p[2] - g_top[2]};
+    return std::sqrt(Dot(d, d));
 }
 
 // The magazine as drawn (gun space home -> gun space): where the hand has it, glided onto the line by g_glided.
@@ -487,24 +519,37 @@ void PalmInGun(const Frame& f, float* out) {
     Transform(inverse, palm, out);
 }
 
-// The hand's push on the line: how far up it the palm has the magazine's top from where it was as the try began (s),
-// and how far the palm has gone off the line since (aside).
-struct Push {
-    float s, aside;
-};
-Push PushNow(const Frame& f) {
+// The hand's push on the line: how far up it the palm has the magazine's top from where it was as the try began (s).
+float PushNow(const Frame& f) {
     float palm[3];
     PalmInGun(f, palm);
     const float d[3] = {palm[0] - g_tryPalm[0], palm[1] - g_tryPalm[1], palm[2] - g_tryPalm[2]};
-    const float along = Dot(d, g_line);
-    const float off[3] = {d[0] - along * g_line[0], d[1] - along * g_line[1], d[2] - along * g_line[2]};
-    return {g_tryFrom + along, std::sqrt(Dot(off, off))};
+    return g_tryFrom + Dot(d, g_line);
 }
 
-// A try on the line from s (caught, or pushed on from parked), the hand's push from where the palm is now: its first
-// frame has no frame before it to count with.
-void StartTry(const Frame& f, float s, float apart) {
+// The palm from where it would be with hold holding the magazine on the line, its top at s, the hand not turned (m):
+// how far that is (away), and how far across the line (across; along it is the push's).
+void PalmOff(const Frame& f, const float* hold, float s, float& away, float& across) {
+    float palm[3], inverse[12], onLine[3];
+    PalmInGun(f, palm);
+    InvertRigid(hold, inverse);
+    Transform(inverse, kPalmBind, onLine);  // with the magazine home
+    const float d[3] = {palm[0] - onLine[0] - s * g_line[0], palm[1] - onLine[1] - s * g_line[1],
+                        palm[2] - onLine[2] - s * g_line[2]};
+    const float along = Dot(d, g_line);
+    const float off[3] = {d[0] - along * g_line[0], d[1] - along * g_line[1], d[2] - along * g_line[2]};
+    away = std::sqrt(Dot(d, d));
+    across = std::sqrt(Dot(off, off));
+}
+
+// A try on the line from s (caught, or pushed on from parked), the hand's push from where the palm is now and its
+// leaving from how far off it is (held as hold has it): its first frame has no frame before it to count with.
+void StartTry(const Frame& f, float s, float apart, const float* hold) {
     PalmInGun(f, g_tryPalm);
+    g_tryHold = hold;
+    PalmOff(f, hold, s, g_awayLeast, g_acrossFrom);
+    g_lastAway = g_awayLeast;
+    g_acrossLeast = g_lastAcross = g_acrossFrom;
     g_tryFrom = s;
     g_state = State::kLine;
     g_along = s;
@@ -536,10 +581,17 @@ void Seat(Result& r) {
     r.mag = r.holding = false;
 }
 
+// Gone without a fall, from here (another went in, the pistol or the hand lost a second, let go while the pistol isn't
+// seen): hands.cpp runs Update on while the hand drawn on it eases back (EasingBack), so it eases back from where it was.
 void Cancel(Result& r) {
     Missed(r);
     EndTry(r);
+    const bool onIt = g_state == State::kHand || g_state == State::kLine;
     Clear();
+    if (onIt) {
+        LeaveHand();
+        EaseBack(0.0f, r);  // this frame too: from where it was drawn, not a frame on the controller first
+    }
     r.cancelled = true;
 }
 
@@ -577,7 +629,7 @@ Result Update(const Frame& f) {
         g_gripCount = 0;
         g_along = kMouth;
         g_glided = g_regrip = 0.0f;
-        g_armed = true, g_haveTop = false;
+        g_armed = g_pushArmed = true, g_haveTop = false;
         g_missFrom = -1.0f;
         g_awayFor = -1.0f;  // the fingers on it the frame it's taken
         r.gloveBlend = 0.0f;
@@ -667,6 +719,14 @@ Result Update(const Frame& f) {
         float fromMouth = 0.0f, tilt = 0.0f, twist = 0.0f;
         const bool near = InReach(held.top, false, &fromMouth);
         Turns(held.inGun, tilt, twist);
+        // Pulled back out of the grip: armed again once it heads back in, its top 2 cm nearer home than the furthest it's
+        // been since, both two frames running (a tracking jump away or in does neither).
+        if (!g_armed) {
+            const float fromHome = FromHome(held.top);
+            g_pulledFar = std::max(g_pulledFar, std::min(fromHome, g_lastFromHome));
+            g_armed = std::max(fromHome, g_lastFromHome) < g_pulledFar - kHeadingIn;
+            g_lastFromHome = fromHome;
+        }
         const char* why = "";
         if (near) {
             float lead[3];
@@ -674,21 +734,24 @@ Result Update(const Frame& f) {
                 lead[i] = held.top[i] + v[i] * kLead;
             why = !f.wellEmpty                    ? "the grip has its own magazine in"
                   : g_heldFrames < kHeldFrames    ? "only just taken"
-                  : !g_armed                      ? "just pulled back out of the grip (out of reach first)"
+                  : !g_armed                      ? "just pulled back out of the grip (out of reach or heading in first)"
                   : tilt > g_angle                ? "its length turned too far from the grip's line"
                   : twist > g_angle               ? "turned too far about its own length"
                   : !known                        ? "only just seen again (its speed not known)"
                   : Dot(v, v) > kFastest * kFastest ? "faster than a hand (a tracking jump)"
                   : !InReach(lead, true, nullptr) ? "going away from the grip, or passing it fast"
                                                   : "";
-        } else {
+        } else if (!InReach(held.top, false, nullptr, kReachSlack)) {
+            // Out of reach by the slack: armed again, and a near miss told (once: one trembling at the edge of reach
+            // isn't out of it).
             g_armed = true;
             Missed(r);
         }
         if (near && !*why) {
             // Caught: onto the line 1.5 cm into the grip (or as far in as its top already was), the hand's push read
-            // from here on by how far the palm goes on up the line from where it is now.
-            StartTry(f, std::clamp(held.s, kMouth + kGlideIn, 0.0f), apart);
+            // from here on by how far the palm goes on up the line from where it is now, and its leaving by how far
+            // across the line it goes from where it would hold it there.
+            StartTry(f, std::clamp(held.s, kMouth + kGlideIn, 0.0f), apart, g_carry);
             g_handIn = 1.0f;  // the hand drawn holding it is the controller's own as it's caught
             g_missFrom = -1.0f;
             g_haveTop = false;
@@ -713,10 +776,14 @@ Result Update(const Frame& f) {
         auto under = [](const Held& h) {
             return h.s >= g_along - kPushReach && h.lateral <= kPushAside && h.turned <= kPushTurned;
         };
-        if (under(AsHeld(f, g_carry)) || under(AsHeld(f, g_push))) {
-            // The hand drawn under it on the flat base, eased in from where it's drawn now.
+        const bool carried = under(AsHeld(f, g_carry)), open = !carried && under(AsHeld(f, g_push));
+        if (!carried && !open)
+            g_pushArmed = true;  // out of a push's reach: the next time it's within it, it pushes it on
+        if ((carried || open) && g_pushArmed) {
+            // The hand drawn under it on the flat base, eased in from where it's drawn now; leaving it read by how far
+            // across the line the palm goes from where it holds it so.
             const float share = AwayShare();
-            StartTry(f, g_along, apart);
+            StartTry(f, g_along, apart, carried ? g_carry : g_push);
             g_regrip = 1.0f;
             g_handIn = Unsmooth(share);
             g_awayFor = -1.0f;
@@ -735,27 +802,39 @@ Result Update(const Frame& f) {
     }
     // Where the hand has it as it carries it: the glide's start (gliding back, its end).
     std::memcpy(g_handInGun, AsHeld(f, g_carry).inGun, sizeof(g_handInGun));
-    const Push push = PushNow(f);
+    const float push = PushNow(f);
     // How near the push brings its top to home, two frames running (as the snap goes by: a tracking jump is one).
-    const float twoFrames = std::min(push.s, g_lastPush);
-    g_lastPush = push.s;
+    const float twoFrames = std::min(push, g_lastPush);
+    g_lastPush = push;
     if (twoFrames > g_closest)
         g_closest = twoFrames, g_closestApart = apart;
+    // How far the palm is from where it would hold it where it's drawn, and across the line, and the nearest it's come
+    // to either since the try began (two frames running).
+    float away = 0.0f, across = 0.0f;
+    PalmOff(f, g_tryHold, g_along, away, across);
+    g_awayLeast = std::min(g_awayLeast, std::max(away, g_lastAway));
+    g_acrossLeast = std::min(g_acrossLeast, std::max(across, g_lastAcross));
+    g_lastAway = away, g_lastAcross = across;
     const float before = g_along;
     if (!g_snapping) {
         // The hand leaving it: still gliding in with the grip squeezed, it goes back out into the hand; otherwise it
-        // stays where it is in the grip (parked).
+        // stays where it is in the grip (parked). Down the line from where it pushes it and away from it, or back out
+        // across the line past where it was as the try began and some way from the nearest it's come: going on in
+        // towards it isn't leaving.
         const bool back = g_glided < 1.0f && f.squeeze >= kArm;
-        const bool off = back ? push.s < g_along - kOffBelow || push.aside > kOffAside
-                              : push.s < g_along - kLeaveBelow || push.aside > kLeaveAside;
+        const float below = back ? kOffBelow : kLeaveBelow;
+        const bool off = (push < g_along - below && away > g_awayLeast + below) ||
+                         across > std::max(g_acrossFrom, g_acrossLeast + (back ? kOffAcross : kLeaveAcross));
         g_offFor = off ? g_offFor + 1 : 0;
         if (g_offFor >= kOffFrames) {
             g_offFor = 0;
             EndTry(r);
             if (back) {
+                const Held held = AsHeld(f, g_carry);
                 g_state = State::kHand;
-                g_handS = AsHeld(f, g_carry).s;
-                g_armed = false;
+                g_handS = held.s;
+                g_armed = false;  // not caught again until it heads back in, or it's out of reach
+                g_pulledFar = g_lastFromHome = FromHome(held.top);
                 g_haveTop = false;
                 r.offLine = true;
                 Show(f, true, r);
@@ -763,17 +842,18 @@ Result Update(const Frame& f) {
             }
             Show(f, true, r);  // the hand drawn under it this frame still
             g_state = State::kParked;
+            g_pushArmed = false;  // the hand leaving it may still be within a push's reach: out of it first
             r.parked = true;
             r.holding = false;
             LeaveHand();
             return r;
         }
         // Held there gripped: the dwell (drawing back 1 cm from the furthest it's been pushed starts it again).
-        if (f.squeeze >= kArm && g_offFor == 0 && push.s >= g_dwellTop - kDwellSlack) {
-            g_dwellTop = std::max(g_dwellTop, push.s);
+        if (f.squeeze >= kArm && g_offFor == 0 && push >= g_dwellTop - kDwellSlack) {
+            g_dwellTop = std::max(g_dwellTop, push);
             g_dwellFor += dt;
         } else {
-            g_dwellTop = push.s;
+            g_dwellTop = push;
             g_dwellFor = 0.0f;
         }
         // Within the snap two frames running, or held there the dwell: home by itself from here, on from where it is
@@ -811,16 +891,20 @@ bool Parked() {
     return g_state == State::kParked;
 }
 
+bool EasingBack() {
+    return g_awayFor >= 0.0f;
+}
+
 void Clear() {
-    if (g_state == State::kHand || g_state == State::kLine)
-        LeaveHand();  // the hand drawn on it eases back from where it was drawn
     g_state = State::kNone;
+    g_awayFor = -1.0f;  // gone: the hand drawn on it doesn't ease back towards where it was (nor waits to)
     g_offFor = 0;
     g_lostFor = g_gunLostFor = g_lineLostFor = 0.0f;
     g_glided = g_regrip = 0.0f;
     g_trying = g_snapping = g_dwelt = false;
     g_dwellFor = 0.0f;
     g_missFrom = -1.0f;
+    g_pushArmed = true;
 }
 
 void SetCarry(const float* hold, float guide) {

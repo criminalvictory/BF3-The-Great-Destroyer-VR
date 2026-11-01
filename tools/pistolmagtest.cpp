@@ -19,7 +19,10 @@
 //      go within reach of the grip, it's caught all the same
 //   5  the magnetic catch from any direction: lined up from below, 6 cm to the side, 45 degrees tilted, the gun moved
 //      down onto a still magazine, from the front, a top already in the grip (straightened there; found there); not: a
-//      fast swipe past, a one-frame tracking jump, turned past the angle, plainly going away, out of reach
+//      fast swipe past, a one-frame tracking jump, turned past the angle, plainly going away, out of reach; followed
+//      through (the review): the hand carrying on in after the catch from the side, the front, below at 45 degrees and
+//      down from above, then pushed on or past the line and back, kept and home; leaving it still leaves it; pulled
+//      back out in the grip and pushed straight back up, caught again
 //   6  the game's own reload with a magazine in the hand: it's gone
 //   7  the carries: G2 and C2 both, the same path the same way; the magazine never turns in the hand, the hand drawn on
 //      it does (G2 52 degrees, C2 none); the game's pinch as G2; G2's index waits at its reach while the hand goes over
@@ -30,13 +33,15 @@
 //  10  each try's nearest approach (to set the snap from): parked, back out, seated, gone; the hands apart then
 //  11  the push home (B2): its share over the last 3 cm; the hand drawn under the magazine on B, then on B2
 //  12  the hand or the pistol lost: kept a second in the hand; on the line a moment (then parked); going home by itself
-//      (the snap), it goes on
+//      (the snap), it goes on; the hand drawn easing back after the seat with the pistol out of hand; cleared by the
+//      caller, nothing left easing back; gone by the game's reload, eased back from where it was
 //  13  the holds and the helpers: C2 is the flat base's place, C1 53 degrees off, G2 52; PlaceOnLine is the design's
 //  14  frame times and poses not numbers: nothing drawn that isn't a number, never past home
 //  15  the glide: no frame's step beyond a small one, the hand drawn with it, about the glide's time; let go during
 //      it, it goes on in; X during it leaves it be; pulled back out with the grip squeezed, it glides back to the hand
 //  16  no flicker: the fingers and the hand counted turning over while hovering at the edge of reach, in and out of it,
-//      jittering on the line and under a parked one; at most one line a change
+//      trembling at its edge (no near miss told meanwhile), jittering on the line and under a parked one, a hand in
+//      above a parked one and lowered, parked by a hand still within a push's reach; at most one line a change
 //  17  the tunables kept to their ranges, and a smaller reach and a longer glide doing what they say
 //  18  hands.cpp's loadtest script, both ways and with both carries: home; parked, then pushed home
 // Usage: pistolmagtest [-v]   (-v prints every check and every event)
@@ -435,6 +440,16 @@ struct Sim {
             Step();
         }
     }
+    // The magazine brought in the hand from a to b (s, lateral and front as MagAt has them) over that many seconds,
+    // eased as a hand moves: from rest to rest, its top fastest half way (1.5 times the average), caught or not.
+    void Ease(float s0, float s1, float lateral0, float lateral1, float front0, float front1, float seconds) {
+        const int n = std::max(1, static_cast<int>(std::lround(seconds / kDt)));
+        for (int i = 1; i <= n; ++i) {
+            const float u = static_cast<float>(i) / n, k = u * u * (3.0f - 2.0f * u);
+            MagAt(s0 + (s1 - s0) * k, lateral0 + (lateral1 - lateral0) * k, 0.0f, false, front0 + (front1 - front0) * k);
+            Step();
+        }
+    }
     // The push brought to s and held there until the snap takes the magazine on past it (true; at most 10 frames).
     bool UntilSnap(float s) {
         for (int i = 0; i < 10; ++i) {
@@ -737,6 +752,130 @@ void Catches() {
     o.Steps(72);
     Check(!o.Has("caught") && pistolmag::Holding() && o.misses == 0,
           "held 8.6 cm under the grip: out of reach, nothing");
+
+    // Followed through: caught 6-7.5 cm off, a real hand carries on towards the grip (the review: every catch from the
+    // side, the front or a diagonal with the hand still moving was pulled back out, or parked out of the palm's reach;
+    // the checks above hold the hand still from the catch on). Each from 15 cm off to 1 cm under the grip's bottom,
+    // eased from rest to rest, then held there gripped: caught once, never pulled out or parked, the drawn hand on it
+    // and the fingers flat once each (and off again after), home (by the dwell, or pushed by a diagonal's way up).
+    struct Way {
+        const char* name;
+        float s, lateral, front, seconds;
+    };
+    const Way ways[] = {
+        {"from the side at 1.5 m/s", kMouth - 0.01f, 0.15f, 0.0f, 0.15f},
+        {"from the side at 0.9 m/s", kMouth - 0.01f, 0.15f, 0.0f, 0.25f},
+        {"from the side at 0.4 m/s", kMouth - 0.01f, 0.15f, 0.0f, 0.6f},
+        {"from the side at 0.2 m/s", kMouth - 0.01f, 0.15f, 0.0f, 1.0f},
+        {"from the front at 0.9 m/s", kMouth - 0.01f, 0.0f, 0.15f, 0.25f},
+        {"from the front at 0.4 m/s", kMouth - 0.01f, 0.0f, 0.15f, 0.6f},
+        {"from below and the side (45 degrees) at 1.1 m/s", kMouth - 0.155f, 0.15f, 0.0f, 0.3f},
+        {"from below and the front (45 degrees) at 1.1 m/s", kMouth - 0.155f, 0.0f, 0.15f, 0.3f},
+        {"down and in from 6 cm above the mouth, the side", kMouth + 0.06f, 0.15f, 0.0f, 0.3f},
+        {"down and in from 6 cm above the mouth, the front", kMouth + 0.06f, 0.0f, 0.15f, 0.6f},
+    };
+    for (int c = 0; c < 2; ++c) {
+        const Setup carry = c ? C2() : Setup();
+        const char* name = c ? "C2" : "G2";
+        for (const Way& way : ways) {
+            Sim m(carry);
+            m.Take();
+            m.MagAt(-0.45f, way.lateral, 0.0f, false, way.front);  // to the start well away from the grip
+            m.Steps(3);
+            m.Ease(-0.45f, way.s, way.lateral, way.lateral, way.front, way.front, 0.6f);
+            m.Steps(3);
+            const bool before = m.catches == 0;
+            m.flatTurns = m.handTurns = 0;
+            m.Ease(way.s, kMouth - 0.01f, way.lateral, 0.0f, way.front, 0.0f, way.seconds);
+            m.Steps(72);
+            Check(before && m.catches == 1 && !m.Has("off line") && !m.Has("parked") && m.seats == 1 &&
+                      m.handTurns == 2 && m.flatTurns == 2,
+                  "%s %s, carrying on in after the catch (%.1f cm off): never pulled out nor parked, home%s", name,
+                  way.name, m.lastCatch.caughtFrom * 100, m.Has("dwell") ? " (the dwell)" : " (pushed)");
+        }
+        // ... and pushed on: from the side, then on up 5 cm into the grip (no dwell: the push takes it home).
+        Sim up(Tuned(carry, 0.065f, 0.0f));
+        up.Take();
+        up.MagAt(-0.45f, 0.15f);
+        up.Steps(3);
+        up.Ease(-0.45f, kMouth - 0.01f, 0.15f, 0.15f, 0.0f, 0.0f, 0.6f);
+        up.Steps(3);
+        up.Ease(kMouth - 0.01f, kMouth - 0.01f, 0.15f, 0.0f, 0.0f, 0.0f, 0.25f);
+        up.Ease(kMouth - 0.01f, kMouth + 0.04f, 0.0f, 0.0f, 0.0f, 0.0f, 0.3f);
+        up.Steps(20);
+        Check(up.catches == 1 && !up.Has("off line") && !up.Has("parked") && up.Has("seated") && !up.Has("dwell"),
+              "%s from the side, then on up 5 cm into the grip: pushed home", name);
+        // ... and past the line 5 cm before coming back onto it.
+        Sim past(carry);
+        past.Take();
+        past.MagAt(-0.45f, 0.15f);
+        past.Steps(3);
+        past.Ease(-0.45f, kMouth - 0.01f, 0.15f, 0.15f, 0.0f, 0.0f, 0.6f);
+        past.Steps(3);
+        past.Ease(kMouth - 0.01f, kMouth - 0.01f, 0.15f, -0.05f, 0.0f, 0.0f, 0.25f);
+        past.Ease(kMouth - 0.01f, kMouth - 0.01f, -0.05f, 0.0f, 0.0f, 0.0f, 0.2f);
+        past.Steps(72);
+        Check(past.catches == 1 && !past.Has("off line") && !past.Has("parked") && past.Has("seated (dwell)"),
+              "%s from the side, 5 cm past the line and back onto it: kept, home", name);
+    }
+    // Leaving it still leaves it: caught from the side and held till it's glided in (no dwell), then the hand taken
+    // 10 cm back out across, gripped or let go, or dropped 10 cm: parked each time; going back out across as it glides
+    // in, gripped: back in the hand.
+    for (int leave = 0; leave < 4; ++leave) {
+        Sim m(Tuned(Setup(), 0.065f, 0.0f));
+        m.Take();
+        m.UntilCaught(-0.45f, kMouth, 0.4f, 0.06f, 0.06f);
+        const float at = m.handS;
+        if (leave >= 2)
+            m.squeeze = 0.0f;
+        m.Steps(14);
+        if (leave % 2 == 0)
+            m.Ease(at, at, 0.06f, 0.16f, 0.0f, 0.0f, 0.3f);
+        else
+            m.Ease(at, at - 0.10f, 0.06f, 0.06f, 0.0f, 0.0f, 0.3f);
+        m.Steps(5);
+        Check(m.Has("parked") && !m.Has("off line") && !m.Has("seated") && pistolmag::Parked(),
+              "caught from the side, then %s %s: parked in the grip", leave >= 2 ? "let go and" : "gripped,",
+              leave % 2 == 0 ? "the hand 10 cm back out across" : "the hand dropped 10 cm");
+    }
+    // A pass under the grip, 1 cm below its bottom, carried on 15 cm past it at 0.5 m/s: caught, and left part way in.
+    Sim pass;
+    pass.Take();
+    pass.MagAt(kMouth - 0.01f, -0.15f);
+    pass.Steps(3);
+    for (int i = 1; i <= 43; ++i) {
+        pass.MagAt(kMouth - 0.01f, -0.15f + 0.30f * i / 43);
+        pass.Step();
+    }
+    pass.Steps(5);
+    Check(pass.catches == 1 && pass.Has("parked") && !pass.Has("off line") && !pass.Has("let go") &&
+              pistolmag::Parked(),
+          "a pass under the grip carried on 15 cm past it at 0.5 m/s: caught, left part way in (parked)");
+    Sim back;
+    back.Take();
+    back.UntilCaught(-0.45f, kMouth, 0.4f, 0.06f, 0.06f);
+    const float from = back.handS;
+    back.Ease(from, from, 0.06f, 0.13f, 0.0f, 0.0f, 0.1f);
+    back.Steps(3);
+    Check(back.Has("off line") && !back.Has("parked") && pistolmag::Holding() && !pistolmag::Parked(),
+          "caught from the side, then 7 cm back out across as it glides in, gripped: back in the hand");
+    // Pulled back out with its top still in the grip, then pushed straight back up it: caught again as it heads in
+    // (the review: not until it had been out of reach, 7.5 cm and more, so pushing on up caught nothing).
+    Sim in;
+    in.Take();
+    in.tracked = false;  // the pistol not seen as the hand puts its top 4 cm into the grip
+    in.Carry(-0.45f, -0.07f, 1.0f);
+    in.tracked = true;
+    in.Steps(2);
+    const bool caught = in.Has("caught");
+    in.MagAt(-0.11f);  // 4 cm back down at once as it glides in, gripped: its top still in the grip
+    in.Steps(4);
+    const bool out = in.Has("off line") && in.catches == 1;
+    in.Ease(-0.11f, -0.075f, 0.0f, 0.0f, 0.0f, 0.0f, 0.2f);  // pushed straight back up 3.5 cm, then held (the dwell)
+    in.Steps(50);
+    Check(caught && out && in.catches == 2 && in.Has("seated"),
+          "pulled back out with its top still in the grip, pushed straight back up it: caught again (%d), home",
+          in.catches);
 }
 
 void GameReload() {
@@ -1158,6 +1297,52 @@ void Lost() {
     ten.Steps(16);
     Check(going && ten.Has("seated") && !ten.Has("parked") && !ten.wellEmpty,
           "seat 10 from 9.6 cm short, the hand lost as the snap begins: home with no hand");
+    // After the seat the hand drawn under it eases back to the controller over the glide's time, the pistol in hand or
+    // not: hands.cpp runs Update on while it does (EasingBack; the review: stopped once the pistol left the hand, it was
+    // drawn off the controller again as the pistol came back).
+    Sim e;
+    e.TakeAndCatch();
+    while (!e.Has("seated") && e.frame < 400)
+        e.Step();
+    const bool easing = pistolmag::EasingBack();
+    e.pistol = false;  // out of hand as it eases back
+    std::vector<float> share;
+    for (int i = 0; i < 14; ++i) {
+        e.Step();
+        share.push_back(e.r.gloveBlend);
+    }
+    float drop = 0.0f;
+    for (size_t i = 1; i < share.size(); ++i)
+        drop = std::fmax(drop, share[i - 1] - share[i]);
+    Check(easing && share[0] > 0.9f && share.back() == 0.0f && drop < 0.16f && !pistolmag::EasingBack(),
+          "after the seat, the pistol out of hand: the hand drawn under it eases back all the same (%.0f%% at most a "
+          "frame), then it's done",
+          drop * 100);
+    // Gone by the caller with it on the line (the magazine by hand off, free hands off: Update isn't run after): the hand
+    // drawn on it is back on the controller at once, nothing left easing back (the review: on the next Update, minutes
+    // later, it was drawn 9 cm off the controller with the flat base's fingers).
+    Sim c;
+    c.TakeAndCatch();
+    const bool drawnOn = c.r.gloveBlend == 1.0f && c.r.flat == 1.0f;
+    pistolmag::Clear();
+    const bool cleared = !pistolmag::EasingBack() && !pistolmag::Holding();
+    c.MagAt(-0.45f, 0.05f, 30.0f);  // ... much later, the hand at the pelvis
+    c.Step();
+    Check(drawnOn && cleared && c.r.gloveBlend == 0.0f && c.r.fingers == 0.0f && !c.r.mag,
+          "cleared on the line by the caller: nothing left easing back, the next Update draws the hand where it is");
+    // Gone from here (the game's own reload) with it on the line: Update goes on, so the hand eases back from where it
+    // was drawn, that frame too.
+    Sim g2;
+    g2.TakeAndCatch();
+    const float onLine = g2.r.gloveBlend;
+    g2.wellEmpty = false;
+    g2.Step();
+    const float atGone = g2.r.gloveBlend;
+    g2.Steps(14);
+    Check(g2.Has("cancelled") && onLine == 1.0f && atGone > 0.99f && g2.r.gloveBlend == 0.0f,
+          "gone by the game's own reload on the line: the hand drawn on it eases back from there (%.2f the frame it "
+          "goes), then it's on the controller",
+          atGone);
 }
 
 void Holds() {
@@ -1314,18 +1499,33 @@ void Flicker() {
     Check(e.catches == 1 && e.flatTurns == 1 && e.handTurns == 1 && !e.Has("off line"),
           "hovering at the edge of reach 3 s: caught once, the fingers opening once (%d), the hand drawn on once (%d)",
           e.flatTurns, e.handTurns);
-    // In and out of reach over and over, too tilted to catch: told once each time it's out of reach again.
+    // In and out of reach over and over, too tilted to catch: told once each time it's out of reach again, 1.5 cm past
+    // it (the swing goes from 1.1 cm inside the reach to 2.9 cm outside: it went 1.6 either way before the slack).
     Sim t;
     t.Take();
     t.Carry(-0.45f, -0.20f, 0.6f, 0.0f, 60.0f);
     for (int i = 0; i < 216; ++i) {
-        t.MagAt(-0.19f + 0.012f * std::sin(i * 0.12f), 0.0f, 60.0f);
+        t.MagAt(-0.195f + 0.02f * std::sin(i * 0.12f), 0.0f, 60.0f);
         t.Step();
     }
     const int crossings = t.misses;
     Check(t.catches == 0 && t.flatTurns == 0 && t.handTurns == 0 && crossings >= 3 && crossings <= 5,
           "in and out of reach tilted 60, 3 s: nothing caught, no pose changing, %d near misses told (one each)",
           crossings);
+    // Trembling 1 mm at the edge of reach, too tilted to catch: no near miss told while it's there (the review: in and
+    // out of reach every frame or two, 72 told in 3 s, each a line in the log), one as it goes.
+    Sim q;
+    q.Take();
+    q.Carry(-0.45f, kMouth - 0.09f, 0.6f, 0.0f, 60.0f);
+    for (int i = 0; i < 216; ++i) {
+        q.MagAt(kMouth - 0.075f + 0.001f * std::sin(i * 2.1f), 0.0f, 60.0f);
+        q.Step();
+    }
+    const int there = q.misses;
+    q.Carry(kMouth - 0.075f, kMouth - 0.12f, 0.3f, 0.0f, 60.0f);
+    Check(there == 0 && q.misses == 1,
+          "trembling 1 mm at the edge of reach tilted 60, 3 s: no near miss told meanwhile (%d), one as it goes (%d)",
+          there, q.misses);
     // On the line, the hand jittering 1.5 cm up and down (leaving it takes 2.5 below, three frames running).
     Sim j(Tuned(Setup(), 0.02f, 0.0f));
     j.TakeAndCatch();
@@ -1353,6 +1553,59 @@ void Flicker() {
     p.MagAt(parkedAt - 0.005f, 0.0f, 0.0f, true);
     p.Step();
     Check(p.Has("pushed") && p.Count("pushed") == 1, "brought within 1 cm: pushed on, once");
+    // A hand in from the side 2 cm above a parked one, then lowered 6 cm (the review: pushed and parked twice, two
+    // tries told, the drawn hand on and off three times): pushed once, left at most once.
+    Sim f(Tuned(Setup(), 0.02f, 0.0f));
+    f.TakeAndCatch();
+    const float at2 = f.r.s;
+    f.squeeze = 0.0f;
+    f.Push(at2, at2 - 0.10f, 0.6f);
+    const int parks = f.Count("parked"), turns = f.handTurns;
+    for (int i = 1; i <= 20; ++i) {  // out to the side at its height + 2 cm
+        f.MagAt(at2 - 0.10f + 0.12f * i / 20, 0.10f * i / 20, 0.0f, true);
+        f.Step();
+    }
+    for (int i = 1; i <= 20; ++i) {  // in from the side
+        f.MagAt(at2 + 0.02f, 0.10f - 0.08f * i / 20, 0.0f, true);
+        f.Step();
+    }
+    for (int i = 1; i <= 40; ++i) {  // down 6 cm
+        f.MagAt(at2 + 0.02f - 0.06f * i / 40, 0.02f, 0.0f, true);
+        f.Step();
+    }
+    Check(f.Count("pushed") == 1 && f.Count("parked") - parks <= 1 && f.handTurns - turns <= 2,
+          "a hand in from the side above a parked one, then lowered 6 cm: pushed once, left at most once (%d), the "
+          "drawn hand on and off at most once (%d)",
+          f.Count("parked") - parks, f.handTurns - turns);
+    // Parked by the hand leaving it with its top still within a push's reach (turned 27 degrees about it, the palm
+    // swung 6 cm across): not pushed on again until the hand has been out of that reach.
+    Sim u(Tuned(Setup(), 0.02f, 0.0f));
+    u.TakeAndCatch();
+    const float left = u.r.s;
+    u.squeeze = 0.0f;
+    u.Push(left, left - 0.10f, 0.6f);  // dropped away: parked
+    u.MagAt(left + 0.01f);             // back holding it as the carry would, its top 1 cm into the parked one's
+    u.Step();
+    const bool pushedOn = u.Count("pushed") == 1;
+    float turned = 0.0f;
+    for (int i = 1; i <= 15 && u.Count("parked") < 2; ++i) {  // turned about its top: the palm swings across
+        turned = 40.0f * i / 15;
+        u.MagAt(left + 0.01f, 0.0f, turned);
+        u.Step();
+    }
+    const bool leftAgain = u.Count("parked") == 2 && pistolmag::Parked();
+    for (int i = 1; i <= 20; ++i) {  // straightened again, its top within a push's reach of the parked one's
+        u.MagAt(left + 0.01f, 0.0f, turned - turned * i / 20);
+        u.Step();
+    }
+    const bool waited = u.Count("pushed") == 1;
+    const float parkedThere = u.r.s;
+    u.MagAt(left - 0.03f);  // out of the reach
+    u.Steps(3);
+    u.MagAt(parkedThere - 0.005f);  // and back within it
+    u.Step();
+    Check(pushedOn && leftAgain && waited && u.Count("pushed") == 2,
+          "parked by the hand leaving it within a push's reach: not pushed on again until the hand's been out of it");
     // Every line hands.cpp logs is one of the events: a whole reload is a handful of them.
     Sim w;
     w.Take();

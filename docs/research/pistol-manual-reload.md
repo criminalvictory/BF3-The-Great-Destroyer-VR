@@ -53,7 +53,7 @@ Still to check: whether that server path is the pistol's own slot or whichever w
 | X held 0.6 s | Unchanged: R, the game's reload and pickups (the shotgun at the train's door). |
 | Left grip at the pelvis | Takes a magazine (pouch.cpp's zone and squeeze rule). |
 | Left grip held | Carries it; let go away from the gun and it falls. |
-| Left hand up under the grip | Inserts it: the fingers open 12 cm under the grip (the flat base), the palm pushes it up its line. |
+| Left hand to the grip | Inserts it: caught within 7.5 cm of the grip's mouth from any direction, it glides in and only then the fingers open (the flat base); the palm pushes it up its line, or held there gripped it goes home by itself. |
 | Left trigger at the slide's rear | Grabs the slide (as the M416's charging handle); pull back fully and let go to rack. |
 | Right trigger | Fires. Empty with the slide locked and a new magazine in: the first pull sends the slide home. |
 
@@ -162,10 +162,35 @@ Off by default as before (`build\pistol.txt` "mag 1"); tested offline only (`too
   itself. Why: the controllers can't overlap, so the last centimetres are the hard part; the first test had every caught
   magazine pushed home anyway; the user asked for magnetic. Gripped only, so letting go and dropping away still parks it.
 - **No flicker**: the flat base comes only with the catch now, never before it; leaving needs three frames beyond wider
-  limits than the catch; a magazine pulled back out isn't caught again until it's been out of reach; a hand lost a
-  moment (0.25 s) keeps it on the line. Each change is one log line.
+  limits than the catch; a magazine pulled back out isn't caught again until it heads back in or has been out of reach;
+  a hand lost a moment (0.25 s) keeps it on the line. Each change is one log line.
 - **Tunables** (re-read live, logged once when read): "catch 7.5 55", "glide 0.15", "seat 6.5", "dwell 0.4"; "carry g2"
   is the default, "carry c2" and "carry game" stay.
+- **The review's fixes** (`tools\pistolmagtest.cpp`: 195 checks; 29 of the 37 new ones fail on the step as first built,
+  and one more needs EasingBack, which is new):
+  - Leaving is judged by the hand going away, never by its going on in. A real hand caught 6-7.5 cm off carries on
+    towards the grip, and the palm's move since the catch was being read as leaving: in the review's scratch runs every
+    catch from the side, the front or a 45-degree diagonal with the hand still moving (0.4-1.5 m/s) was pulled back out
+    or parked out of the palm's reach. Now across the line counts only past where the palm was at the catch and 5 cm
+    (4 while gliding in) past the nearest it has come since, measured from where the palm would hold the magazine on
+    the line; down the line still counts at 2.5 cm (3), but only if the palm is also that much further from where it
+    would hold it, so coming down and in from above the grip's mouth isn't leaving either. All of those now go in.
+  - Pulled back out, it's armed again once its top heads back in (2 cm nearer home than the furthest it has been):
+    pulled out within the grip and pushed straight back up, it's caught again.
+  - A near miss is told, and the catch armed again, only 1.5 cm out of reach: a top trembling 1 mm at the edge of reach
+    was told 72 times in 3 s.
+  - Parked by the hand leaving it, it isn't pushed on again until the hand has been out of a push's reach (a hand in
+    from the side above a parked one and lowered was pushed and parked twice).
+  - The ease back to the controller no longer waits through frames without Update: Clear (the magazine by hand off, free
+    hands off) drops it, and hands.cpp runs Update until it's done, the pistol in hand or not; the hand had been drawn
+    9 cm off the controller, with the flat base's fingers, on the next Update.
+  - A pass under the grip carried on past at up to about 1 m/s is caught and left part way in (parked: the palm pushes
+    it on, X drops it); faster, it's pulled back out into the hand (from 2 m/s or so it isn't caught at all). Before,
+    both were pulled back out.
+- **How far the drawn hand gets from the controller**: caught 7.5 cm under the grip's mouth and held still, the glide
+  takes the magazine 9 cm up to 1.5 cm in and the dwell's snap the 9.6 cm left, the hand drawn on it going with it:
+  18.4 cm at the most (measured), turned up to 52 degrees for G2. Pushed, the real hand goes up with it. The step's own
+  report put it at about 14 cm. For the headset test to judge.
 
 ## Open questions for the user
 

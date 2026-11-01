@@ -21,8 +21,9 @@ namespace pistolmag {
 //     under its floorplate (the game's 2.390 s) as it does, the fingers first, the place turning about the floorplate
 //     (G2's 52 degrees: the hand drawn turns round the magazine, never the magazine in the hand);
 //   - on the line the hand goes on as it was at the catch: its push takes the magazine up the line from there (only
-//     up: the well holds it); the hand leaving it leaves it there ("parked": the palm pushes it on later, X drops it,
-//     hands.cpp); let go of after the catch, it goes on in all the same; let go of in the hand, it falls;
+//     up: the well holds it); the hand leaving it (down the line from where it pushes it, or back out across the line,
+//     never going on in towards it) leaves it there ("parked": the palm pushes it on later, X drops it, hands.cpp); let
+//     go of after the catch, it goes on in all the same; let go of in the hand, it falls;
 //   - the hands can't close up under the grip as the game's do (the controllers can't overlap: the review), so once the
 //     push has held its top within the snap distance of home for two frames running (SetSnap), or the hand has held it
 //     there gripped a moment (SetDwell), it goes home by itself, eased over the glide's time, the hand seen or not;
@@ -76,8 +77,9 @@ struct Result {
     float caughtFrom = 0.0f, caughtTurned = 0.0f;
     // Seated: it went home by itself after the hand held it there (the dwell), not pushed within the snap.
     bool dwelt = false;
-    // A near miss: its top in reach without being caught, told once it's out of reach again (or out of the hand): the
-    // nearest it came to the grip's mouth (m), its length's turn from the line then (degrees) and why it wasn't caught.
+    // A near miss: its top in reach without being caught, told once it's out of reach again by 1.5 cm (or out of the
+    // hand): the nearest it came to the grip's mouth (m), its length's turn from the line then (degrees) and why it
+    // wasn't caught.
     bool missed = false;
     float missFrom = 0.0f, missTurned = 0.0f;
     const char* missWhy = "";
@@ -95,8 +97,13 @@ Result Update(const Frame& f);
 // A magazine in the hand, on its way in, or parked in the well.
 bool Holding();
 bool Parked();
-// Gone without a fall (free hands off, the pistol dropped for good, X with it parked: the caller drops it). A hand
-// drawn holding it eases back to the controller from where it was last drawn.
+// The hand drawn holding it still easing back to the controller after it's gone (seated, parked, let go, gone): the
+// caller runs Update until it's done, the pistol in hand or not (the review: left waiting, it came back off the
+// controller on the next Update, the pistol back in hand).
+bool EasingBack();
+// Gone without a fall (the magazine by hand off, free hands off, X with it parked, the game's own reload: the caller
+// drops it), and the hand drawn holding it with it: back on the controller at once, not easing back (the callers that
+// stop running Update would otherwise find it easing back from where it was on the next one).
 void Clear();
 
 // The carry, the magazine in the hand away from the grip: where it sits on the palm (pistolposes.h's convention: gun
