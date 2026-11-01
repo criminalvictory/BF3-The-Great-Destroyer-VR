@@ -32,8 +32,10 @@ $before = (Get-Content $log).Count
 $t = 0
 do {
     Start-Sleep 3; $t += 3
-    # The game's own view in use, or the player's gun found (the FOV line doesn't always come).
-    $line = Get-Content $log | Select-Object -Skip $before | Select-String 'FOV: source 55\.0, render view 100|Ammo: the gun in hand' | Select-Object -Last 1
+    # The game's own view in use, the player's gun found (the FOV line doesn't always come), or the mod's own
+    # switch to the headset's view as the player's soldier comes in: a level opening on a scripted ride (Comrades'
+    # drive, 2026-11-01) has neither of the others, and the clicks every 24 s went on into the level.
+    $line = Get-Content $log | Select-Object -Skip $before | Select-String 'FOV: source 55\.0, render view 100|Ammo: the gun in hand|Mode -> stereo \(the player' | Select-Object -Last 1
     # The click doesn't always take (2026-10-30 23:00: the menu stayed): clicked again every 24 s.
     if (-not $line -and $t % 24 -eq 0 -and $t -le 96) {
         # The window may have grown since (it opened at 1280x720 once, 2026-10-30 23:59): measured again.

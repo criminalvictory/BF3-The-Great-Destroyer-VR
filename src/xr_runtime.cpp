@@ -40,6 +40,7 @@
 #include "perfinfo.h"
 #include "skin.h"
 #include "overlay.h"
+#include "streamview.h"
 #include "views.h"
 #include "window.h"
 #include "xr_runtime.h"
@@ -116,6 +117,7 @@ void ResetEyes() {
     g_posesKept = 0;
     aim::Reset();
     g_bodyStale = true;
+    streamview::Reset();
 }
 // F7: the game may render a frame later than we think, which swaps the eyes and turns depth inside out.
 bool g_swapEyes = false;
@@ -636,6 +638,17 @@ void PollHotkeys() {
     // End: god mode on/off.
     if (KeyPressed(VK_END))
         god::Toggle();
+    // Home: the stream view on or off (the window and OBS: the left eye alone, or both eyes side by side). Saved to
+    // bf3vr.ini. Only with the game in front: Home is pressed in other programs' text too.
+    if (KeyPressed(VK_HOME)) {
+        DWORD process = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &process);
+        if (process == GetCurrentProcessId()) {
+            config::Mutable().streamView = !streamview::On();
+            streamview::SetOn(config::Get().streamView);
+            config::SaveStreamView();
+        }
+    }
     // F16 (sent by tools/drawhunt.ps1): the X button's magazine eject / insert. It inserts even with
     // pouch.txt "xinsert 0", so a scripted run can always put the magazine back.
     if (KeyPressed(VK_F16))
@@ -858,7 +871,8 @@ XrSwapchainSubImage HalfImage(const Swapchain& sc, int eye) {
 // With the wider view on, that's the angle the game really drew the last frame with: when the
 // render camera was lost (2026-10-30, after the opening ride) the game drew its own 55 degrees,
 // and showing that over the wide angle magnified everything 1.8x (blurry, gun and arms big).
-XrFovf GameFov() {
+// sideBySide: the picture holds both eyes side by side, each half of it.
+XrFovf GameFov(bool sideBySide) {
     const config::Settings& s = config::Get();
     float fullV = s.gameVerticalFovDeg * kPi / 180.0f;
     if (s.renderFovDeg > 0.0f) {
@@ -866,9 +880,12 @@ XrFovf GameFov() {
         fullV = rendered > 0.0f ? rendered : s.renderFovDeg * kPi / 180.0f;
     }
     float halfV = fullV * 0.5f;
-    float width = g_sideBySide ? g_scWidth / 2.0f : static_cast<float>(g_scWidth);  // one eye's part
+    float width = sideBySide ? g_scWidth / 2.0f : static_cast<float>(g_scWidth);  // one eye's part
     float halfH = std::atan(std::tan(halfV) * width / g_scHeight);
     return {-halfH, halfH, halfV, -halfV};
+}
+XrFovf GameFov() {
+    return GameFov(g_sideBySide);
 }
 
 struct FrameLayers {
@@ -1485,6 +1502,16 @@ void RenderFrame(IDXGISwapChain* swap) {
         endInfo.layerCount = layers.count;
         endInfo.layers = layers.list;
         Check(xrEndFrame(g_session, &endInfo), "xrEndFrame");
+    }
+
+    // The window, and OBS's game capture with it: one eye's view instead of both side by side, now the headset has
+    // the frame (streamview.cpp). From where the left eye's picture was drawn for, steadied; with the headset
+    // idle, the middle of the picture. Its field of view is one eye's half whether or not the headset had the frame
+    // (g_sideBySide is set only when it did: idle, the eye was taken for the whole window and the view came out
+    // twice as wide as it should, "it looks stretched", the user, 2026-11-01).
+    if (config::Get().mode == config::Mode::Stereo && g_stereoTest == kTestViews && views::Active() && g_scWidth) {
+        const bool posed = frame.shouldRender && g_sideBySide && g_eyeValid[kLeftEye];
+        streamview::Draw(g_device, back, posed ? &g_eyePose[kLeftEye].orientation : nullptr, GameFov(true));
     }
 
     back->Release();

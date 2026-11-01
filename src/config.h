@@ -29,6 +29,18 @@ struct Settings {
     // between the eyes. The headset is unaffected.
     bool mirrorOneEye = true;
 
+    // Per-eye stereo: the desktop window, and OBS's game capture with it, shows one view (the left eye's) instead
+    // of both eyes side by side ([stereo] stream_view; Home in game), stream_fov degrees across, drawn for a
+    // stream_aspect shape squeezed into the window (16:9: OBS's "stretch to screen" shows it in proportion; 0 = the
+    // window's own), steadied with the horizon level (stream_steady), looking stream_tilt degrees below where the
+    // head looks (streamview.cpp).
+    bool streamView = true;
+    float streamFovDeg = 85.0f;
+    float streamAspect = 16.0f / 9.0f;
+    bool streamFit = false;  // stream_fit: the whole eye's picture fitted in, black at its sides
+    bool streamSteady = true;
+    float streamTiltDeg = 0.0f;
+
     // Stereo mode head tracking: head turns and tilts are added to the player's look angles,
     // so the game looks (and aims) where the head looks. The mouse still turns the body.
     bool headTracking = true;
@@ -122,6 +134,8 @@ void SaveGunFlip();
 void SaveViewLag();
 // Writes the current poseLag to bf3vr.ini (F11 in game).
 void SavePoseLag();
+// Writes the current streamView to bf3vr.ini (Home in game).
+void SaveStreamView();
 
 // Up to four camera pointers: BF3 keeps several copies of the view (renderer, weapon, ...) and
 // the eye shift goes to all of them. The first is the one the camera probe logs.

@@ -44,6 +44,18 @@ const char kDefaultIni[] =
     "render_fov_last=90\n"
     "; 1 = the desktop window shows only the left eye instead of flickering between both.\n"
     "mirror_one_eye=1\n"
+    "; 1 = the desktop window (and OBS's game capture) shows one view, the left eye's, filling it, instead of\n"
+    "; both eyes side by side. Home switches it in game. stream_fov: degrees across. stream_aspect: the shape\n"
+    "; it's drawn for, squeezed into the window: 1.7778 (16:9) looks right with OBS's \"stretch to screen\" on a\n"
+    "; 16:9 canvas; 0 = the window's own shape. stream_fit: 1 = the whole eye's picture as the headset shows it,\n"
+    "; black at its sides. stream_steady: 1 = the head's small shakes and tilt taken out, the horizon level.\n"
+    "; stream_tilt: degrees below where you look.\n"
+    "stream_view=1\n"
+    "stream_fov=85\n"
+    "stream_aspect=1.7778\n"
+    "stream_fit=0\n"
+    "stream_steady=1\n"
+    "stream_tilt=0\n"
     "; 1 = hand frames to SteamVR on a thread of their own. Keep 0: it puts the graphics device in\n"
     "; its locked mode, which goes round the mod's draw hooks (the gun's FOV fix and free hands stop).\n"
     "async_handover=0\n"
@@ -206,6 +218,12 @@ void Load(HMODULE self) {
     s.renderFovLastDeg = ReadFloat(L"stereo", L"render_fov_last", s.renderFovLastDeg);
     s.headTracking = ReadBool(L"head", L"tracking", true);
     s.mirrorOneEye = ReadBool(L"stereo", L"mirror_one_eye", true);
+    s.streamView = ReadBool(L"stereo", L"stream_view", s.streamView);
+    s.streamFovDeg = ReadFloat(L"stereo", L"stream_fov", s.streamFovDeg);
+    s.streamAspect = ReadFloat(L"stereo", L"stream_aspect", s.streamAspect);
+    s.streamFit = ReadBool(L"stereo", L"stream_fit", s.streamFit);
+    s.streamSteady = ReadBool(L"stereo", L"stream_steady", s.streamSteady);
+    s.streamTiltDeg = ReadFloat(L"stereo", L"stream_tilt", s.streamTiltDeg);
     s.controllerAim = ReadBool(L"controllers", L"aim", true);
     s.turnDegrees = ReadFloat(L"controllers", L"turn_degrees", s.turnDegrees);
     s.analogMove = ReadFloat(L"controllers", L"analog_move", s.analogMove ? 1.0f : 0.0f) != 0.0f;
@@ -390,6 +408,10 @@ void SetFov(const Fov& fov) {
 
 void SavePoseLag() {
     WriteString(L"stereo", L"pose_lag", std::to_wstring(g_settings.poseLag));
+}
+
+void SaveStreamView() {
+    WriteString(L"stereo", L"stream_view", g_settings.streamView ? L"1" : L"0");
 }
 
 void SaveViewLag() {

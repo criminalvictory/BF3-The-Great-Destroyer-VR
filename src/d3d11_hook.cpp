@@ -26,8 +26,15 @@ constexpr int kResizeBuffersSlot = 13;
 
 PresentFn g_origPresent = nullptr;
 ResizeBuffersFn g_origResizeBuffers = nullptr;
+void* g_presentFunction = nullptr;  // DXGI's Present itself, as every swap chain's table holds it
 
-HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval, UINT flags) {
+// The mod's work on each frame, then on to next (the rest of the way to the game's own Present).
+HRESULT PresentWork(IDXGISwapChain* swap, UINT syncInterval, UINT flags, PresentFn next) {
+    // A test Present (the game asking whether its window can be seen, minimised or covered) shows nothing and
+    // follows no new picture: the back buffer still holds the last frame as the mod left it, the stream view's
+    // (streamview.cpp), which would go to the headset as both eyes and be cropped again. Passed straight on.
+    if (flags & DXGI_PRESENT_TEST)
+        return next(swap, syncInterval, flags);
     crash::KeepOnTop();
     vr::OnPresent(swap);
     // How long the game's own Present takes once ours is done: handing frames to the headset
@@ -42,7 +49,7 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval,
     // The game waits for the monitor's refresh (sync interval 1); a frame a little over one refresh
     // then waits for the next, capping it near 48 fps. The headset paces the game in VR, so the
     // desktop window needn't wait ([window] vsync=0).
-    HRESULT hr = g_origPresent(swap, config::Get().desktopVsync ? syncInterval : 0, flags);
+    HRESULT hr = next(swap, config::Get().desktopVsync ? syncInterval : 0, flags);
     QueryPerformanceCounter(&t1);
     total += 1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(frequency.QuadPart);
     if (++calls == 60) {
@@ -51,6 +58,71 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval,
         calls = 0;
     }
     return hr;
+}
+
+// OBS's game capture (graphics-hook32.dll) and overlays hook the same Present function after the mod, so their
+// code runs before ours: OBS took each frame before the mod's work on it (the orange markers in the user's
+// videos, 2026-10-31), and would record both eyes side by side where the window shows the stream view
+// (streamview.cpp). The game calls Present through its swap chain's table of functions, so that table's
+// Present is pointed at ours as well, at the swap chain's first Present: ours runs before any hook in the
+// function, and the call goes on through them (OBS records the finished frame) to the real Present. Coming
+// back round to the hook in the function, the call passes straight on.
+struct TableHook {
+    void** table = nullptr;
+    PresentFn next = nullptr;  // what the table held: the function itself, or another program's hook
+};
+TableHook g_tables[4];  // a swap chain of another kind would have a table of its own
+thread_local bool t_inTable = false;
+
+HRESULT STDMETHODCALLTYPE TablePresent(IDXGISwapChain* swap, UINT syncInterval, UINT flags) {
+    // Back round inside the chain (another program's table hook that put itself in front of ours again and calls
+    // this as its original): the work is done; on through the function's own hooks to the real Present.
+    if (t_inTable)
+        return reinterpret_cast<PresentFn>(g_presentFunction)(swap, syncInterval, flags);
+    void** table = *reinterpret_cast<void***>(swap);
+    PresentFn next = reinterpret_cast<PresentFn>(g_presentFunction);  // through the function's hooks (OBS)
+    for (const TableHook& t : g_tables)
+        if (t.table == table && t.next)
+            next = t.next;
+    t_inTable = true;
+    HRESULT hr = PresentWork(swap, syncInterval, flags, next);
+    t_inTable = false;
+    return hr;
+}
+
+void HookTable(IDXGISwapChain* swap) {
+    void** table = *reinterpret_cast<void***>(swap);
+    TableHook* slot = nullptr;
+    for (TableHook& t : g_tables) {
+        if (t.table == table)
+            return;  // done (or tried) already
+        if (!t.table && !slot)
+            slot = &t;
+    }
+    if (!slot)
+        return;
+    slot->table = table;
+    void* held = table[kPresentSlot];
+    // Executable too: 32-bit dxgi.dll keeps its tables in its code section, and the page may hold code.
+    DWORD protect = 0;
+    if (!VirtualProtect(&table[kPresentSlot], sizeof(void*), PAGE_EXECUTE_READWRITE, &protect)) {
+        Log("Present: the swap chain's table can't be written (%lu): OBS still records each frame before the "
+            "mod's work on it", GetLastError());
+        return;
+    }
+    slot->next = reinterpret_cast<PresentFn>(held);
+    InterlockedExchangePointer(&table[kPresentSlot], reinterpret_cast<void*>(&TablePresent));
+    VirtualProtect(&table[kPresentSlot], sizeof(void*), protect, &protect);
+    Log("Present: hooked in the swap chain's table too, ahead of other programs' hooks (OBS records the mod's "
+        "finished frame)%s",
+        held == g_presentFunction ? "" : "; the table held another program's hook, called after ours");
+}
+
+HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swap, UINT syncInterval, UINT flags) {
+    if (t_inTable)  // through TablePresent, which did the work: on to the real Present
+        return g_origPresent(swap, syncInterval, flags);
+    HookTable(swap);
+    return PresentWork(swap, syncInterval, flags, g_origPresent);
 }
 
 HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swap, UINT count, UINT width, UINT height,
@@ -166,6 +238,7 @@ bool Install() {
         Log("MH_Initialize failed");
         return false;
     }
+    g_presentFunction = vtable[kPresentSlot];
     if (MH_CreateHook(vtable[kPresentSlot], &HookedPresent, reinterpret_cast<void**>(&g_origPresent)) != MH_OK ||
         MH_CreateHook(vtable[kResizeBuffersSlot], &HookedResizeBuffers,
                       reinterpret_cast<void**>(&g_origResizeBuffers)) != MH_OK) {

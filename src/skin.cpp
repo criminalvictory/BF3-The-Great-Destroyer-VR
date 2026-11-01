@@ -69,6 +69,7 @@
 #include "reload.h"
 #include "shaders.h"
 #include "sounds.h"
+#include "streamview.h"
 #include "views.h"
 #include "viewturn.h"
 
@@ -940,6 +941,13 @@ void ReadWeaponSelection() {
     //   "fingertest 1"       the glove's trigger finger drawn as if the trigger were pulled (nothing fires)
     //   "casings 0"          the spent casings where the game throws them (effects.cpp); "casings 1 0.2
     //                        0.8": out of the ejection port, all the way within 0.2 m of it, not at 0.8 m
+    //   "streamview 0"       the desktop window (and OBS) shows both eyes side by side, not the left eye alone
+    //                        ("streamview 1"; Home in game, [stereo] stream_view; streamview.cpp)
+    //   "streamfov 85"       the stream view's degrees across;  "streamtilt 5"  it looks 5 degrees lower
+    //   "streamaspect 1.7778" the shape it's drawn for, squeezed into the window (0: the window's own)
+    //   "streamfit 1"        the whole eye's picture fitted in as the headset shows it, black at its sides
+    //   "streamsteady 0"     the stream view as the head moves; "streamsteady 1 0.5 3" steadied, the horizon
+    //                        level (held still 0.5 Hz, 3 Hz faster per radian a second of turning)
     float shift[3] = {}, floor = 0.0f, wcam[3] = {};
     bool hide = false, watch = false, dump = false, any = false, wcamSet = false;
     UINT hideFx[4] = {};
@@ -973,6 +981,50 @@ void ReadWeaponSelection() {
         char* next = std::strchr(line, '\n');
         if (next)
             *next++ = 0;
+        // The stream view's (streamview.cpp), first: no other word is part of them.
+        if (const char* sv = std::strstr(line, "streamview")) {
+            int on = 1;
+            sscanf_s(sv + 10, "%d", &on);
+            streamview::SetOn(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* sf = std::strstr(line, "streamfov")) {
+            float degrees = 90.0f;
+            sscanf_s(sf + 9, "%f", &degrees);
+            streamview::SetFov(degrees);
+            line = next;
+            continue;
+        }
+        if (const char* sfit = std::strstr(line, "streamfit")) {
+            int on = 1;
+            sscanf_s(sfit + 9, "%d", &on);
+            streamview::SetFit(on != 0);
+            line = next;
+            continue;
+        }
+        if (const char* sa = std::strstr(line, "streamaspect")) {
+            float aspect = 16.0f / 9.0f;
+            sscanf_s(sa + 12, "%f", &aspect);
+            streamview::SetAspect(aspect);
+            line = next;
+            continue;
+        }
+        if (const char* ss = std::strstr(line, "streamsteady")) {
+            int on = 1;
+            float still = -1.0f, speedUp = -1.0f;
+            sscanf_s(ss + 12, "%d %f %f", &on, &still, &speedUp);
+            streamview::SetSteady(on != 0, still, speedUp);
+            line = next;
+            continue;
+        }
+        if (const char* st = std::strstr(line, "streamtilt")) {
+            float degrees = 0.0f;
+            sscanf_s(st + 10, "%f", &degrees);
+            streamview::SetTilt(degrees);
+            line = next;
+            continue;
+        }
         if (const char* si = std::strstr(line, "standin")) {
             int on = 1;
             float pitch = 0.0f, yaw = 0.0f, shift[3] = {};
