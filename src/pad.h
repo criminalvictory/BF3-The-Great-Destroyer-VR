@@ -9,7 +9,9 @@ namespace pad {
 // game's own XInput the first time it's asked to.
 //
 // Each frame: the move in the game's frame (x right, y forward, -1..1, length up to 1). False when
-// XInput couldn't be hooked (the keys are used then).
+// XInput couldn't be hooked, or while the game isn't reading controller 0 (the keys are used then):
+// some runs it stops asking for it (the user, 2026-11-01: "i cannot move ... after fighting in the
+// interrogation room"; the same in two runs on 2026-10-31).
 bool SetMove(float x, float y);
 
 }

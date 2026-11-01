@@ -780,8 +780,12 @@ void Sync(XrSession session, XrSpace space, XrTime time) {
     const float length = std::sqrt(mx * mx + my * my);
     constexpr float kDeadZone = 0.15f;
     const float scale = length > kDeadZone ? (length - kDeadZone) / (1.0f - kDeadZone) / length : 0.0f;
-    const bool analog = config::Get().analogMove && GameHasFocus() && pad::SetMove(mx * scale, my * scale);
-    bool want[4] = {!analog && my > 0.5f, !analog && my < -0.5f, !analog && mx < -0.5f, !analog && mx > 0.5f};
+    // The keys when the game isn't reading the stick (pad.cpp); none with another window in front, which they'd
+    // type into (any held one is let go).
+    const bool focus = GameHasFocus();
+    const bool analog = config::Get().analogMove && focus && pad::SetMove(mx * scale, my * scale);
+    const bool keys = focus && !analog;
+    bool want[4] = {keys && my > 0.5f, keys && my < -0.5f, keys && mx < -0.5f, keys && mx > 0.5f};
     for (int i = 0; i < 4; ++i) {
         if (want[i] != g_moveKeys[i].down) {
             SendKey(g_moveKeys[i].scan, want[i]);
